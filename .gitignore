@@ -1,0 +1,39 @@
+# compiled output
+/dist
+/node_modules
+/build
+
+# logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+
+# tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+/.vscode/**
+!/.vscode/extensions.json
+
+# environment
+.env
+.env.*
+!.env.example
+
+# local reference material and agent workspace, not committed
+/docs
+/.context
+/.superpowers
