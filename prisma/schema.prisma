@@ -1,0 +1,40 @@
+// Prisma 7: the datasource carries no connection URL. Migrate reads its URL
+// from prisma.config.ts, and the client is constructed with a driver adapter.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  // The project is CommonJS (no "type": "module"), and ts-jest compiles to CJS.
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id              String   @id @db.Uuid
+  name            String
+  slug            String   @unique
+  status          String   @default("active")
+  defaultCurrency String   @map("default_currency") @db.Char(3)
+  defaultLocale   String   @map("default_locale")
+  timezone        String
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  settings TenantSetting[]
+
+  @@map("tenant")
+}
+
+model TenantSetting {
+  id        String   @id @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  key       String
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@map("tenant_setting")
+}
