@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client';
+import type { Prisma } from '../generated/prisma/client';
 import { ConfigService } from '../config/config.service';
 
 /**
@@ -13,6 +14,25 @@ import { ConfigService } from '../config/config.service';
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   constructor(config: ConfigService) {
     super({ adapter: new PrismaPg({ connectionString: config.get('DATABASE_URL') }) });
+  }
+
+  /**
+   * The only way to touch tenant-owned tables. Runs `fn` in a transaction with
+   * the tenant set as `app.current_tenant_id`, which row-level security reads
+   * on every statement — Prisma queries and raw SQL alike. Outside this, the
+   * same tables return no rows and refuse inserts.
+   *
+   * `set_config(..., true)` is transaction-local, which is what makes this safe
+   * with a connection pool: the setting cannot leak to the next borrower.
+   *
+   * The transaction holds a pooled connection until `fn` settles, so keep
+   * network calls and other slow work outside it.
+   */
+  async inTenant<T>(tenantId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_tenant_id', ${tenantId}, true)`;
+      return fn(tx);
+    });
   }
 
   async onModuleInit(): Promise<void> {

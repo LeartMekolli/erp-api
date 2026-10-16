@@ -15,7 +15,7 @@ describe('error reporting', () => {
     reporter.report(error, { requestId: 'r1', tenantId: 't1' });
 
     expect(captureException).toHaveBeenCalledWith(error, {
-      extra: { requestId: 'r1', tenantId: 't1' },
+      captureContext: { extra: { requestId: 'r1', tenantId: 't1' } },
     });
   });
 

@@ -1,7 +1,8 @@
 import { ArgumentsHost, Catch, ExceptionFilter, Inject, Logger, Optional } from '@nestjs/common';
 import { Response } from 'express';
 import { ERROR_REPORTER } from '../reporting/reporting.module';
-import { ErrorReporter, NoopErrorReporter } from '../reporting/error-reporter';
+import type { ErrorReporter } from '../reporting/error-reporter';
+import { NoopErrorReporter } from '../reporting/error-reporter';
 import { ApiError, toApiError } from './api-error';
 
 /**
