@@ -1,3 +1,7 @@
+# Fixed so the stack has one identity whichever directory or symlink it is
+# started from; otherwise each checkout gets its own containers and volume.
+name: erp-api
+
 services:
   postgres:
     image: postgres:16

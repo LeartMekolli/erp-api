@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push to the same branch makes the running check obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: erp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d erp"
+          --health-interval 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://erp_app:app_pw@localhost:5432/erp?schema=public
+      DATABASE_MIGRATE_URL: postgresql://erp_owner:owner_pw@localhost:5432/erp?schema=public
+      REDIS_URL: redis://localhost:6379
+      APP_SECRET: ci_secret_that_is_long_enough_to_pass
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Service containers cannot mount the Compose init script, so the two
+      # roles are created the same way, from the same file.
+      - name: Create database roles
+        run: psql "postgresql://postgres:postgres@localhost:5432/erp" -v ON_ERROR_STOP=1 -f docker/postgres-init/01-roles.sql
+
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm test
+
+      # Tenant isolation and append-only enforcement are proven here, against
+      # the real database as the application role.
+      - run: npm run test:e2e
+
+      - run: npm run build
+
+      # Twice: the second run proves the seed is idempotent.
+      - name: Seed
+        run: |
+          node dist/cli/seed.js
+          node dist/cli/seed.js
