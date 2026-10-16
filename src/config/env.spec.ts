@@ -5,6 +5,7 @@ const valid = {
   DATABASE_MIGRATE_URL: 'postgresql://erp_owner:pw@localhost:5432/erp',
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'a'.repeat(32),
+  JWT_SECRET: 'j'.repeat(32),
 } as NodeJS.ProcessEnv;
 
 describe('loadEnv', () => {
@@ -40,6 +41,20 @@ describe('loadEnv', () => {
 
   it('rejects an APP_SECRET shorter than 32 characters', () => {
     expect(() => loadEnv({ ...valid, APP_SECRET: 'short' })).toThrow(/APP_SECRET/);
+  });
+
+  it('rejects a JWT_SECRET shorter than 32 characters', () => {
+    expect(() => loadEnv({ ...valid, JWT_SECRET: 'short' })).toThrow(/JWT_SECRET/);
+  });
+
+  it('rejects a JWT_SECRET equal to APP_SECRET', () => {
+    expect(() => loadEnv({ ...valid, JWT_SECRET: valid.APP_SECRET })).toThrow(
+      /JWT_SECRET: must differ from APP_SECRET/,
+    );
+  });
+
+  it('defaults APP_BASE_DOMAIN and LOG_LEVEL', () => {
+    expect(loadEnv({ ...valid })).toMatchObject({ APP_BASE_DOMAIN: 'localhost', LOG_LEVEL: 'info' });
   });
 
   it('rejects an unknown NODE_ENV', () => {

@@ -4,7 +4,9 @@ import { configureApp } from './bootstrap';
 import { ConfigService } from './config/config.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // Buffered until configureApp installs the JSON logger, so boot messages are
+  // not printed in Nest's plain-text format first.
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
   configureApp(app);
   await app.listen(app.get(ConfigService).get('PORT'));
 }

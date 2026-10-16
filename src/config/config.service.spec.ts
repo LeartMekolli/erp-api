@@ -5,6 +5,7 @@ const valid = {
   DATABASE_MIGRATE_URL: 'postgresql://erp_owner:pw@localhost:5432/erp',
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'a'.repeat(32),
+  JWT_SECRET: 'j'.repeat(32),
 } as NodeJS.ProcessEnv;
 
 describe('ConfigService', () => {
@@ -37,6 +38,9 @@ describe('ConfigService', () => {
       DATABASE_MIGRATE_URL: 'postgresql://b',
       REDIS_URL: 'redis://c',
       APP_SECRET: 'b'.repeat(32),
+      JWT_SECRET: 'c'.repeat(32),
+      APP_BASE_DOMAIN: 'localhost',
+      LOG_LEVEL: 'info',
       SENTRY_DSN: undefined,
     });
 

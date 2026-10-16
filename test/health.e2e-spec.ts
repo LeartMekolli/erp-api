@@ -1,14 +1,26 @@
-import { INestApplication } from '@nestjs/common';
+import { Controller, Get, INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 
+/** Stands in for any application route, so the prefix test owns its own. */
+@Controller('prefix-fixture')
+class PrefixFixtureController {
+  @Get()
+  get(): { ok: true } {
+    return { ok: true };
+  }
+}
+
 describe('application boot', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+      controllers: [PrefixFixtureController],
+    }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app);
     await app.init();
@@ -23,11 +35,11 @@ describe('application boot', () => {
   });
 
   it('serves application routes under the version prefix', async () => {
-    await request(app.getHttpServer()).get('/v1').expect(200);
+    await request(app.getHttpServer()).get('/v1/prefix-fixture').expect(200, { ok: true });
   });
 
   it('does not serve application routes without the prefix', async () => {
-    await request(app.getHttpServer()).get('/').expect(404);
+    await request(app.getHttpServer()).get('/prefix-fixture').expect(404);
   });
 
   it('exposes the health probe outside the version prefix', async () => {

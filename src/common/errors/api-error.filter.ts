@@ -1,5 +1,6 @@
 import { ArgumentsHost, Catch, ExceptionFilter, Inject, Logger, Optional } from '@nestjs/common';
 import { Response } from 'express';
+import { requestContext } from '../request-context/request-context';
 import { ERROR_REPORTER } from '../reporting/reporting.module';
 import type { ErrorReporter } from '../reporting/error-reporter';
 import { NoopErrorReporter } from '../reporting/error-reporter';
@@ -26,7 +27,8 @@ export class ApiErrorFilter implements ExceptionFilter {
     // recorded here or it is lost entirely.
     if (apiError.status >= 500) {
       this.logger.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
-      this.reporter.report(error, {});
+      const { requestId, tenantId, userId } = requestContext.getStore() ?? {};
+      this.reporter.report(error, { requestId, tenantId, userId });
     }
 
     host

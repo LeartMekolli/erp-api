@@ -40,6 +40,8 @@ jobs:
       DATABASE_MIGRATE_URL: postgresql://erp_owner:owner_pw@localhost:5432/erp?schema=public
       REDIS_URL: redis://localhost:6379
       APP_SECRET: ci_secret_that_is_long_enough_to_pass
+      JWT_SECRET: ci_jwt_secret_that_is_long_enough_to_pass
+      LOG_LEVEL: warn
 
     steps:
       - uses: actions/checkout@v5

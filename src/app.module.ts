@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { ErrorsModule } from './common/errors/errors.module';
+import { LoggingModule } from './common/logging/logging.module';
 import { ReportingModule } from './common/reporting/reporting.module';
 import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
@@ -12,6 +11,7 @@ import { RedisModule } from './redis/redis.module';
 @Module({
   imports: [
     ConfigModule,
+    LoggingModule,
     ReportingModule,
     ErrorsModule,
     DatabaseModule,
@@ -19,7 +19,5 @@ import { RedisModule } from './redis/redis.module';
     HealthModule,
     SettingsModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}

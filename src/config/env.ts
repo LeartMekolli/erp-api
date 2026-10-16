@@ -1,14 +1,29 @@
 import { z } from 'zod';
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().positive().default(3000),
-  DATABASE_URL: z.string().min(1),
-  DATABASE_MIGRATE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1),
-  APP_SECRET: z.string().min(32),
-  SENTRY_DSN: z.url().optional(),
-});
+const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().positive().default(3000),
+    DATABASE_URL: z.string().min(1),
+    DATABASE_MIGRATE_URL: z.string().min(1),
+    REDIS_URL: z.string().min(1),
+    APP_SECRET: z.string().min(32),
+    JWT_SECRET: z.string().min(32),
+    // Tenants log in at <slug>.<APP_BASE_DOMAIN> (F5).
+    APP_BASE_DOMAIN: z.string().min(1).default('localhost'),
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    SENTRY_DSN: z.url().optional(),
+  })
+  .superRefine((env, ctx) => {
+    // One leaked secret must not compromise both cursors and access tokens.
+    if (env.JWT_SECRET === env.APP_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['JWT_SECRET'],
+        message: 'must differ from APP_SECRET',
+      });
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

@@ -1,4 +1,8 @@
 import { INestApplication } from '@nestjs/common';
+import type { Logger } from 'pino';
+import { LOGGER, createHttpLogger } from './common/logging/logger';
+import { PinoLoggerService } from './common/logging/pino-logger.service';
+import { requestIdMiddleware } from './common/request-context/request-id.middleware';
 
 /**
  * Everything that configures the HTTP application, applied identically by
@@ -6,6 +10,12 @@ import { INestApplication } from '@nestjs/common';
  * tests; anything added in `main.ts` alone is not.
  */
 export function configureApp(app: INestApplication): void {
+  app.useLogger(app.get(PinoLoggerService));
+
+  // Order matters: the request logger reads the context the first one creates.
+  app.use(requestIdMiddleware);
+  app.use(createHttpLogger(app.get<Logger>(LOGGER)));
+
   // Health probes stay outside the version prefix: a load balancer should not
   // have to know the API's version to know whether the process is alive.
   app.setGlobalPrefix('v1', { exclude: ['health/live', 'health/ready'] });

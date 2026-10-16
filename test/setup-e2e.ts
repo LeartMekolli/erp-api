@@ -9,6 +9,9 @@ const defaults: Record<string, string> = {
   DATABASE_MIGRATE_URL: 'postgresql://erp_owner:owner_pw@localhost:5432/erp?schema=public',
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'test_secret_that_is_at_least_32_characters',
+  JWT_SECRET: 'test_jwt_secret_that_is_at_least_32_characters',
+  // Request logs would drown test output; logging tests capture their own.
+  LOG_LEVEL: 'warn',
 };
 
 for (const [key, value] of Object.entries(defaults)) {
