@@ -23,9 +23,202 @@ model Tenant {
   timezone        String
   createdAt       DateTime @default(now()) @map("created_at")
 
-  settings TenantSetting[]
+  settings        TenantSetting[]
+  users           User[]
+  roles           Role[]
+  serviceAccounts ServiceAccount[]
 
   @@map("tenant")
+}
+
+// ---------------------------------------------------------------------------
+// Identity (spec section 4). Every model below except PlatformAdmin is
+// tenant-owned and follows src/database/rls.sql.md. Child tables reach the
+// tenant through a composite foreign key (tenant_id, x_id) -> (tenant_id, id):
+// foreign-key checks bypass row-level security, so a plain key would accept
+// another tenant's id. Emails are stored trimmed and lowercased.
+// ---------------------------------------------------------------------------
+
+/// Platform-owned: acts across tenants through platform endpoints (ADR 0001).
+model PlatformAdmin {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  status       String   @default("active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("platform_admin")
+}
+
+model User {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  email        String
+  passwordHash String   @map("password_hash")
+  name         String
+  status       String   @default("active")
+  locale       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant         Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles          UserRole[]
+  refreshTokens  RefreshToken[]
+  passwordResets PasswordReset[]
+  memberships    OrganisationMembership[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, id])
+  @@map("app_user")
+}
+
+model Role {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name      String
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  users       UserRole[]
+  invitations Invitation[]
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, id])
+  @@map("role")
+}
+
+model RolePermission {
+  tenantId   String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  roleId     String @map("role_id") @db.Uuid
+  permission String
+
+  role Role @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Cascade)
+
+  @@id([roleId, permission])
+  @@map("role_permission")
+}
+
+model UserRole {
+  tenantId String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+  roleId   String @map("role_id") @db.Uuid
+
+  user User @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  role Role @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_role")
+}
+
+/// One row per issued refresh token; a family is one login's rotation chain (F2, F3).
+model RefreshToken {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  tenantId      String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  tokenHash     String    @unique @map("token_hash")
+  familyId      String    @map("family_id") @db.Uuid
+  rotatedFromId String?   @map("rotated_from_id") @db.Uuid
+  issuedAt      DateTime  @default(now()) @map("issued_at")
+  expiresAt     DateTime  @map("expires_at")
+  revokedAt     DateTime? @map("revoked_at")
+  // rotated | reuse_detected | logout | password_reset
+  revokedReason String?   @map("revoked_reason")
+
+  user User @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([userId])
+  @@map("refresh_token")
+}
+
+model Invitation {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  email           String
+  roleId          String    @map("role_id") @db.Uuid
+  tokenHash       String    @unique @map("token_hash")
+  // Null when a platform admin invited the tenant's owner.
+  invitedByUserId String?   @map("invited_by_user_id") @db.Uuid
+  expiresAt       DateTime  @map("expires_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  role Role @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, email])
+  @@map("invitation")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  tenantId  String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset")
+}
+
+/// A user's membership in a partner or customer organisation (D44, D56). The
+/// organisation tables arrive with their modules; organisation_id gets its
+/// foreign key then.
+model OrganisationMembership {
+  id               String @id @default(uuid(7)) @db.Uuid
+  tenantId         String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  userId           String @map("user_id") @db.Uuid
+  // partner | customer
+  organisationType String @map("organisation_type")
+  organisationId   String @map("organisation_id") @db.Uuid
+  role             String
+
+  user User @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([userId, organisationType, organisationId])
+  @@map("organisation_membership")
+}
+
+/// Modelled now; keys are issued with order intake (Q7).
+model ServiceAccount {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name      String
+  keyHash   String   @unique @map("key_hash")
+  scopes    String[]
+  status    String   @default("active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("service_account")
+}
+
+/// Append-only (ADR 0003, F8). No foreign keys, deliberately: entries outlive
+/// the rows they describe, the tenant included, and a cascading delete would be
+/// refused by the append-only trigger anyway.
+model AuditEntry {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  tenantId    String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // user | platform_admin | system
+  actorType   String   @map("actor_type")
+  actorId     String?  @map("actor_id") @db.Uuid
+  action      String
+  subjectType String   @map("subject_type")
+  subjectId   String?  @map("subject_id") @db.Uuid
+  before      Json?
+  after       Json?
+  requestId   String?  @map("request_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@map("audit_entry")
 }
 
 model TenantSetting {

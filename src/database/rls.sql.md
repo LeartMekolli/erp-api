@@ -23,6 +23,26 @@ model <Model> {
 
 The `dbgenerated` string must match the migration's default exactly, character for character, or `prisma migrate dev` will report drift.
 
+### Pointing at another tenant-owned table
+
+Foreign-key checks bypass row-level security, so a plain key to another tenant table accepts an id from a different tenant. Include `tenant_id` in the key instead, and let the parent declare the pair unique:
+
+```prisma
+model <Parent> {
+  // ...
+  @@unique([tenantId, id])
+}
+
+model <Child> {
+  tenantId String @default(dbgenerated(...)) @map("tenant_id") @db.Uuid
+  parentId String @map("parent_id") @db.Uuid
+
+  parent <Parent> @relation(fields: [tenantId, parentId], references: [tenantId, id], onDelete: Cascade)
+}
+```
+
+A child reached this way needs no direct relation to `Tenant`: deleting the tenant cascades through the parent. Pointing at `Tenant` itself, a platform-owned table, stays a plain key.
+
 ## 2. Migration
 
 Generate the table with `prisma migrate dev --create-only`, then append to the generated `migration.sql`:
