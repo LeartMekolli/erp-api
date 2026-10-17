@@ -5,7 +5,7 @@ import { PlatformAuthService } from './platform-auth.service';
 import { PlatformTenantsController } from './platform-tenants.controller';
 import { PlatformModule } from './platform.module';
 
-/** The platform surface over HTTP: `/v1/platform/...` (spec 3.2). */
+/** The platform surface over HTTP: `/platform/...` (spec 3.2). */
 @Module({
   imports: [PlatformModule, IdentityModule],
   controllers: [PlatformAuthController, PlatformTenantsController],

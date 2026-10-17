@@ -56,7 +56,7 @@ describe('structured logging', () => {
 
   it('never logs the authorization header, cookies, the body or the query string', async () => {
     await request(app.getHttpServer())
-      .post('/v1/anything?token=query-secret')
+      .post('/anything?token=query-secret')
       .set('Authorization', 'Bearer header-secret')
       .set('Cookie', 'session=cookie-secret')
       .send({ password: 'body-secret-password' });

@@ -4,6 +4,7 @@ import { LoggingModule } from './common/logging/logging.module';
 import { ReportingModule } from './common/reporting/reporting.module';
 import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { SettingsModule } from './modules/settings/settings.module';
@@ -19,6 +20,7 @@ import { RedisModule } from './redis/redis.module';
     DatabaseModule,
     RedisModule,
     IdentityModule,
+    AuthModule,
     HealthModule,
     SettingsModule,
     PlatformApiModule,

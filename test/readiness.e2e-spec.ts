@@ -32,8 +32,4 @@ describe('readiness', () => {
     });
     expect(response.status).toBe(200);
   });
-
-  it('stays outside the version prefix', async () => {
-    await request(app.getHttpServer()).get('/v1/health/ready').expect(404);
-  });
 });

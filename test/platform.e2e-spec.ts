@@ -37,11 +37,11 @@ describe('platform', () => {
   });
 
   const post = (path: string, token?: string) => {
-    const call = request(app.getHttpServer()).post(`/v1/platform/${path}`);
+    const call = request(app.getHttpServer()).post(`/platform/${path}`);
     return token ? call.set('Authorization', `Bearer ${token}`) : call;
   };
   const get = (path: string, token?: string) => {
-    const call = request(app.getHttpServer()).get(`/v1/platform/${path}`);
+    const call = request(app.getHttpServer()).get(`/platform/${path}`);
     return token ? call.set('Authorization', `Bearer ${token}`) : call;
   };
 
