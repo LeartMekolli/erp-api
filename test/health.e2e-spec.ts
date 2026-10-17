@@ -3,10 +3,12 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { Public } from '../src/modules/identity/route-markers';
 
 /** Stands in for any application route, so the prefix test owns its own. */
 @Controller('prefix-fixture')
 class PrefixFixtureController {
+  @Public()
   @Get()
   get(): { ok: true } {
     return { ok: true };
