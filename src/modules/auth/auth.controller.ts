@@ -4,7 +4,9 @@ import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
+import { passwordSchema } from '../identity/passwords';
 import { Authenticated, Public } from '../identity/route-markers';
+import { InvitationAcceptService } from './invitation-accept.service';
 import { SessionService } from './session.service';
 import type { SessionTokens } from './session.service';
 import { resolveTenantSlug } from './tenant-resolver';
@@ -18,10 +20,17 @@ const loginSchema = z.object({
 
 const refreshTokenSchema = z.object({ refresh_token: z.string().min(1).max(200) });
 
+const acceptInvitationSchema = z.object({
+  token: z.string().min(1).max(200),
+  name: z.string().trim().min(1).max(200),
+  password: passwordSchema,
+});
+
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly sessions: SessionService,
+    private readonly invitations: InvitationAcceptService,
     private readonly config: ConfigService,
   ) {}
 
@@ -51,5 +60,14 @@ export class AuthController {
     @Body(new ZodValidationPipe(refreshTokenSchema)) body: z.infer<typeof refreshTokenSchema>,
   ): Promise<void> {
     await this.sessions.logout(auth, body.refresh_token);
+  }
+
+  @Public()
+  @Post('invitations/accept')
+  @HttpCode(204)
+  async acceptInvitation(
+    @Body(new ZodValidationPipe(acceptInvitationSchema)) body: z.infer<typeof acceptInvitationSchema>,
+  ): Promise<void> {
+    await this.invitations.accept(body.token, body.name, body.password);
   }
 }
