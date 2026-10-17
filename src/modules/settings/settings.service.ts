@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { newId } from '../../common/ids/uuid';
 import type { Prisma } from '../../generated/prisma/client';
-import { SettingKey, SettingValue, parseSetting } from './setting-keys';
+import { SETTING_KEYS, SettingKey, SettingValue, isSettingKey, parseSetting } from './setting-keys';
 
 /**
  * Typed access to tenant settings. Every method takes the caller's `inTenant`
@@ -10,6 +10,33 @@ import { SettingKey, SettingValue, parseSetting } from './setting-keys';
  */
 @Injectable()
 export class SettingsService {
+  private readonly logger = new Logger(SettingsService.name);
+
+  /**
+   * Every stored setting that is still a known key with a valid value. One
+   * that no longer validates is left out and logged, so a single stale value
+   * does not break the whole settings page.
+   */
+  async list(tx: Prisma.TransactionClient): Promise<Partial<Record<SettingKey, unknown>>> {
+    const rows = await tx.tenantSetting.findMany({ orderBy: { key: 'asc' } });
+    const settings: Partial<Record<SettingKey, unknown>> = {};
+
+    for (const row of rows) {
+      if (!isSettingKey(row.key)) {
+        this.logger.warn(`Ignoring unknown setting key ${row.key}`);
+        continue;
+      }
+      const parsed = SETTING_KEYS[row.key].safeParse(row.value);
+      if (!parsed.success) {
+        this.logger.warn(`Ignoring setting ${row.key}: stored value no longer validates`);
+        continue;
+      }
+      settings[row.key] = parsed.data;
+    }
+
+    return settings;
+  }
+
   /** Re-validates on read, so a value stored under an older schema fails loudly. */
   async get<K extends SettingKey>(tx: Prisma.TransactionClient, key: K): Promise<SettingValue<K>> {
     const row = await tx.tenantSetting.findFirst({ where: { key } });

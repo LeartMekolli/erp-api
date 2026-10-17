@@ -84,7 +84,11 @@ export class AuthController {
     await this.invitations.accept(body.token, body.name, body.password);
   }
 
-  /** Always 202, whether or not the email belongs to anyone. */
+  /**
+   * Always 202, whether or not the email belongs to anyone. The per-IP limit
+   * needs Express `trust proxy` configured behind a proxy (README, "Before
+   * deploying"); otherwise every client shares the proxy's address.
+   */
   @Public()
   @Post('password-reset')
   @HttpCode(202)

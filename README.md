@@ -24,7 +24,7 @@ The API listens on http://localhost:3000. `GET /health/ready` reports whether Po
 The seed creates two tenants, `demo` and `sandbox`, and is safe to run again. To create another:
 
 ```bash
-npm run tenant:create -- --name="Acme Print" --slug=acme-print [--currency=EUR] [--locale=en] [--timezone=UTC]
+npm run tenant:create -- --name="Acme Print" --slug=acme-print --owner-email=owner@acme.example [--currency=EUR] [--locale=en] [--timezone=UTC]
 ```
 
 ## Database roles
@@ -58,3 +58,11 @@ CI (`.github/workflows/ci.yml`) runs all of these against fresh Postgres and Red
 - **Errors** are `application/problem+json`. Validation failures list every failing field.
 - **Money** is `NUMERIC(18,6)` with a currency column and serialises as a string.
 - **Settings** are typed per key in `src/modules/settings/setting-keys.ts`; unknown keys and invalid values are refused.
+
+## Before deploying
+
+Things that work locally but must be settled for any shared environment:
+
+- **Client addresses behind a proxy.** Password-reset rate limits are per client IP, read through Express (`@Ip()`). Behind a load balancer or reverse proxy every request appears to come from the proxy, so all users would share one limit. Configure Express's `trust proxy` for the actual proxy setup (for example `app.set('trust proxy', 1)` for a single hop) so the client address comes from `X-Forwarded-For`, and never trust that header without a proxy in front.
+- **Identity email.** Invitation and password-reset tokens are printed to stdout by a development notifier, and the API refuses to boot with `NODE_ENV=production` until the notification service replaces it.
+- **Sentry.** Set `SENTRY_DSN` per environment; without it, errors are logged but not reported.
