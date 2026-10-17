@@ -5,6 +5,11 @@ import { z } from 'zod';
  * Every tenant setting the system knows, each with the schema its value must
  * satisfy. A key that is not listed here cannot be stored, so settings never
  * grow into an untyped bag of strings.
+ *
+ * Responses pass through StripCredentialsInterceptor, which drops any field
+ * named `*hash`, `*password` or `*secret`. A value with such a field is stored
+ * but never read back through GET /settings; that suits secrets, which should
+ * be write-only, but name ordinary fields accordingly.
  */
 export const SETTING_KEYS = {
   'notification.sender': z.object({
