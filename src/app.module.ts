@@ -7,6 +7,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './modules/health/health.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { PlatformApiModule } from './platform/platform-api.module';
 import { RedisModule } from './redis/redis.module';
 
 @Module({
@@ -20,6 +21,7 @@ import { RedisModule } from './redis/redis.module';
     IdentityModule,
     HealthModule,
     SettingsModule,
+    PlatformApiModule,
   ],
 })
 export class AppModule {}

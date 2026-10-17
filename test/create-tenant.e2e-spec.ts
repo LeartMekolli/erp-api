@@ -4,19 +4,33 @@ import { ZodError } from 'zod';
 import { ConfigModule } from '../src/config/config.module';
 import { DatabaseModule } from '../src/database/database.module';
 import { PrismaService } from '../src/database/prisma.service';
+import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { PlatformModule } from '../src/platform/platform.module';
 import { TenantService } from '../src/platform/tenant.service';
+import { CapturingIdentityNotifier } from './capturing-notifier';
 
-describe('tenant creation', () => {
+/** The service as the CLI and seed use it: no HTTP, no Redis. */
+describe('tenant provisioning service', () => {
   let prisma: PrismaService;
   let tenants: TenantService;
   const slug = `test-${Date.now().toString(36)}`;
-  const input = { name: 'Test', slug, currency: 'EUR', locale: 'en', timezone: 'UTC' };
+  const input = {
+    name: 'Test',
+    slug,
+    currency: 'EUR',
+    locale: 'en',
+    timezone: 'UTC',
+    ownerEmail: 'owner@example.test',
+  };
+  const system = { type: 'system' } as const;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       imports: [ConfigModule, DatabaseModule, PlatformModule],
-    }).compile();
+    })
+      .overrideProvider(IDENTITY_NOTIFIER)
+      .useValue(new CapturingIdentityNotifier())
+      .compile();
     await moduleRef.init();
     prisma = moduleRef.get(PrismaService);
     tenants = moduleRef.get(TenantService);
@@ -28,7 +42,7 @@ describe('tenant creation', () => {
   });
 
   it('creates a tenant with a v7 id', async () => {
-    const created = await tenants.create(input);
+    const created = await tenants.provision(input, system);
 
     expect(created.slug).toBe(slug);
     expect(created.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/);
@@ -40,13 +54,13 @@ describe('tenant creation', () => {
   });
 
   it('refuses a duplicate slug with a conflict', async () => {
-    await expect(tenants.create({ ...input, name: 'Again' })).rejects.toThrow(ConflictException);
+    await expect(tenants.provision({ ...input, name: 'Again' }, system)).rejects.toThrow(ConflictException);
   });
 
   it('refuses invalid input before writing anything', async () => {
     const badSlug = `${slug}-bad`;
 
-    await expect(tenants.create({ ...input, slug: badSlug, currency: 'EURO' })).rejects.toThrow(
+    await expect(tenants.provision({ ...input, slug: badSlug, currency: 'EURO' }, system)).rejects.toThrow(
       ZodError,
     );
     await expect(prisma.tenant.count({ where: { slug: badSlug } })).resolves.toBe(0);

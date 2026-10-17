@@ -2,6 +2,7 @@ import { newId } from '../src/common/ids/uuid';
 import type { PrismaService } from '../src/database/prisma.service';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { SYSTEM_ROLES } from '../src/modules/identity/permissions';
+import { createSystemRoles } from '../src/modules/identity/system-roles';
 
 export const TEST_PASSWORD = 'test-password-123';
 
@@ -30,12 +31,7 @@ export async function createTestTenant(
       },
     });
 
-    for (const [name, permissions] of Object.entries(SYSTEM_ROLES)) {
-      const role = await tx.role.create({ data: { name, isSystem: true } });
-      await tx.rolePermission.createMany({
-        data: permissions.map((permission) => ({ roleId: role.id, permission })),
-      });
-    }
+    await createSystemRoles(tx);
   });
 
   return { id, slug };

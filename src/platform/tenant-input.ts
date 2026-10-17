@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { emailSchema } from '../modules/identity/email';
 
 /** A DNS label: the slug is the tenant's login subdomain (F5). */
 const SLUG = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -43,6 +44,8 @@ export const createTenantSchema = z.object({
     return locale;
   }),
   timezone: z.string().refine(isTimeZone, 'timezone must be an IANA zone, such as Europe/Berlin'),
+  // Invited as the tenant's owner; nobody's password is ever configured (F6).
+  ownerEmail: emailSchema,
 });
 
 export type CreateTenantInput = z.input<typeof createTenantSchema>;

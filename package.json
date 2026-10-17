@@ -16,6 +16,7 @@
     "lint": "oxlint --type-aware src/ test/",
     "seed": "nest build && node --env-file-if-exists=.env dist/cli/seed.js",
     "tenant:create": "nest build && node --env-file-if-exists=.env dist/cli/create-tenant.js",
+    "platform-admin:create": "nest build && node --env-file-if-exists=.env dist/cli/create-platform-admin.js",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
     "test:cov": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --coverage",

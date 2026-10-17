@@ -7,11 +7,19 @@ const valid = {
   currency: 'EUR',
   locale: 'en',
   timezone: 'UTC',
+  ownerEmail: 'owner@example.test',
 };
 
 describe('tenant input', () => {
   it('accepts a valid tenant', () => {
     expect(createTenantSchema.parse(valid)).toEqual(valid);
+  });
+
+  it('normalises the owner email and rejects an invalid one', () => {
+    expect(createTenantSchema.parse({ ...valid, ownerEmail: ' Owner@Example.TEST ' }).ownerEmail).toBe(
+      'owner@example.test',
+    );
+    expect(() => createTenantSchema.parse({ ...valid, ownerEmail: 'not-an-email' })).toThrow(ZodError);
   });
 
   // The slug is the login subdomain (F5): its shape is a DNS label.
