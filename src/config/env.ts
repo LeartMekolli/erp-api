@@ -12,6 +12,12 @@ const envSchema = z
     // Tenants log in at <slug>.<APP_BASE_DOMAIN> (F5).
     APP_BASE_DOMAIN: z.string().min(1).default('localhost'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    // Namespaces every queue key in Redis, so environments and e2e specs sharing
+    // one Redis never see each other's jobs.
+    QUEUE_PREFIX: z
+      .string()
+      .regex(/^[a-z0-9-]{1,32}$/)
+      .default('erp'),
     SENTRY_DSN: z.url().optional(),
   })
   .superRefine((env, ctx) => {

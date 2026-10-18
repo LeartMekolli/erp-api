@@ -6,6 +6,7 @@ import { ReportingModule } from './common/reporting/reporting.module';
 import { StripCredentialsInterceptor } from './common/serialization/strip-credentials.interceptor';
 import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
+import { JobsModule } from './jobs/jobs.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
 import { IdentityModule } from './modules/identity/identity.module';
@@ -23,6 +24,7 @@ import { RedisModule } from './redis/redis.module';
     ErrorsModule,
     DatabaseModule,
     RedisModule,
+    JobsModule,
     IdentityModule,
     AuthModule,
     HealthModule,

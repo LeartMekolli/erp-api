@@ -21,6 +21,14 @@ npm run start:dev
 
 The API listens on http://localhost:3000. `GET /health/ready` reports whether Postgres and Redis are reachable.
 
+Background jobs run in a separate process. In a second terminal:
+
+```bash
+npm run start:worker:dev
+```
+
+It serves no HTTP and builds into `dist-worker/`, so its watcher and the API's never delete each other's output. In production, run `npm run start:worker:prod` (or `node dist/worker`) next to the API; the web process only enqueues.
+
 The seed creates a platform admin (`admin@example.test`, password printed once) and two tenants, `demo` and `sandbox`, each with an owner invitation whose token is printed. It is safe to run again. To create another tenant:
 
 ```bash

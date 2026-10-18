@@ -3,6 +3,9 @@ export interface ErrorContext {
   requestId?: string;
   tenantId?: string;
   userId?: string;
+  /** Set for failures in the worker, which has no request. */
+  jobId?: string;
+  jobName?: string;
 }
 
 export interface ErrorReporter {

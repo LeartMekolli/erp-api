@@ -41,6 +41,7 @@ describe('ConfigService', () => {
       JWT_SECRET: 'c'.repeat(32),
       APP_BASE_DOMAIN: 'localhost',
       LOG_LEVEL: 'info',
+      QUEUE_PREFIX: 'erp',
       SENTRY_DSN: undefined,
     });
 

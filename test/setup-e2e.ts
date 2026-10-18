@@ -10,6 +10,7 @@ const defaults: Record<string, string> = {
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'test_secret_that_is_at_least_32_characters',
   JWT_SECRET: 'test_jwt_secret_that_is_at_least_32_characters',
+  QUEUE_PREFIX: 'e2e',
   // Request logs would drown test output; logging tests capture their own.
   LOG_LEVEL: 'warn',
 };
