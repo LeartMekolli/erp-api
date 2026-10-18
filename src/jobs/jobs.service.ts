@@ -4,6 +4,7 @@ import { ConfigService } from '../config/config.service';
 import { createProducerConnection } from './redis-connections';
 import {
   buildJobId,
+  FAILED_JOB_RETENTION_SECONDS,
   JOB_REGISTRY,
   JobName,
   JobPayload,
@@ -11,8 +12,6 @@ import {
   QueueName,
 } from './registry';
 import type { JobRegistry } from './registry';
-
-const FAILED_JOB_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 
 @Injectable()
 export class JobsService implements OnModuleDestroy {

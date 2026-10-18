@@ -7,9 +7,12 @@ import { requestContext } from '../common/request-context/request-context';
 import type { ErrorReporter } from '../common/reporting/error-reporter';
 import { ERROR_REPORTER } from '../common/reporting/reporting.module';
 import { ConfigService } from '../config/config.service';
-import { HANDLES_JOB, JobHandler } from './handles-job';
+import { HANDLES_JOB, JobContext, JobHandler } from './handles-job';
+import { JobsService } from './jobs.service';
+import { RedisLock } from './redis-lock';
 import { createWorkerConnection } from './redis-connections';
 import { JOB_REGISTRY } from './registry';
+import { upsertSchedulers } from './schedulers';
 import type { JobRegistry } from './registry';
 
 const CONCURRENCY = 5;
@@ -37,6 +40,8 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly reflector: Reflector,
     @Inject(LOGGER) private readonly logger: Logger,
     @Inject(ERROR_REPORTER) private readonly reporter: ErrorReporter,
+    private readonly jobs: JobsService,
+    private readonly lock: RedisLock,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -44,7 +49,11 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
 
     const connection = createWorkerConnection(this.config);
     const prefix = this.config.get('QUEUE_PREFIX');
-    const queues = new Set(Object.values(this.registry.jobs).map((definition) => definition.queue));
+    const queues = new Set(
+      [...Object.values(this.registry.jobs), ...Object.values(this.registry.scheduled)].map(
+        (definition) => definition.queue,
+      ),
+    );
 
     for (const queue of queues) {
       const worker = new Worker(queue, (job: Job) => this.run(queue, job), {
@@ -59,6 +68,7 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     await Promise.all(this.workers.map((worker) => worker.waitUntilReady()));
+    await upsertSchedulers(this.jobs, this.registry.scheduled);
   }
 
   /**
@@ -82,7 +92,7 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
       if (!name) {
         continue;
       }
-      if (!(name in this.registry.jobs)) {
+      if (!(name in this.registry.jobs) && !(name in this.registry.scheduled)) {
         problems.push(`${metatype.name} handles unknown job ${name}`);
         continue;
       }
@@ -90,7 +100,7 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     const handlers = new Map<string, JobHandler<unknown>>();
-    for (const name of Object.keys(this.registry.jobs)) {
+    for (const name of [...Object.keys(this.registry.jobs), ...Object.keys(this.registry.scheduled)]) {
       const candidates = found.get(name) ?? [];
       if (candidates.length === 0) {
         problems.push(`Job ${name} has no handler`);
@@ -117,13 +127,14 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
     const attempt = job.attemptsMade + 1;
     const maxAttempts = job.opts.attempts ?? 1;
     const definition = this.registry.jobs[job.name];
+    const scheduled = this.registry.scheduled[job.name];
     const handler = this.handlers.get(job.name);
     const parsed = definition?.payload.safeParse(job.data);
     const tenantId = parsed?.success ? tenantOf(parsed.data) : undefined;
 
     await requestContext.run({ requestId: jobId, tenantId }, async () => {
       const started = performance.now();
-      const line = (outcome: 'completed' | 'failed') => ({
+      const line = (outcome: 'completed' | 'skipped' | 'failed') => ({
         job: {
           id: jobId,
           name: job.name,
@@ -133,16 +144,29 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
           outcome,
         },
       });
+      const ctx: JobContext = { jobId, attempt, isFinalAttempt: attempt >= maxAttempts };
 
       try {
-        if (!handler || !parsed) {
+        if (!handler || (!parsed && !scheduled)) {
           throw new UnrecoverableError(`Unknown job ${job.name}`);
         }
-        if (!parsed.success) {
+        if (parsed && !parsed.success) {
           // The schema's own message could echo payload values; this one cannot.
           throw new UnrecoverableError(`Invalid payload for ${job.name}`);
         }
-        await handler.handle(parsed.data, { jobId, attempt, isFinalAttempt: attempt >= maxAttempts });
+
+        if (scheduled) {
+          // One runner per scheduled job across instances (ADR 0005.7). The
+          // prefix keeps a local worker and a test run from sharing the lock.
+          const lockName = `job:${this.config.get('QUEUE_PREFIX')}:${job.name}`;
+          const result = await this.lock.run(lockName, scheduled.lockTtlMs, () => handler.handle({}, ctx));
+          if (!result.acquired) {
+            this.logger.info(line('skipped'), 'job');
+            return;
+          }
+        } else {
+          await handler.handle(parsed?.data, ctx);
+        }
         this.logger.info(line('completed'), 'job');
       } catch (caught) {
         const error = caught instanceof Error ? caught : new Error(String(caught));

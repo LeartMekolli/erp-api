@@ -8,7 +8,7 @@ import { requestContext } from '../src/common/request-context/request-context';
 import { ERROR_REPORTER } from '../src/common/reporting/reporting.module';
 import { HandlesJob, JobContext, JobHandler } from '../src/jobs/handles-job';
 import { JobsService } from '../src/jobs/jobs.service';
-import { defineJob, JOB_REGISTRY, JobName, JobRegistry } from '../src/jobs/registry';
+import { defineJob, JOB_REGISTRY, JobName, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
 
@@ -20,7 +20,8 @@ const fixtureJob = () =>
 
 const fixture: JobRegistry = {
   jobs: { 'test.ok': fixtureJob(), 'test.flaky': fixtureJob(), 'test.broken': fixtureJob() },
-  scheduled: {},
+  // The real scheduled jobs, whose handlers the worker module always provides.
+  scheduled: SCHEDULED_JOBS,
 };
 
 /** What the fixture handlers saw, by job id. */
@@ -145,8 +146,10 @@ describe('job worker', () => {
       return (await candidate?.getState()) === 'failed' ? candidate : undefined;
     });
 
-    // Unrecoverable: one attempt, no retries.
-    expect(job.attemptsMade).toBe(1);
+    // Unrecoverable: started once, never retried. (BullMQ 6 does not count an
+    // unrecoverable failure in attemptsMade, so count the starts instead.)
+    expect(job.failedReason).toBe('Invalid payload for test.ok');
+    expect(job.attemptsStarted).toBe(1);
     expect(calls.some((call) => call.id === 'not-a-uuid')).toBe(false);
   });
 
@@ -182,7 +185,7 @@ describe('job worker', () => {
   });
 
   it('refuses to boot when a registry job has no handler', async () => {
-    const orphaned: JobRegistry = { jobs: { ...fixture.jobs, 'test.orphan': fixtureJob() }, scheduled: {} };
+    const orphaned: JobRegistry = { jobs: { ...fixture.jobs, 'test.orphan': fixtureJob() }, scheduled: SCHEDULED_JOBS };
 
     await expect(
       startTestWorker((builder) => builder.overrideProvider(JOB_REGISTRY).useValue(orphaned), handlers),

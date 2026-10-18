@@ -6,6 +6,9 @@ export type QueueName = (typeof QUEUES)[number];
 const DEFAULT_ATTEMPTS = 5;
 const DEFAULT_BACKOFF_MS = 10_000;
 
+/** Dead-lettered jobs stay visible this long (J1). */
+export const FAILED_JOB_RETENTION_SECONDS = 30 * 24 * 60 * 60;
+
 export interface JobDefinition<S extends z.ZodType> {
   queue: QueueName;
   payload: S;
@@ -40,7 +43,10 @@ export function defineJob<S extends z.ZodType>(def: {
 
 export const JOBS = {} satisfies Record<string, JobDefinition<z.ZodType>>;
 
-export const SCHEDULED_JOBS = {} satisfies Record<string, ScheduledJobDefinition>;
+export const SCHEDULED_JOBS = {
+  // Recovers claimed work whose runner died and pending work whose job was lost (rule A1).
+  'claims.sweep': { queue: 'maintenance', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
+} satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;
 export type JobPayload<N extends JobName> = (typeof JOBS)[N] extends {
