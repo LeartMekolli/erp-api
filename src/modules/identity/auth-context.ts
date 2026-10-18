@@ -33,6 +33,11 @@ export function setAuth(request: IncomingMessage, auth: AuthContext): void {
   authByRequest.set(request, auth);
 }
 
+/** The verified caller, if the guard authenticated this request. */
+export function authOfRequest(request: IncomingMessage): AuthContext | undefined {
+  return authByRequest.get(request);
+}
+
 function authOf(context: ExecutionContext): AuthContext {
   const auth = authByRequest.get(context.switchToHttp().getRequest<IncomingMessage>());
   if (!auth) {

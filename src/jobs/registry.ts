@@ -46,6 +46,12 @@ export const JOBS = {} satisfies Record<string, JobDefinition<z.ZodType>>;
 export const SCHEDULED_JOBS = {
   // Recovers claimed work whose runner died and pending work whose job was lost (rule A1).
   'claims.sweep': { queue: 'maintenance', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
+  // Deletes idempotency keys older than 30 days (ADR 0005).
+  'idempotency.cleanup': {
+    queue: 'maintenance',
+    schedule: { pattern: '0 3 * * *', tz: 'UTC' },
+    lockTtlMs: 600_000,
+  },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;

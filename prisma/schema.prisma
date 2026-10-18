@@ -27,6 +27,7 @@ model Tenant {
   users           User[]
   roles           Role[]
   serviceAccounts ServiceAccount[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("tenant")
 }
@@ -234,4 +235,30 @@ model TenantSetting {
 
   @@unique([tenantId, key])
   @@map("tenant_setting")
+}
+
+// ---------------------------------------------------------------------------
+// Jobs and idempotency (spec section 7, ADR 0005).
+// ---------------------------------------------------------------------------
+
+/// A client's Idempotency-Key on a tenant POST, with the response it got, so
+/// a retry replays it instead of acting twice. Deleted after 30 days.
+model IdempotencyKey {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  tenantId       String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key            String
+  // sha256 of user, method, path and canonical body
+  fingerprint    String    @db.Char(64)
+  // in_progress | completed
+  status         String
+  responseStatus Int?      @map("response_status")
+  responseBody   Json?     @map("response_body")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  completedAt    DateTime? @map("completed_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@index([tenantId, createdAt])
+  @@map("idempotency_key")
 }
