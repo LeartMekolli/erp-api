@@ -44,6 +44,10 @@ describe('structured logging', () => {
 
     expect(response.headers['x-request-id']).toBe('trace-1');
 
+    // JSON.parse keeps the last of duplicated keys, so count them in the raw line.
+    const raw = lines.find((line) => line.includes('"trace-1"')) ?? '';
+    expect(raw.match(/"requestId"/g)).toHaveLength(1);
+
     const entries = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
     const entry = entries.find((candidate) => candidate.requestId === 'trace-1');
 

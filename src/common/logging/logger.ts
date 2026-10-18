@@ -9,7 +9,7 @@ export const LOG_DESTINATION = Symbol('LOG_DESTINATION');
 
 /**
  * JSON lines carrying the current request, tenant and user ids. Request lines
- * get those from the request logger instead (they carry `req`), so the mixin
+ * (they carry `res`) get those from the request logger instead, so the mixin
  * stays out of their way rather than writing the keys twice.
  */
 export function createLogger(config: ConfigService, destination: DestinationStream): Logger {
@@ -18,7 +18,7 @@ export function createLogger(config: ConfigService, destination: DestinationStre
       level: config.get('LOG_LEVEL'),
       base: null,
       timestamp: pino.stdTimeFunctions.isoTime,
-      mixin: (mergeObject) => ('req' in mergeObject ? {} : { ...requestContext.getStore() }),
+      mixin: (mergeObject) => ('res' in mergeObject ? {} : { ...requestContext.getStore() }),
     },
     destination,
   );
@@ -37,7 +37,16 @@ function pathOnly(url: unknown): string | undefined {
 export function createHttpLogger(logger: Logger): HttpLogger {
   return pinoHttp({
     logger,
-    customProps: (request: IncomingMessage) => ({ ...requestContextOf(request) }),
+    // Added once, to the completion line. (customProps would be applied both
+    // when the request starts and when it finishes, writing the keys twice.)
+    customSuccessObject: (request: IncomingMessage, _response, line: object) => ({
+      ...requestContextOf(request),
+      ...line,
+    }),
+    customErrorObject: (request: IncomingMessage, _response, _error, line: object) => ({
+      ...requestContextOf(request),
+      ...line,
+    }),
     customLogLevel: (_request, response, error) =>
       error || response.statusCode >= 500 ? 'error' : 'info',
     serializers: {
