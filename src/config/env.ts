@@ -30,6 +30,10 @@ const envSchema = z
       .refine((value) => URL.canParse(value.replace('{tenant}', 'tenant')), 'must be a URL'),
     // File storage, any S3-compatible service: MinIO locally, Cloudflare R2 in production (plan S1).
     S3_ENDPOINT: z.url(),
+    // Where clients reach storage, when that differs from where the API does
+    // (in Compose, the API uses minio:9000 and a browser localhost:9000).
+    // Signed links name this address; unset, they name S3_ENDPOINT.
+    S3_PUBLIC_ENDPOINT: z.url().optional(),
     S3_REGION: z.string().min(1).default('auto'),
     S3_BUCKET: z.string().min(1),
     S3_ACCESS_KEY_ID: z.string().min(1),

@@ -56,13 +56,16 @@ export function contentDisposition(fileName: string, contentType: string): strin
 
 /** `ObjectStorage` over the S3 API: MinIO locally, Cloudflare R2 in production (plan S1). */
 export class S3Storage implements ObjectStorage, OnModuleDestroy {
+  /** Talks to storage: HEAD and reads. */
   private readonly client: S3Client;
+  /** Signs links for clients. Same settings, but the address clients use (S3_PUBLIC_ENDPOINT). */
+  private readonly signer: S3Client;
   private readonly bucket: string;
 
   constructor(config: ConfigService) {
     this.bucket = config.get('S3_BUCKET');
-    this.client = new S3Client({
-      endpoint: config.get('S3_ENDPOINT'),
+    const endpoint = config.get('S3_ENDPOINT');
+    const settings = {
       region: config.get('S3_REGION'),
       forcePathStyle: config.get('S3_FORCE_PATH_STYLE') === 'true',
       credentials: {
@@ -73,7 +76,9 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
       // PUTs, which storage then holds the real upload to.
       requestChecksumCalculation: 'WHEN_REQUIRED',
       responseChecksumValidation: 'WHEN_REQUIRED',
-    });
+    } as const;
+    this.client = new S3Client({ ...settings, endpoint });
+    this.signer = new S3Client({ ...settings, endpoint: config.get('S3_PUBLIC_ENDPOINT') ?? endpoint });
   }
 
   async presignPut(
@@ -96,7 +101,7 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
     });
     // The presigner leaves Content-Type unsigned by default; signing every
     // header makes storage refuse any other type, size or overwrite (plan S4).
-    const url = await getSignedUrl(this.client, command, {
+    const url = await getSignedUrl(this.signer, command, {
       expiresIn: options.expiresInSeconds,
       signableHeaders: new Set(Object.keys(headers)),
     });
@@ -113,7 +118,7 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
       ResponseContentType: options.contentType,
       ResponseContentDisposition: contentDisposition(options.fileName, options.contentType),
     });
-    return getSignedUrl(this.client, command, { expiresIn: options.expiresInSeconds });
+    return getSignedUrl(this.signer, command, { expiresIn: options.expiresInSeconds });
   }
 
   async head(key: string): Promise<{ size: number; contentType: string } | null> {
@@ -138,5 +143,6 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
 
   onModuleDestroy(): void {
     this.client.destroy();
+    this.signer.destroy();
   }
 }

@@ -1,4 +1,5 @@
-import { contentDisposition } from './s3-storage';
+import { createConfigService } from '../config/config.service';
+import { contentDisposition, S3Storage } from './s3-storage';
 
 /** The value inside `filename="…"`, the fallback every browser understands. */
 function quotedName(header: string): string {
@@ -36,5 +37,46 @@ describe('contentDisposition', () => {
 
     expect(header).toContain(`filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`);
     expect(quotedName(header)).toMatch(/^[\x20-\x7e]+\.pdf$/);
+  });
+});
+
+describe('S3Storage signing address', () => {
+  // Signing is computed locally: nothing here talks to storage.
+  const env = {
+    DATABASE_URL: 'postgresql://a',
+    DATABASE_MIGRATE_URL: 'postgresql://b',
+    REDIS_URL: 'redis://c',
+    APP_SECRET: 'a'.repeat(32),
+    JWT_SECRET: 'j'.repeat(32),
+    SMTP_URL: 'smtp://localhost:1025',
+    MAIL_FROM: 'ERP <no-reply@example.test>',
+    WEB_URL_TEMPLATE: 'http://{tenant}.localhost:5173',
+    S3_ENDPOINT: 'http://minio:9000',
+    S3_BUCKET: 'erp-files',
+    S3_ACCESS_KEY_ID: 'minio',
+    S3_SECRET_ACCESS_KEY: 'minio-password',
+    S3_FORCE_PATH_STYLE: 'true',
+  };
+
+  async function signedHosts(extra: Record<string, string>): Promise<string[]> {
+    const storage = new S3Storage(createConfigService({ ...env, ...extra }));
+    try {
+      const put = await storage.presignPut('t/f/v', { contentType: 'text/plain', contentLength: 5, expiresInSeconds: 60 });
+      const get = await storage.presignGet('t/f/v', { fileName: 'a.txt', contentType: 'text/plain', expiresInSeconds: 60 });
+      return [new URL(put.url).host, new URL(get).host];
+    } finally {
+      storage.onModuleDestroy();
+    }
+  }
+
+  it('signs links for S3_PUBLIC_ENDPOINT when it is set', async () => {
+    expect(await signedHosts({ S3_PUBLIC_ENDPOINT: 'http://localhost:9000' })).toEqual([
+      'localhost:9000',
+      'localhost:9000',
+    ]);
+  });
+
+  it('signs links for S3_ENDPOINT otherwise', async () => {
+    expect(await signedHosts({})).toEqual(['minio:9000', 'minio:9000']);
   });
 });
