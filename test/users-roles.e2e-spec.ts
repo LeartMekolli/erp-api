@@ -181,6 +181,7 @@ describe('users and roles administration', () => {
       expect(roles.find((role) => role.name === 'member')?.permissions).toEqual([
         'role.read',
         'settings.read',
+        'template.read',
         'user.read',
       ]);
     });

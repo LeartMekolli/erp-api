@@ -28,6 +28,8 @@ model Tenant {
   roles           Role[]
   serviceAccounts ServiceAccount[]
   idempotencyKeys IdempotencyKey[]
+  notifications   Notification[]
+  notificationTemplates NotificationTemplate[]
 
   @@map("tenant")
 }
@@ -67,6 +69,7 @@ model User {
   refreshTokens  RefreshToken[]
   passwordResets PasswordReset[]
   memberships    OrganisationMembership[]
+  notifications  NotificationRecipient[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -261,4 +264,94 @@ model IdempotencyKey {
   @@unique([tenantId, key])
   @@index([tenantId, createdAt])
   @@map("idempotency_key")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (spec section 6). Domain code raises a notification; the
+// worker fans it out to the in-app feed and to email, one delivery row per
+// attempt.
+// ---------------------------------------------------------------------------
+
+/// One raised event. `payload` holds the template variables except secrets,
+/// which are sealed in `secrets` and wiped once sent (plan N2). Claimed by the
+/// dispatch job: pending -> dispatching -> dispatched, or failed.
+model Notification {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  tenantId    String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  eventKey    String    @map("event_key")
+  // invitee | user | permission
+  audience    String
+  subjectType String    @map("subject_type")
+  subjectId   String    @map("subject_id") @db.Uuid
+  payload     Json
+  secrets     Bytes?
+  status      String
+  claimedAt   DateTime? @map("claimed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  tenant     Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recipients NotificationRecipient[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status, createdAt])
+  @@map("notification")
+}
+
+/// The in-app feed: one row per user a notification reached, with the title
+/// and body rendered at dispatch (plan N6).
+model NotificationRecipient {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  tenantId       String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  notificationId String    @map("notification_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  title          String
+  body           String
+  readAt         DateTime? @map("read_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  notification Notification @relation(fields: [tenantId, notificationId], references: [tenantId, id], onDelete: Cascade)
+  user         User         @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([notificationId, userId])
+  @@index([tenantId, userId, id])
+  @@map("notification_recipient")
+}
+
+/// A tenant's override of a repo template (D69). Repo templates stay the
+/// defaults; `enabled: false` falls back to them.
+model NotificationTemplate {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  eventKey        String   @map("event_key")
+  locale          String
+  subject         String
+  body            String
+  enabled         Boolean  @default(true)
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, eventKey, locale])
+  @@map("notification_template")
+}
+
+/// Append-only (ADR 0003): one row per delivery attempt. No foreign keys, as
+/// with audit_entry: the log outlives what it describes.
+model NotificationDelivery {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  notificationId String   @map("notification_id") @db.Uuid
+  // email
+  channel        String
+  target         String
+  // sent | failed
+  status         String
+  attempt        Int
+  providerId     String?  @map("provider_id")
+  error          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, notificationId])
+  @@map("notification_delivery")
 }

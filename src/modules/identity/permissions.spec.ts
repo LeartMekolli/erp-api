@@ -11,7 +11,7 @@ describe('permissions', () => {
   });
 
   it('keeps the member read-only', () => {
-    expect([...SYSTEM_ROLES.member].sort()).toEqual(['role.read', 'settings.read', 'user.read']);
+    expect([...SYSTEM_ROLES.member].sort()).toEqual(['role.read', 'settings.read', 'template.read', 'user.read']);
   });
 
   it('keeps tenant and platform permissions apart', () => {

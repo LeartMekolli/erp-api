@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { currentRequestId } from '../../common/request-context/request-context';
 import type { Prisma } from '../../generated/prisma/client';
 
-/** The sensitive actions of F8. Plan 3 adds the template override. */
+/** The sensitive actions of F8. */
 export type AuditAction =
   | 'tenant.created'
   | 'tenant.suspended'
@@ -11,7 +11,8 @@ export type AuditAction =
   | 'role.deleted'
   | 'user.roles_changed'
   | 'user.deactivated'
-  | 'auth.refresh_chain_revoked';
+  | 'auth.refresh_chain_revoked'
+  | 'template.override_changed';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };

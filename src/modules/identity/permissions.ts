@@ -11,6 +11,8 @@ export const TENANT_PERMISSIONS = [
   'role.read',
   'role.write',
   'role.assign',
+  'template.read',
+  'template.write',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */
@@ -32,7 +34,7 @@ export type Permission = TenantPermission | PlatformPermission;
  */
 export const SYSTEM_ROLES = {
   owner: TENANT_PERMISSIONS,
-  member: ['settings.read', 'user.read', 'role.read'],
+  member: ['settings.read', 'user.read', 'role.read', 'template.read'],
 } as const satisfies Record<string, readonly TenantPermission[]>;
 
 export type SystemRoleName = keyof typeof SYSTEM_ROLES;
