@@ -74,6 +74,19 @@ describe('job worker', () => {
     jobs.enqueue(name as JobName, p as unknown as Parameters<JobsService['enqueue']>[1]);
   const callsFor = (id: string) => calls.filter((call) => call.id === id);
 
+  /**
+   * Waits for a job to reach the failed set, then reads it again: a job read
+   * while it was still active keeps that snapshot (no failedReason yet), even
+   * once its state has moved on.
+   */
+  async function failedJob(jobId: string) {
+    const queue = jobs.queue('maintenance');
+    await waitFor(async () => ((await (await queue.getJob(jobId))?.getState()) === 'failed' ? true : undefined));
+    const job = await queue.getJob(jobId);
+    if (!job) throw new Error(`${jobId} disappeared from the failed set`);
+    return job;
+  }
+
   beforeAll(async () => {
     process.env.QUEUE_PREFIX = `t${randomBytes(6).toString('hex')}`;
     // The e2e default is warn; job lines for completed attempts are info.
@@ -123,10 +136,7 @@ describe('job worker', () => {
     reporter.report.mockClear();
     await enqueue('test.broken', { id });
 
-    const job = await waitFor(async () => {
-      const candidate = await jobs.queue('maintenance').getJob(`test.broken/${id}`);
-      return (await candidate?.getState()) === 'failed' ? candidate : undefined;
-    });
+    const job = await failedJob(`test.broken/${id}`);
 
     expect(job.failedReason).toBe('always fails');
     expect(callsFor(id)).toHaveLength(3);
@@ -142,10 +152,7 @@ describe('job worker', () => {
     const jobId = `test.ok/invalid-${newId()}`;
     await jobs.queue('maintenance').add('test.ok', { id: 'not-a-uuid' }, { jobId, attempts: 3 });
 
-    const job = await waitFor(async () => {
-      const candidate = await jobs.queue('maintenance').getJob(jobId);
-      return (await candidate?.getState()) === 'failed' ? candidate : undefined;
-    });
+    const job = await failedJob(jobId);
 
     // Unrecoverable: started once, never retried. (BullMQ 6 does not count an
     // unrecoverable failure in attemptsMade, so count the starts instead.)
