@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { PrismaService } from '../../database/prisma.service';
 import { claimRow, releaseRow } from '../../jobs/claims';
@@ -8,6 +8,7 @@ import { HandlesJob, JobHandler } from '../../jobs/handles-job';
 import { JobsService } from '../../jobs/jobs.service';
 import type { ObjectStorage } from '../../storage/object-storage';
 import { STORAGE } from '../../storage/object-storage';
+import { NotificationsService } from '../notifications/notifications.service';
 import { MEASURE_TYPES, MEASURE_UNITS, MEASURERS, measurerFor } from './measurers';
 import type { Measurer } from './measurers';
 
@@ -31,12 +32,15 @@ const measureUnits: ReadonlySet<string> = new Set(MEASURE_UNITS);
 @Injectable()
 @HandlesJob('file.measure')
 export class MeasureHandler implements JobHandler<MeasurePayload>, OnModuleInit {
+  private readonly logger = new Logger(MeasureHandler.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jobs: JobsService,
     private readonly sweeper: ClaimSweeper,
     @Inject(STORAGE) private readonly storage: ObjectStorage,
     @Inject(MEASURERS) private readonly measurers: readonly Measurer[],
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Completed versions whose job was lost, and claims whose runner died, are queued again. */
@@ -67,6 +71,7 @@ export class MeasureHandler implements JobHandler<MeasurePayload>, OnModuleInit 
       return;
     }
 
+    let measured: { originalName: string; measures: { type: string; value: string; unit: string }[] } | null;
     try {
       const version = await this.prisma.inTenant(tenantId, (tx) =>
         tx.fileVersion.findUniqueOrThrow({ where: { id: versionId }, include: { file: true } }),
@@ -81,25 +86,30 @@ export class MeasureHandler implements JobHandler<MeasurePayload>, OnModuleInit 
       });
       this.check(measurer.name, measures);
 
-      await this.prisma.inTenant(tenantId, async (tx) => {
+      measured = await this.prisma.inTenant(tenantId, async (tx) => {
         const { count } = await tx.fileVersion.updateMany({
           where: { id: versionId, status: 'measuring' },
           data: { checksum, status: 'measured', claimedAt: null },
         });
         if (count === 0) {
           // The sweeper took the claim back; whoever holds it now writes the result.
-          return;
+          return null;
         }
         await tx.measure.deleteMany({ where: { fileVersionId: versionId } });
         await tx.measure.createMany({
           data: measures.map((measure) => ({ fileVersionId: versionId, ...measure })),
         });
+        return { originalName: version.originalName, measures };
       });
     } catch (error) {
       // Hand the claim back, or the retry would find it taken and skip the
       // version for good (Review Focus 5).
       await this.prisma.inTenant(tenantId, (tx) => releaseRow(tx, 'file_version', versionId, 'measuring', 'uploaded'));
       throw error;
+    }
+
+    if (measured) {
+      await this.notifyUploader(tenantId, versionId, measured);
     }
   }
 
@@ -110,6 +120,34 @@ export class MeasureHandler implements JobHandler<MeasurePayload>, OnModuleInit 
         data: { status: 'failed', claimedAt: null },
       }),
     );
+  }
+
+  /**
+   * After the commit (plan 3a, N3), and only from the run that set `measured`.
+   * A failure is logged, not thrown: the version is measured either way, and a
+   * retry would find it so and send nothing.
+   */
+  private async notifyUploader(
+    tenantId: string,
+    versionId: string,
+    measured: { originalName: string; measures: { type: string; value: string; unit: string }[] },
+  ): Promise<void> {
+    const summary =
+      measured.measures.length === 0
+        ? 'no measures for this type'
+        : measured.measures.map((measure) => `${measure.type}: ${measure.value} ${measure.unit}`).join(', ');
+    try {
+      await this.notifications.raise(
+        tenantId,
+        'file.measured',
+        { type: 'file_version', id: versionId },
+        { file_name: measured.originalName, measures: summary },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not raise file.measured for version ${versionId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   private async sha256(key: string): Promise<string> {

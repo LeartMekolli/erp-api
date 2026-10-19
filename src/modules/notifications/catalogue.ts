@@ -4,7 +4,9 @@ import type { TenantPermission } from '../identity/permissions';
 export type Audience =
   | { kind: 'invitee' }
   | { kind: 'user' }
-  | { kind: 'permission'; permission: TenantPermission };
+  | { kind: 'permission'; permission: TenantPermission }
+  /** The user who uploaded the file version the notification is about. */
+  | { kind: 'uploader' };
 
 export interface VariableSpec {
   /** Shown by the template preview. */
@@ -20,7 +22,7 @@ export interface VariableSpec {
 export interface EventDefinition {
   audience: Audience;
   channels: readonly ('email' | 'feed')[];
-  subjectType: 'invitation' | 'user';
+  subjectType: 'invitation' | 'user' | 'file_version';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -96,6 +98,22 @@ export const EVENTS = {
         body:
           'Hello {{ user_name }},\n\nYour roles are now: {{ roles }}.\n\n' +
           'If you did not expect this change, contact your workspace owner.',
+      },
+    },
+  },
+  // Raised by the measurement job once a version is checksummed and measured (plan S10).
+  'file.measured': {
+    audience: { kind: 'uploader' },
+    channels: ['email', 'feed'],
+    subjectType: 'file_version',
+    variables: {
+      file_name: { sample: 'poster-a2.pdf' },
+      measures: { sample: 'page_count: 3 count' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ file_name }} is ready',
+        body: 'Your file {{ file_name }} has been checked and measured.\n\nMeasures: {{ measures }}',
       },
     },
   },

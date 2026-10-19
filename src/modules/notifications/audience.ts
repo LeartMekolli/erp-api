@@ -41,6 +41,17 @@ export async function resolveAudience(
       }
       break;
     }
+    case 'uploader': {
+      const version = await tx.fileVersion.findFirst({
+        where: { id: notification.subjectId },
+        include: { uploadedBy: true },
+      });
+      if (version?.uploadedBy.status === 'active') {
+        const user = version.uploadedBy;
+        targets.push({ userId: user.id, email: user.email, locale: user.locale });
+      }
+      break;
+    }
     case 'permission': {
       const subjectUser =
         notification.subjectType === 'user'
