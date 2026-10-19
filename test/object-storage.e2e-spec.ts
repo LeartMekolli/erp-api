@@ -23,17 +23,14 @@ describe('object storage', () => {
 
   const newKey = () => `e2e/${newId()}/${newId()}`;
 
-  /** Signs a PUT for exactly these bytes and type, and uploads them. */
+  /** Signs a PUT for exactly these bytes and type, and uploads them with the headers storage asks for. */
   async function store(key: string, body: Buffer, contentType: string): Promise<void> {
-    const url = await storage.presignPut(key, {
+    const signed = await storage.presignPut(key, {
       contentType,
       contentLength: body.length,
       expiresInSeconds: 60,
     });
-    const response = await putToSignedUrl(url, body, {
-      'content-type': contentType,
-      'content-length': String(body.length),
-    });
+    const response = await putToSignedUrl(signed.url, body, signed.headers);
     await response.arrayBuffer();
     expect(response.status).toBe(200);
   }
@@ -46,15 +43,47 @@ describe('object storage', () => {
     expect(await storage.head(key)).toEqual({ size: 5, contentType: 'text/plain' });
   });
 
-  it('a PUT with more bytes than signed is refused', async () => {
-    const key = newKey();
-    const url = await storage.presignPut(key, {
+  it('a PUT asks for exactly the signed type and length, and only to create', async () => {
+    const signed = await storage.presignPut(newKey(), {
       contentType: 'text/plain',
       contentLength: 5,
       expiresInSeconds: 60,
     });
 
-    const response = await putToSignedUrl(url, Buffer.from('hello!'), { 'content-type': 'text/plain' });
+    expect(signed.headers).toEqual({ 'content-type': 'text/plain', 'content-length': '5', 'if-none-match': '*' });
+  });
+
+  it('a second PUT to the same key is refused, so a stored object never changes', async () => {
+    const key = newKey();
+    const signed = await storage.presignPut(key, {
+      contentType: 'text/plain',
+      contentLength: 5,
+      expiresInSeconds: 60,
+    });
+    const first = await putToSignedUrl(signed.url, Buffer.from('hello'), signed.headers);
+    await first.arrayBuffer();
+    expect(first.status).toBe(200);
+
+    const second = await putToSignedUrl(signed.url, Buffer.from('HELLO'), signed.headers);
+    await second.arrayBuffer();
+
+    expect(second.status).toBe(412);
+    const chunks: Buffer[] = [];
+    for await (const chunk of await storage.read(key)) {
+      chunks.push(Buffer.from(chunk as Uint8Array));
+    }
+    expect(Buffer.concat(chunks).toString()).toBe('hello');
+  });
+
+  it('a PUT with more bytes than signed is refused', async () => {
+    const key = newKey();
+    const signed = await storage.presignPut(key, {
+      contentType: 'text/plain',
+      contentLength: 5,
+      expiresInSeconds: 60,
+    });
+
+    const response = await putToSignedUrl(signed.url, Buffer.from('hello!'), signed.headers);
     await response.arrayBuffer();
 
     expect(response.status).toBe(403);
@@ -63,13 +92,16 @@ describe('object storage', () => {
 
   it('a PUT with another content type than signed is refused', async () => {
     const key = newKey();
-    const url = await storage.presignPut(key, {
+    const signed = await storage.presignPut(key, {
       contentType: 'image/png',
       contentLength: 5,
       expiresInSeconds: 60,
     });
 
-    const response = await putToSignedUrl(url, Buffer.from('hello'), { 'content-type': 'text/html' });
+    const response = await putToSignedUrl(signed.url, Buffer.from('hello'), {
+      ...signed.headers,
+      'content-type': 'text/html',
+    });
     await response.arrayBuffer();
 
     expect(response.status).toBe(403);

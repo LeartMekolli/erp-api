@@ -19,6 +19,10 @@ import { startTestWorker } from './worker-harness';
  * worker sends through Mailpit, and the test acts on the link it receives.
  */
 describe('identity emails', () => {
+  // These tests wait for a real email through the worker and Mailpit. With every
+  // e2e file running in parallel that can take longer than Jest's default 5 s.
+  jest.setTimeout(15_000);
+
   let app: INestApplication;
   let worker: TestingModule;
   let prisma: PrismaService;

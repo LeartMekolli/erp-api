@@ -124,7 +124,11 @@ describe('files: starting uploads', () => {
       completed_at: null,
     });
     expect(upload.method).toBe('PUT');
-    expect(upload.headers).toEqual({ 'content-type': 'application/pdf', 'content-length': String(pdf.length) });
+    expect(upload.headers).toEqual({
+      'content-type': 'application/pdf',
+      'content-length': String(pdf.length),
+      'if-none-match': '*',
+    });
     const expiresAt = Date.parse(upload.expires_at);
     expect(expiresAt).toBeGreaterThanOrEqual(before + 15 * 60_000 - 1000);
     expect(expiresAt).toBeLessThanOrEqual(Date.now() + 15 * 60_000 + 1000);
@@ -136,6 +140,11 @@ describe('files: starting uploads', () => {
       size: pdf.length,
       contentType: 'application/pdf',
     });
+
+    // Write-once: the same link cannot replace the bytes afterwards.
+    const again = await putToSignedUrl(upload.url, Buffer.from(pdf.toString().toUpperCase()), upload.headers);
+    await again.arrayBuffer();
+    expect(again.status).toBe(412);
   });
 
   it('builds the storage key from ids, whatever the name', async () => {

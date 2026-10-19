@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-export const QUEUES = ['notifications', 'maintenance'] as const;
+export const QUEUES = ['notifications', 'maintenance', 'files'] as const;
 export type QueueName = (typeof QUEUES)[number];
 
 const DEFAULT_ATTEMPTS = 5;
@@ -69,6 +69,12 @@ export const JOBS = {
     jobId: (p) => [p.notificationId, addressKey(p.to)],
     attempts: 10,
     backoffMs: 30_000,
+  }),
+  // Checksums a completed file version and runs its measurer (spec 5.3).
+  'file.measure': defineJob({
+    queue: 'files',
+    payload: z.object({ tenantId: z.uuid(), fileId: z.uuid(), versionId: z.uuid() }),
+    jobId: (p) => [p.versionId],
   }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 

@@ -9,7 +9,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '../config/config.service';
-import type { ObjectStorage } from './object-storage';
+import type { ObjectStorage, SignedPutHeaders } from './object-storage';
 
 /**
  * Types a browser may show in place (plan S8). Everything else, SVG and HTML
@@ -34,6 +34,8 @@ export function contentDisposition(fileName: string, contentType: string): strin
 
   let name = fileName
     .normalize('NFC')
+    // Control characters are matched on purpose: CR and LF in a name would start a new header.
+    // oxlint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f"\\/]/g, '_')
     .trim();
   if (/^\.*$/.test(name)) {
@@ -74,22 +76,31 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
     });
   }
 
-  presignPut(
+  async presignPut(
     key: string,
     options: { contentType: string; contentLength: number; expiresInSeconds: number },
-  ): Promise<string> {
+  ): Promise<{ url: string; headers: SignedPutHeaders }> {
+    const headers: SignedPutHeaders = {
+      'content-type': options.contentType,
+      'content-length': String(options.contentLength),
+      // Create-only: a second PUT, even through this same link, gets 412, so the
+      // bytes that were checked and measured are the bytes that stay.
+      'if-none-match': '*',
+    };
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       ContentType: options.contentType,
       ContentLength: options.contentLength,
+      IfNoneMatch: '*',
     });
-    // The presigner leaves Content-Type unsigned by default; signing both
-    // headers makes storage refuse any other type or size (plan S4).
-    return getSignedUrl(this.client, command, {
+    // The presigner leaves Content-Type unsigned by default; signing every
+    // header makes storage refuse any other type, size or overwrite (plan S4).
+    const url = await getSignedUrl(this.client, command, {
       expiresIn: options.expiresInSeconds,
-      signableHeaders: new Set(['content-type', 'content-length']),
+      signableHeaders: new Set(Object.keys(headers)),
     });
+    return { url, headers };
   }
 
   presignGet(

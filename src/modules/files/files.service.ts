@@ -1,6 +1,7 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { newId } from '../../common/ids/uuid';
 import { PrismaService } from '../../database/prisma.service';
+import { JobsService } from '../../jobs/jobs.service';
 import type { ObjectStorage } from '../../storage/object-storage';
 import { STORAGE } from '../../storage/object-storage';
 import type { TenantAuth } from '../identity/auth-context';
@@ -16,6 +17,7 @@ export type DeclaredUnit = (typeof DECLARED_UNITS)[number];
 
 /** Plan S4. */
 const UPLOAD_EXPIRES_SECONDS = 15 * 60;
+const DOWNLOAD_EXPIRES_SECONDS = 5 * 60;
 
 export interface NewUpload {
   name: string;
@@ -30,8 +32,11 @@ export interface NewUpload {
  */
 @Injectable()
 export class FilesService {
+  private readonly logger = new Logger(FilesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
+    private readonly jobs: JobsService,
     @Inject(STORAGE) private readonly storage: ObjectStorage,
   ) {}
 
@@ -132,22 +137,88 @@ export class FilesService {
     };
   }
 
+  /**
+   * Checks the stored object against the declaration (plan S5) and hands the
+   * version to the measurement job. Completing again is a no-op that returns
+   * the version as it is now.
+   */
+  async complete(tenantId: string, fileId: string, versionId: string): Promise<VersionResponse> {
+    const version = await this.findVersion(tenantId, fileId, versionId);
+    if (version.status !== 'pending') {
+      return toVersionResponse(version);
+    }
+
+    const stored = await this.storage.head(version.storageKey);
+    if (!stored) {
+      throw new ConflictException('Upload not found');
+    }
+    if (stored.size !== Number(version.size) || stored.contentType.toLowerCase() !== version.contentType) {
+      throw new ConflictException('Upload does not match what was declared');
+    }
+
+    const { won, current } = await this.prisma.inTenant(tenantId, async (tx) => {
+      const { count } = await tx.fileVersion.updateMany({
+        where: { id: versionId, status: 'pending' },
+        data: { status: 'uploaded', completedAt: new Date() },
+      });
+      return { won: count === 1, current: await tx.fileVersion.findUniqueOrThrow({ where: { id: versionId } }) };
+    });
+
+    // After the commit, so the job never finds the version still pending. Only
+    // the request that moved it enqueues; a lost enqueue is recovered by the
+    // claim sweeper a minute after completion.
+    if (won) {
+      try {
+        await this.jobs.enqueue('file.measure', { tenantId, fileId, versionId });
+      } catch (error) {
+        this.logger.warn(
+          `Could not enqueue measurement of version ${versionId}; the sweeper will: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return toVersionResponse(current);
+  }
+
+  /** A short-lived GET (plan S4, S8), once the upload has been completed. */
+  async downloadUrl(tenantId: string, fileId: string, versionId: string): Promise<{ url: string; expires_at: string }> {
+    const version = await this.findVersion(tenantId, fileId, versionId);
+    if (version.status === 'pending') {
+      throw new ConflictException('Upload not completed');
+    }
+
+    const expiresAt = new Date(Date.now() + DOWNLOAD_EXPIRES_SECONDS * 1000);
+    const url = await this.storage.presignGet(version.storageKey, {
+      fileName: version.originalName,
+      contentType: version.contentType,
+      expiresInSeconds: DOWNLOAD_EXPIRES_SECONDS,
+    });
+    return { url, expires_at: expiresAt.toISOString() };
+  }
+
+  /** The version, only under its own file and only in this tenant (RLS); 404 otherwise. */
+  private async findVersion(tenantId: string, fileId: string, versionId: string) {
+    const version = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.fileVersion.findFirst({ where: { id: versionId, fileId } }),
+    );
+    if (!version) {
+      throw new NotFoundException('File version not found');
+    }
+    return version;
+  }
+
   private keyFor(tenantId: string, fileId: string, versionId: string): string {
     return `${tenantId}/${fileId}/${versionId}`;
   }
 
   private async signUpload(key: string, input: NewUpload): Promise<UploadResponse> {
     const expiresAt = new Date(Date.now() + UPLOAD_EXPIRES_SECONDS * 1000);
-    const url = await this.storage.presignPut(key, {
+    const { url, headers } = await this.storage.presignPut(key, {
       contentType: input.contentType,
       contentLength: input.size,
       expiresInSeconds: UPLOAD_EXPIRES_SECONDS,
     });
-    return {
-      url,
-      method: 'PUT',
-      headers: { 'content-type': input.contentType, 'content-length': String(input.size) },
-      expires_at: expiresAt.toISOString(),
-    };
+    return { url, method: 'PUT', headers, expires_at: expiresAt.toISOString() };
   }
 }

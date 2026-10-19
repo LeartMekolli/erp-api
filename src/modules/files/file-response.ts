@@ -1,4 +1,5 @@
 import type { File, FileVersion, Measure } from '../../generated/prisma/client';
+import type { SignedPutHeaders } from '../../storage/object-storage';
 
 export interface FileResponse {
   id: string;
@@ -33,8 +34,8 @@ export interface MeasureResponse {
 export interface UploadResponse {
   url: string;
   method: 'PUT';
-  /** Exactly what the PUT must carry; the signature covers both. */
-  headers: { 'content-type': string; 'content-length': string };
+  /** Exactly what the PUT must carry; the signature covers them all. */
+  headers: SignedPutHeaders;
   expires_at: string;
 }
 

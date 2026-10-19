@@ -5,6 +5,7 @@ import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { JobsWorkerModule } from './jobs/jobs-worker.module';
 import { JobsModule } from './jobs/jobs.module';
+import { FilesModule } from './modules/files/files.module';
 import { IdempotencyModule } from './modules/idempotency/idempotency.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { RedisModule } from './redis/redis.module';
@@ -26,6 +27,7 @@ import { StorageModule } from './storage/storage.module';
     JobsWorkerModule,
     IdempotencyModule,
     NotificationsModule,
+    FilesModule,
   ],
 })
 export class WorkerModule {}

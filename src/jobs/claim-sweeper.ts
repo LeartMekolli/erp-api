@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
-import type { Prisma } from '../generated/prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import { HandlesJob, JobHandler } from './handles-job';
 import { claimableTableSql } from './claims';
 import type { ClaimableTable } from './claims';
@@ -12,6 +12,8 @@ export interface Claimable {
   claimed: string;
   /** A pending row this old has lost its job (the enqueue failed). */
   lostAfterMs: number;
+  /** When a row became pending: its creation by default, or a later moment such as completion. */
+  lostSince?: 'created_at' | 'completed_at';
   /** A claim this old belongs to a runner that died. */
   staleAfterMs: number;
   requeue(tenantId: string, id: string): Promise<void>;
@@ -61,6 +63,8 @@ export class ClaimSweeper {
 
   private async findWork(tx: Prisma.TransactionClient, claimable: Claimable): Promise<string[]> {
     const table = claimableTableSql(claimable.table);
+    // From a fixed union, never from input, like the table name.
+    const since = Prisma.raw(claimable.lostSince ?? 'created_at');
 
     const stale = await tx.$queryRaw<{ id: string }[]>`
       UPDATE ${table} SET status = ${claimable.pending}, claimed_at = NULL
@@ -70,7 +74,7 @@ export class ClaimSweeper {
     const lost = await tx.$queryRaw<{ id: string }[]>`
       SELECT id FROM ${table}
       WHERE status = ${claimable.pending}
-        AND created_at < now() - (${claimable.lostAfterMs} * interval '1 millisecond')`;
+        AND ${since} < now() - (${claimable.lostAfterMs} * interval '1 millisecond')`;
 
     return [...new Set([...stale, ...lost].map((row) => row.id))];
   }

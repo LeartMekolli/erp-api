@@ -2,17 +2,28 @@ import type { Readable } from 'node:stream';
 
 export const STORAGE = Symbol('STORAGE');
 
+/** A type, not an interface, so it also fits `Record<string, string>`. */
+export type SignedPutHeaders = {
+  'content-type': string;
+  'content-length': string;
+  'if-none-match': '*';
+};
+
 /**
  * Private object storage (D60). Files enter and leave only through signed
  * URLs; the API itself only signs, checks with HEAD, and (in the worker) reads.
  * Keys are built by the caller from ids alone, never from a client's name.
  */
 export interface ObjectStorage {
-  /** A PUT URL that accepts exactly this content type and length. */
+  /**
+   * A PUT URL that accepts exactly this content type and length, and only to
+   * create the object: once stored, it can never be replaced through any link.
+   * `headers` are what the PUT must carry; the signature covers them all.
+   */
   presignPut(
     key: string,
     options: { contentType: string; contentLength: number; expiresInSeconds: number },
-  ): Promise<string>;
+  ): Promise<{ url: string; headers: SignedPutHeaders }>;
 
   /**
    * A GET URL whose response carries `contentType` and a `Content-Disposition`

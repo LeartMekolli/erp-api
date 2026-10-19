@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
@@ -86,5 +86,26 @@ export class FilesController {
     @Param('id', new ZodValidationPipe(idSchema)) id: string,
   ): Promise<FileResponse & { versions: (VersionResponse & { measures: MeasureResponse[] })[] }> {
     return this.files.get(tenantId, id);
+  }
+
+  @RequirePermission('file.write')
+  @Post(':id/versions/:versionId/complete')
+  @HttpCode(200)
+  complete(
+    @CurrentTenant() tenantId: string,
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @Param('versionId', new ZodValidationPipe(idSchema)) versionId: string,
+  ): Promise<VersionResponse> {
+    return this.files.complete(tenantId, id, versionId);
+  }
+
+  @RequirePermission('file.read')
+  @Get(':id/versions/:versionId/url')
+  downloadUrl(
+    @CurrentTenant() tenantId: string,
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @Param('versionId', new ZodValidationPipe(idSchema)) versionId: string,
+  ): Promise<{ url: string; expires_at: string }> {
+    return this.files.downloadUrl(tenantId, id, versionId);
   }
 }
