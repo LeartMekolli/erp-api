@@ -2,6 +2,33 @@
 # started from; otherwise each checkout gets its own containers and volume.
 name: erp-api
 
+# The application's settings inside Compose: the same values as .env.example,
+# with service names instead of localhost.
+x-app-environment: &app-environment
+  NODE_ENV: development
+  PORT: '3000'
+  DATABASE_URL: postgresql://erp_app:app_pw@postgres:5432/erp?schema=public
+  DATABASE_MIGRATE_URL: postgresql://erp_owner:owner_pw@postgres:5432/erp?schema=public
+  REDIS_URL: redis://redis:6379
+  APP_SECRET: development_secret_at_least_32_chars
+  JWT_SECRET: development_jwt_secret_at_least_32_chars
+  APP_BASE_DOMAIN: localhost
+  LOG_LEVEL: info
+  QUEUE_PREFIX: erp
+  SMTP_URL: smtp://mailpit:1025
+  MAIL_FROM: ERP <no-reply@example.test>
+  WEB_URL_TEMPLATE: http://{tenant}.localhost:5173
+
+x-app-depends-on: &app-depends-on
+  migrate:
+    condition: service_completed_successfully
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  mailpit:
+    condition: service_healthy
+
 services:
   postgres:
     image: postgres:16
@@ -34,6 +61,48 @@ services:
       test: ['CMD', '/mailpit', 'readyz']
       interval: 5s
       retries: 10
+
+  # The application itself, only with `--profile app`. Without the profile,
+  # `docker compose up` starts the infrastructure alone and `npm run start:dev`
+  # keeps port 3000.
+
+  # Applies migrations and seeds, then exits; api and worker wait for it.
+  migrate:
+    profiles: [app]
+    build:
+      context: .
+      target: build
+    command: ['sh', '-c', 'npx prisma migrate deploy && node dist/cli/seed.js']
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  api:
+    profiles: [app]
+    build: .
+    command: ['node', 'dist/main']
+    environment: *app-environment
+    ports: ['3000:3000']
+    depends_on: *app-depends-on
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3000/health/ready').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      retries: 10
+
+  # Runs the jobs; serves no HTTP.
+  worker:
+    profiles: [app]
+    build: .
+    command: ['node', 'dist/worker']
+    environment: *app-environment
+    depends_on: *app-depends-on
 
 volumes:
   pgdata:

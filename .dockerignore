@@ -1,0 +1,19 @@
+# Built inside the image, or never needed in it.
+node_modules
+dist
+dist-worker
+src/generated
+coverage
+*.tsbuildinfo
+test
+
+# Local only: secrets, history, notes.
+.env
+.git
+.github
+.context
+.superpowers
+docs
+.idea
+.vscode
+.DS_Store

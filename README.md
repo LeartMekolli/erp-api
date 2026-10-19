@@ -37,6 +37,21 @@ The seed creates a platform admin (`admin@example.test`, password printed once) 
 npm run tenant:create -- --name="Acme Print" --slug=acme-print --owner-email=owner@acme.example [--currency=EUR] [--locale=en] [--timezone=UTC]
 ```
 
+## Running everything in Docker
+
+The API and the worker can run in Compose too, built from the `Dockerfile` (one image, two commands). This is how a deployment runs them, and it checks that the whole system starts from nothing:
+
+```bash
+docker compose down -v
+docker compose --profile app up -d --build
+```
+
+`migrate` applies the migrations and the seed, then exits; `api` (port 3000) and `worker` start after it. `docker compose ps -a` shows `migrate` as exited (0) and `api` as healthy. The seed's invitation emails appear in Mailpit, sent by the containerised worker. Stop the `app` services before going back to `npm run start:dev`, which needs port 3000:
+
+```bash
+docker compose --profile app stop api worker
+```
+
 ## Authentication
 
 - **Platform admins** act across tenants (create, list, suspend). Create one with `npm run platform-admin:create -- --email=you@example.test`; it prints a generated password once. They log in at `POST /platform/auth/login` and get a 15-minute access token with no refresh token.
