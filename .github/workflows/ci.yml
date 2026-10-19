@@ -53,6 +53,12 @@ jobs:
       SMTP_URL: smtp://localhost:1025
       MAIL_FROM: ERP <no-reply@example.test>
       WEB_URL_TEMPLATE: http://{tenant}.localhost:5173
+      S3_ENDPOINT: http://localhost:9000
+      S3_REGION: auto
+      S3_BUCKET: erp-files
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: minio-password
+      S3_FORCE_PATH_STYLE: 'true'
 
     steps:
       - uses: actions/checkout@v5
@@ -68,6 +74,13 @@ jobs:
       # roles are created the same way, from the same file.
       - name: Create database roles
         run: psql "postgresql://postgres:postgres@localhost:5432/erp" -v ON_ERROR_STOP=1 -f docker/postgres-init/01-roles.sql
+
+      # Service containers cannot pass MinIO its `server` command, so MinIO and
+      # its bucket come from docker-compose.yml, as locally.
+      - name: Start MinIO and create the bucket
+        run: |
+          docker compose up -d --wait minio
+          docker compose run --rm minio-init
 
       - run: npx prisma generate
       - run: npx prisma migrate deploy

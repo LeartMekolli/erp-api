@@ -18,6 +18,12 @@ x-app-environment: &app-environment
   SMTP_URL: smtp://mailpit:1025
   MAIL_FROM: ERP <no-reply@example.test>
   WEB_URL_TEMPLATE: http://{tenant}.localhost:5173
+  S3_ENDPOINT: http://minio:9000
+  S3_REGION: auto
+  S3_BUCKET: erp-files
+  S3_ACCESS_KEY_ID: minio
+  S3_SECRET_ACCESS_KEY: minio-password
+  S3_FORCE_PATH_STYLE: 'true'
 
 x-app-depends-on: &app-depends-on
   migrate:
@@ -28,6 +34,8 @@ x-app-depends-on: &app-depends-on
     condition: service_healthy
   mailpit:
     condition: service_healthy
+  minio-init:
+    condition: service_completed_successfully
 
 services:
   postgres:
@@ -62,6 +70,35 @@ services:
       interval: 5s
       retries: 10
 
+  # Stands in for Cloudflare R2 locally and in CI. MinIO no longer publishes
+  # images, so this is Chainguard's rebuild of it, pinned by digest so it only
+  # changes when we choose (pull a newer latest and replace the digest). Console at
+  # http://localhost:9001 (minio / minio-password).
+  minio:
+    image: cgr.dev/chainguard/minio:latest@sha256:2915cb406f38ed6ff9634de0a3e4a9423e2dda06a6f1aca18f8c968aa37a01f6
+    command: ['server', '/home/nonroot/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-password
+    ports: ['9000:9000', '9001:9001']
+    volumes:
+      # The image runs as a non-root user that owns /home/nonroot; a new volume
+      # mounted there inherits that ownership, so MinIO can write to it.
+      - miniodata:/home/nonroot
+
+  # Waits for MinIO, creates the private bucket once, then exits. The
+  # application never creates buckets, and none is ever made public. The -dev
+  # variant carries the shell the wait loop needs.
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest-dev@sha256:f4ffdb6d79586e6255d138641ab5e6b0dca8f188df4291fd62a3278785bbe468
+    entrypoint: ['sh', '-c']
+    command:
+      - |
+        until mc alias set local http://minio:9000 minio minio-password >/dev/null 2>&1; do sleep 1; done
+        mc mb --ignore-existing local/erp-files
+    depends_on:
+      - minio
+
   # The application itself, only with `--profile app`. Without the profile,
   # `docker compose up` starts the infrastructure alone and `npm run start:dev`
   # keeps port 3000.
@@ -79,6 +116,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   api:
     profiles: [app]
@@ -106,3 +145,4 @@ services:
 
 volumes:
   pgdata:
+  miniodata:

@@ -18,6 +18,7 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
 import { PlatformApiModule } from './platform/platform-api.module';
 import { RedisModule } from './redis/redis.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { RedisModule } from './redis/redis.module';
     ErrorsModule,
     DatabaseModule,
     RedisModule,
+    StorageModule,
     JobsModule,
     IdentityModule,
     AuthModule,

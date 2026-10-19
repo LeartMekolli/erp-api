@@ -28,6 +28,16 @@ const envSchema = z
       .string()
       .refine((value) => value.includes('{tenant}'), 'must contain {tenant}')
       .refine((value) => URL.canParse(value.replace('{tenant}', 'tenant')), 'must be a URL'),
+    // File storage, any S3-compatible service: MinIO locally, Cloudflare R2 in production (plan S1).
+    S3_ENDPOINT: z.url(),
+    S3_REGION: z.string().min(1).default('auto'),
+    S3_BUCKET: z.string().min(1),
+    S3_ACCESS_KEY_ID: z.string().min(1),
+    S3_SECRET_ACCESS_KEY: z.string().min(1),
+    // MinIO serves buckets at <endpoint>/<bucket>; R2 accepts either form.
+    S3_FORCE_PATH_STYLE: z.enum(['true', 'false']).default('false'),
+    // The largest upload accepted, in bytes (plan S4).
+    FILE_MAX_BYTES: z.coerce.number().int().positive().default(104_857_600),
   })
   .superRefine((env, ctx) => {
     // One leaked secret must not compromise both cursors and access tokens.
