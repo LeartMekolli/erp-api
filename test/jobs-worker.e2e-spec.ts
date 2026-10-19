@@ -8,7 +8,7 @@ import { requestContext } from '../src/common/request-context/request-context';
 import { ERROR_REPORTER } from '../src/common/reporting/reporting.module';
 import { HandlesJob, JobContext, JobHandler } from '../src/jobs/handles-job';
 import { JobsService } from '../src/jobs/jobs.service';
-import { defineJob, JOB_REGISTRY, JobName, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
+import { defineJob, JOB_REGISTRY, JobName, JobRegistry, JOBS, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
 
@@ -19,7 +19,8 @@ const fixtureJob = () =>
   defineJob({ queue: 'maintenance', payload, jobId: (p) => [p.id], attempts: 3, backoffMs: 10 });
 
 const fixture: JobRegistry = {
-  jobs: { 'test.ok': fixtureJob(), 'test.flaky': fixtureJob(), 'test.broken': fixtureJob() },
+  // The real jobs too: the worker module always provides their handlers.
+  jobs: { ...JOBS, 'test.ok': fixtureJob(), 'test.flaky': fixtureJob(), 'test.broken': fixtureJob() },
   // The real scheduled jobs, whose handlers the worker module always provides.
   scheduled: SCHEDULED_JOBS,
 };
@@ -70,7 +71,7 @@ describe('job worker', () => {
   const previousLevel = process.env.LOG_LEVEL;
 
   const enqueue = (name: string, p: Payload) =>
-    jobs.enqueue(name as JobName, p as Parameters<JobsService['enqueue']>[1]);
+    jobs.enqueue(name as JobName, p as unknown as Parameters<JobsService['enqueue']>[1]);
   const callsFor = (id: string) => calls.filter((call) => call.id === id);
 
   beforeAll(async () => {

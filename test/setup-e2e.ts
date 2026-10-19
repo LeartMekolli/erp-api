@@ -13,6 +13,8 @@ const defaults: Record<string, string> = {
   QUEUE_PREFIX: 'e2e',
   // Request logs would drown test output; logging tests capture their own.
   LOG_LEVEL: 'warn',
+  SMTP_URL: 'smtp://localhost:1025',
+  MAIL_FROM: 'ERP <no-reply@example.test>',
 };
 
 for (const [key, value] of Object.entries(defaults)) {

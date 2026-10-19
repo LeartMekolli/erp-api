@@ -9,7 +9,7 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { HandlesJob, JobHandler } from '../src/jobs/handles-job';
 import { JobsService } from '../src/jobs/jobs.service';
-import { defineJob, JOB_REGISTRY, JobName, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
+import { defineJob, JOB_REGISTRY, JobName, JobRegistry, JOBS, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -30,6 +30,8 @@ class FlipHandler implements JobHandler<{ id: string }> {
 
 const fixture: JobRegistry = {
   jobs: {
+    // The real jobs too: the worker module always provides their handlers.
+    ...JOBS,
     'test.flip': defineJob({
       queue: 'maintenance',
       payload: z.object({ id: z.uuid() }),
@@ -72,7 +74,7 @@ describe('platform jobs', () => {
   async function deadLetteredJob(): Promise<string> {
     const id = newId();
     const jobId = `test.flip/${id}`;
-    await jobs.enqueue('test.flip' as JobName, { id } as Parameters<JobsService['enqueue']>[1]);
+    await jobs.enqueue('test.flip' as JobName, { id } as unknown as Parameters<JobsService['enqueue']>[1]);
     await waitFor(async () => ((await (await jobs.queue('maintenance').getJob(jobId))?.getState()) === 'failed' ? true : undefined));
     return jobId;
   }

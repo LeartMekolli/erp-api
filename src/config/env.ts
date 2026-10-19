@@ -19,6 +19,10 @@ const envSchema = z
       .regex(/^[a-z0-9-]{1,32}$/)
       .default('erp'),
     SENTRY_DSN: z.url().optional(),
+    // Mailpit locally (smtp://localhost:1025), Resend's SMTP endpoint in production (F7).
+    SMTP_URL: z.url(),
+    // The sender when a tenant has not set notification.sender: an address, or "Name <address>".
+    MAIL_FROM: z.string().regex(/@/, 'must contain an email address'),
   })
   .superRefine((env, ctx) => {
     // One leaked secret must not compromise both cursors and access tokens.

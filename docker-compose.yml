@@ -26,5 +26,14 @@ services:
       interval: 5s
       retries: 10
 
+  # Catches every email sent locally. Web UI and API at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit
+    ports: ['1025:1025', '8025:8025']
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 5s
+      retries: 10
+
 volumes:
   pgdata:

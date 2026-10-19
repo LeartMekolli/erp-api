@@ -10,6 +10,8 @@ function configFor(redisUrl: string): ConfigService {
       REDIS_URL: redisUrl,
       APP_SECRET: 'a'.repeat(32),
       JWT_SECRET: 'b'.repeat(32),
+      SMTP_URL: 'smtp://localhost:1025',
+      MAIL_FROM: 'ERP <no-reply@example.test>',
     }),
   );
 }

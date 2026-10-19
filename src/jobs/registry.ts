@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const QUEUES = ['notifications', 'maintenance'] as const;
@@ -41,7 +42,31 @@ export function defineJob<S extends z.ZodType>(def: {
   };
 }
 
-export const JOBS = {} satisfies Record<string, JobDefinition<z.ZodType>>;
+/** Short and stable, so an address never appears in a job id. */
+function addressKey(address: string): string {
+  return createHash('sha256').update(address).digest('hex').slice(0, 16);
+}
+
+export const JOBS = {
+  // Resolves a notification's audience, writes the feed, queues one email per address.
+  'notification.dispatch': defineJob({
+    queue: 'notifications',
+    payload: z.object({ tenantId: z.uuid(), notificationId: z.uuid() }),
+    jobId: (p) => [p.notificationId],
+  }),
+  // Sends one notification to one address and logs the attempt.
+  'notification.email': defineJob({
+    queue: 'notifications',
+    payload: z.object({
+      tenantId: z.uuid(),
+      notificationId: z.uuid(),
+      to: z.email(),
+      locale: z.string(),
+      userId: z.uuid().optional(),
+    }),
+    jobId: (p) => [p.notificationId, addressKey(p.to)],
+  }),
+} satisfies Record<string, JobDefinition<z.ZodType>>;
 
 export const SCHEDULED_JOBS = {
   // Recovers claimed work whose runner died and pending work whose job was lost (rule A1).

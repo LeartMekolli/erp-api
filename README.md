@@ -21,6 +21,8 @@ npm run start:dev
 
 The API listens on http://localhost:3000. `GET /health/ready` reports whether Postgres and Redis are reachable.
 
+Emails sent locally go to Mailpit, started by `docker compose up`; read them at http://localhost:8025. Nothing reaches a real inbox.
+
 Background jobs run in a separate process. In a second terminal:
 
 ```bash

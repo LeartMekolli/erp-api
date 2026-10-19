@@ -6,6 +6,8 @@ const valid = {
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'a'.repeat(32),
   JWT_SECRET: 'j'.repeat(32),
+  SMTP_URL: 'smtp://localhost:1025',
+  MAIL_FROM: 'ERP <no-reply@example.test>',
 } as NodeJS.ProcessEnv;
 
 describe('ConfigService', () => {
@@ -42,6 +44,8 @@ describe('ConfigService', () => {
       APP_BASE_DOMAIN: 'localhost',
       LOG_LEVEL: 'info',
       QUEUE_PREFIX: 'erp',
+      SMTP_URL: 'smtp://localhost:1025',
+      MAIL_FROM: 'ERP <no-reply@example.test>',
       SENTRY_DSN: undefined,
     });
 
