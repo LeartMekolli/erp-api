@@ -6,6 +6,7 @@ import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { NotificationsService } from '../notifications/notifications.service';
 import { UserResponse, toUserResponse } from './user-response';
 
 export type UserStatus = 'active' | 'deactivated';
@@ -30,6 +31,7 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async list(
@@ -80,13 +82,17 @@ export class UsersService {
     });
   }
 
-  /** Replaces the user's roles. Role ids the tenant cannot see are "not found". */
+  /**
+   * Replaces the user's roles. Role ids the tenant cannot see are "not found".
+   * When the set actually changed, the user is told once it has committed.
+   */
   async setRoles(auth: TenantAuth, userId: string, roleIds: string[]): Promise<{ role_ids: string[] }> {
-    return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      if (!(await tx.user.findUnique({ where: { id: userId }, select: { id: true } }))) {
+    const result = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, name: true } });
+      if (!user) {
         throw new NotFoundException('User not found');
       }
-      const roles = await tx.role.findMany({ where: { id: { in: roleIds } }, select: { id: true } });
+      const roles = await tx.role.findMany({ where: { id: { in: roleIds } }, select: { id: true, name: true } });
       if (roles.length !== roleIds.length) {
         throw new NotFoundException('Role not found');
       }
@@ -107,7 +113,21 @@ export class UsersService {
         after: { role_ids: after },
       });
 
-      return { role_ids: after };
+      return {
+        role_ids: after,
+        changed: before.join() !== after.join(),
+        userName: user.name,
+        roleNames: roles.map((role) => role.name).sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })),
+      };
     });
+
+    if (result.changed) {
+      await this.notifications.raise(auth.tenantId, 'user.roles_changed', { type: 'user', id: userId }, {
+        user_name: result.userName,
+        roles: result.roleNames.join(', '),
+      });
+    }
+
+    return { role_ids: result.role_ids };
   }
 }

@@ -8,6 +8,7 @@ const valid = {
   JWT_SECRET: 'j'.repeat(32),
   SMTP_URL: 'smtp://localhost:1025',
   MAIL_FROM: 'ERP <no-reply@example.test>',
+  WEB_URL_TEMPLATE: 'http://{tenant}.localhost:5173',
 } as NodeJS.ProcessEnv;
 
 describe('ConfigService', () => {
@@ -46,6 +47,7 @@ describe('ConfigService', () => {
       QUEUE_PREFIX: 'erp',
       SMTP_URL: 'smtp://localhost:1025',
       MAIL_FROM: 'ERP <no-reply@example.test>',
+      WEB_URL_TEMPLATE: 'http://{tenant}.localhost:5173',
       SENTRY_DSN: undefined,
     });
 

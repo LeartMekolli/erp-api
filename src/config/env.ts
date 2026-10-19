@@ -23,6 +23,11 @@ const envSchema = z
     SMTP_URL: z.url(),
     // The sender when a tenant has not set notification.sender: an address, or "Name <address>".
     MAIL_FROM: z.string().regex(/@/, 'must contain an email address'),
+    // Where links in emails point: the web app, with {tenant} replaced by the tenant's slug (plan N8).
+    WEB_URL_TEMPLATE: z
+      .string()
+      .refine((value) => value.includes('{tenant}'), 'must contain {tenant}')
+      .refine((value) => URL.canParse(value.replace('{tenant}', 'tenant')), 'must be a URL'),
   })
   .superRefine((env, ctx) => {
     // One leaked secret must not compromise both cursors and access tokens.

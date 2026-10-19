@@ -1,16 +1,15 @@
 import { ConflictException } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import { Test, TestingModule } from '@nestjs/testing';
 import { ZodError } from 'zod';
-import { ConfigModule } from '../src/config/config.module';
-import { DatabaseModule } from '../src/database/database.module';
+import { CliModule } from '../src/cli/run-cli';
 import { PrismaService } from '../src/database/prisma.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
-import { PlatformModule } from '../src/platform/platform.module';
 import { TenantService } from '../src/platform/tenant.service';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 
-/** The service as the CLI and seed use it: no HTTP, no Redis. */
+/** The service as the CLI and seed use it: no HTTP. */
 describe('tenant provisioning service', () => {
+  let moduleRef: TestingModule;
   let prisma: PrismaService;
   let tenants: TenantService;
   const slug = `test-${Date.now().toString(36)}`;
@@ -25,9 +24,7 @@ describe('tenant provisioning service', () => {
   const system = { type: 'system' } as const;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [ConfigModule, DatabaseModule, PlatformModule],
-    })
+    moduleRef = await Test.createTestingModule({ imports: [CliModule] })
       .overrideProvider(IDENTITY_NOTIFIER)
       .useValue(new CapturingIdentityNotifier())
       .compile();
@@ -38,7 +35,8 @@ describe('tenant provisioning service', () => {
 
   afterAll(async () => {
     await prisma.tenant.deleteMany({ where: { slug: { startsWith: slug } } });
-    await prisma.$disconnect();
+    // Closes the database pool and the queue connections together.
+    await moduleRef.close();
   });
 
   it('creates a tenant with a v7 id', async () => {

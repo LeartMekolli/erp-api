@@ -30,8 +30,9 @@ const SEED_TENANTS: CreateTenantInput[] = [
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
- * The admin's generated password and the owners' invitation tokens are printed
- * here, once; until plan 3 there is no email to deliver them.
+ * The admin's generated password is printed here, once. The owners'
+ * invitations are emailed: queued here, sent by the worker, readable in
+ * Mailpit locally.
  */
 void runCli(async (app) => {
   if (app.get(ConfigService).get('NODE_ENV') === 'production') {
@@ -49,7 +50,10 @@ void runCli(async (app) => {
   for (const seed of SEED_TENANTS) {
     try {
       await tenants.provision(seed, { type: 'system' });
-      process.stdout.write(`created tenant ${seed.slug}, owner invited: ${seed.ownerEmail}\n`);
+      process.stdout.write(
+        `created tenant ${seed.slug}, invitation emailed to ${seed.ownerEmail}` +
+          ' (sent by the worker; locally, read it at http://localhost:8025)\n',
+      );
     } catch (error) {
       if (!(error instanceof ConflictException)) {
         throw error;

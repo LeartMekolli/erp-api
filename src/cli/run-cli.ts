@@ -4,10 +4,16 @@ import { NestFactory } from '@nestjs/core';
 import { ZodError, z } from 'zod';
 import { ConfigModule } from '../config/config.module';
 import { DatabaseModule } from '../database/database.module';
+import { JobsModule } from '../jobs/jobs.module';
 import { PlatformModule } from '../platform/platform.module';
+import { RedisModule } from '../redis/redis.module';
 
-/** What command-line tasks need: no HTTP server, no Redis. */
-@Module({ imports: [ConfigModule, DatabaseModule, PlatformModule] })
+/**
+ * What command-line tasks need: no HTTP server. Redis and the job queues are
+ * here because provisioning a tenant emails its owner through a queued
+ * notification; the worker sends it.
+ */
+@Module({ imports: [ConfigModule, DatabaseModule, RedisModule, JobsModule, PlatformModule] })
 export class CliModule {}
 
 function formatError(error: unknown): string {

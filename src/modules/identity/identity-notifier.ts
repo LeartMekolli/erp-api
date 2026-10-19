@@ -1,5 +1,6 @@
-import { Injectable, Module } from '@nestjs/common';
-import { ConfigService } from '../../config/config.service';
+import { Module } from '@nestjs/common';
+import { NotificationIdentityNotifier } from '../notifications/notification-identity-notifier';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 export interface InvitationNotice {
   tenantId: string;
@@ -18,8 +19,9 @@ export interface PasswordResetNotice {
 /**
  * How identity emails leave the system (plan 2, P8). Callers say what
  * happened; they never choose a recipient address, template or link (D68,
- * D78). Plan 3 binds this to the notification service. Called only after the
- * transaction that created the token has committed.
+ * D78). Called only after the transaction that created the token has
+ * committed. Bound to the notification service; tests swap in a capturing
+ * stand-in.
  */
 export interface IdentityNotifier {
   invitationCreated(notice: InvitationNotice): Promise<void>;
@@ -28,37 +30,9 @@ export interface IdentityNotifier {
 
 export const IDENTITY_NOTIFIER = Symbol('IDENTITY_NOTIFIER');
 
-/**
- * Development stand-in until plan 3: prints the token to stdout so a developer
- * can accept an invitation locally. Deliberately not the logger, which must
- * never carry tokens.
- */
-@Injectable()
-export class ConsoleIdentityNotifier implements IdentityNotifier {
-  invitationCreated(notice: InvitationNotice): Promise<void> {
-    process.stdout.write(`[dev email] invitation for ${notice.email}: ${notice.token}\n`);
-    return Promise.resolve();
-  }
-
-  passwordResetRequested(notice: PasswordResetNotice): Promise<void> {
-    process.stdout.write(`[dev email] password reset for ${notice.email}: ${notice.token}\n`);
-    return Promise.resolve();
-  }
-}
-
 @Module({
-  providers: [
-    {
-      provide: IDENTITY_NOTIFIER,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService): IdentityNotifier => {
-        if (config.get('NODE_ENV') === 'production') {
-          throw new Error('No identity notifier is bound for production; plan 3 binds the notification service.');
-        }
-        return new ConsoleIdentityNotifier();
-      },
-    },
-  ],
+  imports: [NotificationsModule],
+  providers: [{ provide: IDENTITY_NOTIFIER, useClass: NotificationIdentityNotifier }],
   exports: [IDENTITY_NOTIFIER],
 })
 export class IdentityNotifierModule {}

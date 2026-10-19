@@ -31,7 +31,7 @@ npm run start:worker:dev
 
 It serves no HTTP and builds into `dist-worker/`, so its watcher and the API's never delete each other's output. In production, run `npm run start:worker:prod` (or `node dist/worker`) next to the API; the web process only enqueues.
 
-The seed creates a platform admin (`admin@example.test`, password printed once) and two tenants, `demo` and `sandbox`, each with an owner invitation whose token is printed. It is safe to run again. To create another tenant:
+The seed creates a platform admin (`admin@example.test`, password printed once) and two tenants, `demo` and `sandbox`, each with an owner invitation sent by email: with the worker running, it appears in Mailpit at http://localhost:8025. It is safe to run again. To create another tenant:
 
 ```bash
 npm run tenant:create -- --name="Acme Print" --slug=acme-print --owner-email=owner@acme.example [--currency=EUR] [--locale=en] [--timezone=UTC]
@@ -44,7 +44,7 @@ npm run tenant:create -- --name="Acme Print" --slug=acme-print --owner-email=own
 - **Login** is `POST /auth/login` at the tenant's subdomain (`<slug>.<APP_BASE_DOMAIN>`), or with a `workspace` field in the body. It returns a 15-minute access token and a 30-day refresh token. `POST /auth/refresh` rotates the pair on every use; presenting a used refresh token revokes the whole chain. `POST /auth/logout` revokes the session at once.
 - **Password reset** is `POST /auth/password-reset` (always 202) and `POST /auth/password-reset/confirm`.
 - **Every route declares its access**: `@Public()`, `@Authenticated()` or `@RequirePermission(...)`. A route without one is refused, and a test fails if one exists. Permissions are code (`src/modules/identity/permissions.ts`); roles are data, with `owner` and `member` created for every tenant.
-- Until the notification service exists, invitation and reset tokens are printed to the API's stdout as `[dev email] ...`.
+- **Invitation and password-reset emails** go through the notification service and the worker. Their links point at `WEB_URL_TEMPLATE` with the token after `#token=`.
 
 Environment: `JWT_SECRET` signs access tokens (at least 32 characters, different from `APP_SECRET`), `APP_BASE_DOMAIN` is the domain tenant subdomains hang off (`localhost` locally), `LOG_LEVEL` sets the JSON log level.
 
@@ -85,5 +85,5 @@ CI (`.github/workflows/ci.yml`) runs all of these against fresh Postgres and Red
 Things that work locally but must be settled for any shared environment:
 
 - **Client addresses behind a proxy.** Password-reset rate limits are per client IP, read through Express (`@Ip()`). Behind a load balancer or reverse proxy every request appears to come from the proxy, so all users would share one limit. Configure Express's `trust proxy` for the actual proxy setup (for example `app.set('trust proxy', 1)` for a single hop) so the client address comes from `X-Forwarded-For`, and never trust that header without a proxy in front.
-- **Identity email.** Invitation and password-reset tokens are printed to stdout by a development notifier, and the API refuses to boot with `NODE_ENV=production` until the notification service replaces it.
 - **Sentry.** Set `SENTRY_DSN` per environment; without it, errors are logged but not reported.
+- **Email.** Point `SMTP_URL` at the real provider (Resend's SMTP endpoint), set `MAIL_FROM` to an address on a domain verified with it, and set `WEB_URL_TEMPLATE` to the web app's URL. Run the worker next to the API: without it, nothing is sent.

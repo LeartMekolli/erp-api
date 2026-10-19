@@ -3,6 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import { parseOpaqueToken } from '../identity/opaque-token';
 import { hashPassword } from '../identity/passwords';
+import { NotificationsService } from '../notifications/notifications.service';
 
 function invalidInvitation(): BadRequestException {
   return new BadRequestException('Invitation is invalid or expired');
@@ -10,13 +11,17 @@ function invalidInvitation(): BadRequestException {
 
 @Injectable()
 export class InvitationAcceptService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /**
    * Creates the user with the invitation's email and role (F6). Unknown,
    * expired, already accepted and other-tenant tokens are all the same 400.
    * The invitation is claimed with a conditional update, so two concurrent
-   * acceptances cannot both create a user.
+   * acceptances cannot both create a user. Once committed, the people who
+   * can invite users are told someone joined.
    */
   async accept(token: string, name: string, password: string): Promise<void> {
     const parsed = parseOpaqueToken(token);
@@ -27,8 +32,9 @@ export class InvitationAcceptService {
     // Hashed before the transaction, which should not wait on argon2.
     const passwordHash = await hashPassword(password);
 
+    let joined: { id: string; name: string; email: string };
     try {
-      await this.prisma.inTenant(parsed.tenantId, async (tx) => {
+      joined = await this.prisma.inTenant(parsed.tenantId, async (tx) => {
         const now = new Date();
         const invitation = await tx.invitation.findUnique({ where: { tokenHash: parsed.hash } });
         if (!invitation || invitation.acceptedAt || invitation.expiresAt <= now) {
@@ -55,6 +61,7 @@ export class InvitationAcceptService {
           data: { email: invitation.email, passwordHash, name, locale: tenant.defaultLocale },
         });
         await tx.userRole.create({ data: { userId: user.id, roleId: invitation.roleId } });
+        return { id: user.id, name: user.name, email: user.email };
       });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -62,5 +69,10 @@ export class InvitationAcceptService {
       }
       throw error;
     }
+
+    await this.notifications.raise(parsed.tenantId, 'user.joined', { type: 'user', id: joined.id }, {
+      user_name: joined.name,
+      user_email: joined.email,
+    });
   }
 }
