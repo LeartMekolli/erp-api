@@ -4,6 +4,7 @@ import { AuditModule } from '../audit/audit.module';
 import { SettingsModule } from '../settings/settings.module';
 import { DispatchHandler } from './dispatch.handler';
 import { EmailHandler } from './email.handler';
+import { FeedController } from './feed.controller';
 import { MAILER, SmtpMailer } from './mailer';
 import { NotificationSecrets } from './notification-secrets';
 import { NotificationsService } from './notifications.service';
@@ -16,7 +17,7 @@ import { TemplatesService } from './templates.service';
  */
 @Module({
   imports: [AuditModule, SettingsModule],
-  controllers: [TemplatesController],
+  controllers: [TemplatesController, FeedController],
   providers: [
     TemplatesService,
     NotificationsService,
