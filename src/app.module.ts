@@ -8,6 +8,7 @@ import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { FilesModule } from './modules/files/files.module';
 import { HealthModule } from './modules/health/health.module';
 import { IdempotencyModule } from './modules/idempotency/idempotency.module';
 import { IdempotencyInterceptor } from './modules/idempotency/idempotency.interceptor';
@@ -39,6 +40,7 @@ import { StorageModule } from './storage/storage.module';
     PlatformApiModule,
     IdempotencyModule,
     NotificationsModule,
+    FilesModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [
