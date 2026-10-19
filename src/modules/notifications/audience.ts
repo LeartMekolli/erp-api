@@ -12,11 +12,13 @@ export interface Target {
 /**
  * Who a notification reaches (D71, plan N4), decided here from the event and
  * its subject — never by the caller (D68). Only active users count, and each
- * address appears once even if it qualifies twice.
+ * address appears once even if it qualifies twice. A permission audience
+ * never includes the user the notification is about: someone who joins is
+ * not told that they joined.
  */
 export async function resolveAudience(
   tx: Prisma.TransactionClient,
-  notification: Pick<Notification, 'tenantId' | 'eventKey' | 'subjectId'>,
+  notification: Pick<Notification, 'tenantId' | 'eventKey' | 'subjectType' | 'subjectId'>,
   settings: SettingsService,
 ): Promise<Target[]> {
   const event = notification.eventKey as EventKey;
@@ -40,9 +42,14 @@ export async function resolveAudience(
       break;
     }
     case 'permission': {
+      const subjectUser =
+        notification.subjectType === 'user'
+          ? await tx.user.findFirst({ where: { id: notification.subjectId }, select: { id: true, email: true } })
+          : null;
       const holders = await tx.user.findMany({
         where: {
           status: 'active',
+          ...(subjectUser ? { id: { not: subjectUser.id } } : {}),
           roles: { some: { role: { permissions: { some: { permission: audience.permission } } } } },
         },
         orderBy: { id: 'asc' },
@@ -54,7 +61,9 @@ export async function resolveAudience(
         | { byEvent: Record<string, string[]> }
         | undefined;
       for (const email of configured?.byEvent[event] ?? []) {
-        targets.push({ email, locale: tenant.defaultLocale });
+        if (email.trim().toLowerCase() !== subjectUser?.email) {
+          targets.push({ email, locale: tenant.defaultLocale });
+        }
       }
       break;
     }

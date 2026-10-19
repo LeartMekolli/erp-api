@@ -50,13 +50,14 @@ function parse(text: string): Segment[] | null {
 
 /**
  * What is wrong with a template for an event, field by field: too long, a
- * malformed or unclosed `{{`, a variable the event does not declare, or a
- * required variable (an invitation's link) left out.
+ * malformed or unclosed `{{`, a variable the event does not declare, a
+ * required variable (an invitation's link) left out of the body, or a secret
+ * variable in the subject, where it would show in inbox lists and mail logs.
  */
 export function validateTemplate(event: EventKey, template: Template): TemplateIssue[] {
   const declared = variablesOf(event);
   const issues: TemplateIssue[] = [];
-  const used = new Set<string>();
+  const usedInBody = new Set<string>();
 
   for (const path of ['subject', 'body'] as const) {
     const text = template[path];
@@ -73,9 +74,13 @@ export function validateTemplate(event: EventKey, template: Template): TemplateI
     const unknown = new Set<string>();
     for (const segment of segments) {
       if ('variable' in segment) {
-        used.add(segment.variable);
+        if (path === 'body') {
+          usedInBody.add(segment.variable);
+        }
         if (!(segment.variable in declared)) {
           unknown.add(segment.variable);
+        } else if (path === 'subject' && declared[segment.variable]?.secret) {
+          issues.push({ path, message: `The {{ ${segment.variable} }} variable cannot be used in the subject` });
         }
       }
     }
@@ -85,8 +90,8 @@ export function validateTemplate(event: EventKey, template: Template): TemplateI
   }
 
   for (const [name, spec] of Object.entries(declared)) {
-    if (spec.required && !used.has(name)) {
-      issues.push({ path: 'body', message: `Must use the {{ ${name} }} variable` });
+    if (spec.required && !usedInBody.has(name)) {
+      issues.push({ path: 'body', message: `The body must use the {{ ${name} }} variable` });
     }
   }
 

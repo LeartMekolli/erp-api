@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { RateLimiter, tooManyAttempts } from '../../common/rate-limit/rate-limiter';
 import { PrismaService } from '../../database/prisma.service';
 import { IDENTITY_NOTIFIER } from '../identity/identity-notifier';
@@ -19,6 +19,8 @@ function invalidReset(): BadRequestException {
 
 @Injectable()
 export class PasswordResetService {
+  private readonly logger = new Logger(PasswordResetService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly limiter: RateLimiter,
@@ -65,12 +67,16 @@ export class PasswordResetService {
     });
 
     if (issued) {
-      await this.notifier.passwordResetRequested({
-        tenantId: tenant.id,
-        userId: issued.userId,
-        email: normalized,
-        token: issued.token,
-      });
+      // Not awaited: a known email must answer as fast as an unknown one, or
+      // the response time would reveal which emails have accounts. A failure
+      // is logged; the user can ask again.
+      void this.notifier
+        .passwordResetRequested({ tenantId: tenant.id, userId: issued.userId, email: normalized, token: issued.token })
+        .catch((error: unknown) =>
+          this.logger.error(
+            `Could not raise a password reset email: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
     }
   }
 

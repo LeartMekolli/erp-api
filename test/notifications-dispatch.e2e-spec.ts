@@ -3,9 +3,12 @@ import { TestingModule } from '@nestjs/testing';
 import { newId } from '../src/common/ids/uuid';
 import { createConfigService } from '../src/config/config.service';
 import { PrismaService } from '../src/database/prisma.service';
+import { LOG_DESTINATION } from '../src/common/logging/logging.module';
+import { ERROR_REPORTER } from '../src/common/reporting/reporting.module';
 import { ClaimSweeper } from '../src/jobs/claim-sweeper';
 import { JobsService } from '../src/jobs/jobs.service';
 import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
+import { DispatchHandler } from '../src/modules/notifications/dispatch.handler';
 import { MAILER, Mailer, SmtpMailer } from '../src/modules/notifications/mailer';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { TemplatesService } from '../src/modules/notifications/templates.service';
@@ -14,18 +17,18 @@ import { messagesTo, waitForMessage } from './mailpit';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
 
-/** The real jobs, with a 10 ms backoff so retries finish within a test. */
+/** The real jobs and attempt counts, with tiny backoffs so retries finish within a test. */
 const fixture: JobRegistry = {
   jobs: {
     ...JOBS,
     'notification.dispatch': { ...JOBS['notification.dispatch'], backoffMs: 10 },
-    'notification.email': { ...JOBS['notification.email'], backoffMs: 10 },
+    'notification.email': { ...JOBS['notification.email'], backoffMs: 1 },
   },
   scheduled: SCHEDULED_JOBS,
 };
 
-/** Delegates to Mailpit, or fails every send while `failing` is set. */
-const mail = { failing: false };
+/** Delegates to Mailpit, or fails every send with `failure` while `failing` is set. */
+const mail = { failing: false, failure: (): Error => new Error('smtp is down') };
 
 const emailJobId = (notificationId: string, to: string) =>
   `notification.email/${notificationId}/${createHash('sha256').update(to).digest('hex').slice(0, 16)}`;
@@ -36,6 +39,8 @@ describe('notification dispatch', () => {
   let notifications: NotificationsService;
   let jobs: JobsService;
   const createdTenants: string[] = [];
+  const lines: string[] = [];
+  const reporter = { report: jest.fn() };
 
   async function freshTenant(): Promise<string> {
     const tenant = await createTestTenant(prisma);
@@ -63,11 +68,19 @@ describe('notification dispatch', () => {
     process.env.QUEUE_PREFIX = `t${randomBytes(6).toString('hex')}`;
     const real = new SmtpMailer(createConfigService());
     const switchable: Mailer = {
-      send: (message) => (mail.failing ? Promise.reject(new Error('smtp is down')) : real.send(message)),
+      send: (message) => (mail.failing ? Promise.reject(mail.failure()) : real.send(message)),
     };
 
     worker = await startTestWorker((builder) =>
-      builder.overrideProvider(JOB_REGISTRY).useValue(fixture).overrideProvider(MAILER).useValue(switchable),
+      builder
+        .overrideProvider(JOB_REGISTRY)
+        .useValue(fixture)
+        .overrideProvider(MAILER)
+        .useValue(switchable)
+        .overrideProvider(LOG_DESTINATION)
+        .useValue({ write: (line: string) => lines.push(line) })
+        .overrideProvider(ERROR_REPORTER)
+        .useValue(reporter),
     );
     prisma = worker.get(PrismaService);
     notifications = worker.get(NotificationsService, { strict: false });
@@ -82,6 +95,8 @@ describe('notification dispatch', () => {
 
   afterEach(() => {
     mail.failing = false;
+    mail.failure = () => new Error('smtp is down');
+    reporter.report.mockClear();
     jest.restoreAllMocks();
   });
 
@@ -203,11 +218,71 @@ describe('notification dispatch', () => {
       (await (await queue.getJob(emailJobId(id, user.email)))?.getState()) === 'failed' ? true : undefined,
     );
 
+    const attempts = JOBS['notification.email'].attempts;
     const rows = await deliveries(tenantId, id);
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(attempts);
     expect(rows.every((row) => row.status === 'failed' && row.error === 'smtp is down')).toBe(true);
-    expect(rows.map((row) => row.attempt)).toEqual([1, 2, 3, 4, 5]);
+    expect(rows.map((row) => row.attempt)).toEqual(Array.from({ length: attempts }, (_, index) => index + 1));
     expect(await messagesTo(user.email)).toHaveLength(0);
+  });
+
+  it("a mail server's rejection reaches the delivery log, but never an address into logs or error reports", async () => {
+    const tenantId = await freshTenant();
+    const user = await createTestUser(prisma, tenantId);
+    mail.failing = true;
+    mail.failure = () =>
+      Object.assign(new Error(`550 5.1.1 <${user.email}>: Recipient address rejected`), { responseCode: 550 });
+
+    const id = await notifications.raise(tenantId, 'user.roles_changed', { type: 'user', id: user.id }, {
+      user_name: 'Rejected',
+      roles: 'member',
+    });
+    await waitFor(async () =>
+      (await (await jobs.queue('notifications').getJob(emailJobId(id, user.email)))?.getState()) === 'failed'
+        ? true
+        : undefined,
+    );
+
+    // The delivery log keeps the provider's answer; it already holds the address as its target.
+    expect((await deliveries(tenantId, id))[0]?.error).toContain('550 5.1.1');
+
+    // Logs and error reports carry the status code only (spec 1.4: no personal data in logs).
+    expect(lines.join('\n')).not.toContain(user.email);
+    expect(lines.some((line) => line.includes('550'))).toBe(true);
+    const reported = reporter.report.mock.calls.map(([error]) => String((error as Error).message));
+    expect(reported.length).toBeGreaterThan(0);
+    expect(reported.join('\n')).not.toContain(user.email);
+  });
+
+  it('the sweeper recovers a notification whose dispatch job was dead-lettered while the database was down', async () => {
+    const tenantId = await freshTenant();
+    const user = await createTestUser(prisma, tenantId);
+    const templates = worker.get(TemplatesService, { strict: false });
+    const dispatch = worker.get(DispatchHandler, { strict: false });
+    // Every attempt fails and hands its claim back; marking it failed fails too.
+    const render = jest.spyOn(templates, 'forRecipient').mockRejectedValue(new Error('database is down'));
+    const markFailed = jest.spyOn(dispatch, 'onDeadLetter').mockRejectedValue(new Error('database is down'));
+
+    const id = await notifications.raise(tenantId, 'user.roles_changed', { type: 'user', id: user.id }, {
+      user_name: 'Outage',
+      roles: 'member',
+    });
+    const queue = jobs.queue('notifications');
+    await waitFor(async () =>
+      (await (await queue.getJob(`notification.dispatch/${id}`))?.getState()) === 'failed' ? true : undefined,
+    );
+    expect((await notificationRow(tenantId, id)).status).toBe('pending');
+
+    // The database is back. A minute later the sweeper finds the pending row.
+    render.mockRestore();
+    markFailed.mockRestore();
+    await prisma.inTenant(tenantId, (tx) =>
+      tx.notification.update({ where: { id }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } }),
+    );
+    await worker.get(ClaimSweeper).sweep();
+
+    await untilDispatched(tenantId, id);
+    expect((await waitForMessage(user.email)).subject).toBe('Your roles have changed');
   });
 
   it('a retried email is not sent twice once sent', async () => {

@@ -57,6 +57,25 @@ export class JobsService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Like `enqueue`, but also revives the job if it sits in the failed set.
+   * A dead-lettered job keeps its id for 30 days (J1), so a plain enqueue of
+   * the same work would be a silent no-op. Used by the claim sweeper.
+   */
+  async requeue<N extends JobName>(name: N, payload: JobPayload<N>): Promise<void> {
+    const definition = this.registry.jobs[name];
+    if (!definition) {
+      throw new Error(`Unknown job ${name}`);
+    }
+    const data: unknown = definition.payload.parse(payload);
+    const existing = await this.queues[definition.queue].getJob(buildJobId(name, definition.jobId(data)));
+    if (existing && (await existing.getState()) === 'failed') {
+      await existing.retry('failed', { resetAttemptsMade: true, resetAttemptsStarted: true });
+      return;
+    }
+    await this.enqueue(name, payload);
+  }
+
   async onModuleDestroy(): Promise<void> {
     // Each queue owns its connection and closes it.
     await Promise.all(Object.values(this.queues).map((queue) => queue.close()));

@@ -54,7 +54,9 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), notificationId: z.uuid() }),
     jobId: (p) => [p.notificationId],
   }),
-  // Sends one notification to one address and logs the attempt.
+  // Sends one notification to one address and logs the attempt. Ten attempts
+  // from 30 s outlast about four hours of provider outage: invitation and
+  // reset links are wiped once an email is given up on.
   'notification.email': defineJob({
     queue: 'notifications',
     payload: z.object({
@@ -65,6 +67,8 @@ export const JOBS = {
       userId: z.uuid().optional(),
     }),
     jobId: (p) => [p.notificationId, addressKey(p.to)],
+    attempts: 10,
+    backoffMs: 30_000,
   }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 

@@ -22,6 +22,11 @@ interface EmailPayload {
 
 const ERROR_LENGTH = 500;
 
+function responseCodeOf(error: unknown): string {
+  const code = typeof error === 'object' && error !== null ? (error as { responseCode?: unknown }).responseCode : undefined;
+  return typeof code === 'number' ? ` (mail server answered ${code})` : '';
+}
+
 function hasSecrets(event: EventKey): boolean {
   return Object.values(variablesOf(event)).some((spec) => spec.secret);
 }
@@ -68,7 +73,10 @@ export class EmailHandler implements JobHandler<EmailPayload> {
           },
         }),
       );
-      throw error;
+      // Mail servers quote the recipient in their rejections. The delivery
+      // log above already holds the address; what travels on to the worker's
+      // log and the error reporter carries the status code only (spec 1.4).
+      throw new Error(`Email could not be sent${responseCodeOf(error)}`);
     }
 
     await this.prisma.inTenant(tenantId, async (tx) => {

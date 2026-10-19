@@ -42,7 +42,7 @@ export class DispatchHandler implements JobHandler<DispatchPayload>, OnModuleIni
       claimed: 'dispatching',
       lostAfterMs: 60_000,
       staleAfterMs: 300_000,
-      requeue: (tenantId, notificationId) => this.jobs.enqueue('notification.dispatch', { tenantId, notificationId }),
+      requeue: (tenantId, notificationId) => this.jobs.requeue('notification.dispatch', { tenantId, notificationId }),
     });
   }
 

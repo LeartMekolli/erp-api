@@ -97,6 +97,18 @@ describe('validateTemplate', () => {
     ]);
   });
 
+  it('refuses a secret variable in the subject, and does not count it as used', () => {
+    expect(validateTemplate('user.invited', { subject: 'Join: {{ link }}', body: 'Welcome aboard' })).toEqual(
+      expect.arrayContaining([
+        { path: 'subject', message: expect.stringContaining('link') },
+        { path: 'body', message: expect.stringContaining('link') },
+      ]),
+    );
+    expect(validateTemplate('user.invited', { subject: 'Join: {{ link }}', body: 'Here: {{ link }}' })).toEqual([
+      { path: 'subject', message: expect.stringContaining('link') },
+    ]);
+  });
+
   it('reports oversize subject and body', () => {
     const issues = validateTemplate('user.invited', {
       subject: 'x'.repeat(TEMPLATE_LIMITS.subject + 1),

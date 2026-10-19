@@ -8,6 +8,7 @@ import { newId } from '../src/common/ids/uuid';
 import { LOG_DESTINATION } from '../src/common/logging/logging.module';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { waitForMessage } from './mailpit';
 import { waitFor } from './wait-for';
@@ -120,6 +121,30 @@ describe('identity emails', () => {
     await http().post('/auth/password-reset/confirm').send({ token: tokenIn(message.text), password: newPassword }).expect(204);
     await http().post('/auth/login').send({ email: user.email, password: newPassword, workspace: tenant.slug }).expect(200);
     await http().post('/auth/login').send({ email: user.email, password: user.password, workspace: tenant.slug }).expect(401);
+  });
+
+  it('a password reset for a known email answers without waiting for the email to be queued', async () => {
+    // "Always 202" hides which emails exist only if a known one answers as fast
+    // as an unknown one, so the reset request must not wait on raising.
+    const tenant = await freshTenant();
+    const user = await createTestUser(prisma, tenant.id);
+    let finishRaise: (id: string) => void = () => undefined;
+    const raise = jest
+      .spyOn(app.get(NotificationsService, { strict: false }), 'raise')
+      .mockImplementation(() => new Promise((resolve) => (finishRaise = resolve)));
+
+    try {
+      const started = Date.now();
+      await http().post('/auth/password-reset').send({ email: user.email, workspace: tenant.slug }).expect(202);
+      const elapsed = Date.now() - started;
+
+      expect(elapsed).toBeLessThan(1500);
+      await waitFor(async () => (raise.mock.calls.length === 1 ? true : undefined));
+    } finally {
+      // Settle the slow raise, so no promise outlives the test.
+      finishRaise('done');
+      raise.mockRestore();
+    }
   });
 
   it('the invitation token is in no log line, no feed row and no stored notification', async () => {
