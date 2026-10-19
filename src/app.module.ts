@@ -12,6 +12,7 @@ import { HealthModule } from './modules/health/health.module';
 import { IdempotencyModule } from './modules/idempotency/idempotency.module';
 import { IdempotencyInterceptor } from './modules/idempotency/idempotency.interceptor';
 import { IdentityModule } from './modules/identity/identity.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
@@ -35,6 +36,7 @@ import { RedisModule } from './redis/redis.module';
     RolesModule,
     PlatformApiModule,
     IdempotencyModule,
+    NotificationsModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [

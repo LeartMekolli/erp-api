@@ -113,3 +113,17 @@ export function isEventKey(value: string): value is EventKey {
 export function variablesOf(event: EventKey): Record<string, VariableSpec> {
   return EVENTS[event].variables;
 }
+
+/** Variables rendered as links in HTML email. */
+export function urlVariablesOf(event: EventKey): ReadonlySet<string> {
+  return new Set(
+    Object.entries(variablesOf(event))
+      .filter(([, spec]) => spec.url)
+      .map(([name]) => name),
+  );
+}
+
+/** Each variable's sample value, for the template preview. */
+export function samplesOf(event: EventKey): Record<string, string> {
+  return Object.fromEntries(Object.entries(variablesOf(event)).map(([name, spec]) => [name, spec.sample]));
+}
