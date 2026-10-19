@@ -4,9 +4,9 @@ import { Prisma } from '../generated/prisma/client';
  * Tables whose rows are worked on by claiming them (rule A1). Each needs
  * `status` and `claimed_at` columns. Later modules extend the union.
  */
-export type ClaimableTable = 'notification';
+export type ClaimableTable = 'notification' | 'file_version';
 
-const CLAIMABLE_TABLES: ReadonlySet<string> = new Set<ClaimableTable>(['notification']);
+const CLAIMABLE_TABLES: ReadonlySet<string> = new Set<ClaimableTable>(['notification', 'file_version']);
 
 /** The table name is interpolated as SQL, so it must come from the union, never from input. */
 export function claimableTableSql(table: ClaimableTable): Prisma.Sql {

@@ -30,6 +30,7 @@ model Tenant {
   idempotencyKeys IdempotencyKey[]
   notifications   Notification[]
   notificationTemplates NotificationTemplate[]
+  files           File[]
 
   @@map("tenant")
 }
@@ -70,6 +71,8 @@ model User {
   passwordResets PasswordReset[]
   memberships    OrganisationMembership[]
   notifications  NotificationRecipient[]
+  files          File[]
+  fileVersions   FileVersion[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -354,4 +357,84 @@ model NotificationDelivery {
 
   @@index([tenantId, notificationId])
   @@map("notification_delivery")
+}
+
+// ---------------------------------------------------------------------------
+// Files (spec section 5). Bytes live in private object storage under
+// <tenant_id>/<file_id>/<version_id>; these tables hold what is known about
+// them. Who created or uploaded a file is a real user of the same tenant: the
+// uploader is notified when measurement finishes. Those two keys are
+// DEFERRABLE INITIALLY DEFERRED in the migration (Prisma cannot express it), so
+// a tenant delete can remove users and files in the same transaction.
+// ---------------------------------------------------------------------------
+
+model File {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // design | image | document | other
+  kind            String
+  name            String
+  // mm | cm | m | in; meshes carry none (Q4)
+  declaredUnit    String?  @map("declared_unit")
+  // Set by the module that attaches the file; none ships with the foundation.
+  ownerType       String?  @map("owner_type")
+  ownerId         String?  @map("owner_id") @db.Uuid
+  // active
+  status          String   @default("active")
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User          @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  versions  FileVersion[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, ownerType, ownerId])
+  @@map("file")
+}
+
+/// One uploaded version. Claimed by the measurement job (rule A1):
+/// pending -> uploaded -> measuring -> measured, or failed after the last attempt.
+model FileVersion {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  fileId           String    @map("file_id") @db.Uuid
+  number           Int
+  storageKey       String    @unique @map("storage_key")
+  // Used only for the download's Content-Disposition, never in a storage key.
+  originalName     String    @map("original_name")
+  contentType      String    @map("content_type")
+  size             BigInt
+  // SHA-256 in hex, computed by the measurement job.
+  checksum         String?   @db.Char(64)
+  status           String    @default("pending")
+  claimedAt        DateTime? @map("claimed_at")
+  uploadedByUserId String    @map("uploaded_by_user_id") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at")
+  completedAt      DateTime? @map("completed_at")
+
+  file       File      @relation(fields: [tenantId, fileId], references: [tenantId, id], onDelete: Cascade)
+  uploadedBy User      @relation(fields: [tenantId, uploadedByUserId], references: [tenantId, id], onDelete: NoAction)
+  measures   Measure[]
+
+  @@unique([fileId, number])
+  @@unique([tenantId, id])
+  @@index([tenantId, status, createdAt])
+  @@map("file_version")
+}
+
+/// What a measurer found in a version (D60, Q4): one value per measure type.
+model Measure {
+  id            String  @id @default(uuid(7)) @db.Uuid
+  tenantId      String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  fileVersionId String  @map("file_version_id") @db.Uuid
+  type          String
+  value         Decimal @db.Decimal(18, 6)
+  unit          String
+
+  version FileVersion @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([fileVersionId, type])
+  @@index([tenantId])
+  @@map("measure")
 }
