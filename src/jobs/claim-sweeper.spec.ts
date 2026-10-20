@@ -113,3 +113,32 @@ describe('ClaimSweeper', () => {
     });
   });
 });
+
+describe('ClaimSweeper recover-only claims', () => {
+  it('hands stale claims back to pending, and neither requeues nor looks for lost rows', async () => {
+    const queries: string[] = [];
+    const prisma = {
+      tenant: { findMany: () => Promise.resolve([{ id: 'a' }]) },
+      inTenant: <T>(_tenantId: string, fn: (tx: unknown) => Promise<T>): Promise<T> =>
+        fn({
+          $queryRaw: () => {
+            queries.push('query');
+            return Promise.resolve([{ id: 'stuck' }]);
+          },
+        }),
+    } as unknown as PrismaService;
+    const sweeper = new ClaimSweeper(prisma);
+    sweeper.register({
+      table: 'file_version',
+      pending: 'pending',
+      claimed: 'completing',
+      staleAfterMs: 300_000,
+      recoverOnly: true,
+    });
+
+    await expect(sweeper.sweep()).resolves.toBe(0);
+
+    // One statement: the reset of stale claims. No "lost" select.
+    expect(queries).toEqual(['query']);
+  });
+});
