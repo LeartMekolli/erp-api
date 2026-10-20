@@ -1,8 +1,20 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client';
 import type { Prisma } from '../generated/prisma/client';
 import { ConfigService } from '../config/config.service';
+
+const poolLogger = new Logger('DatabasePool');
+
+/**
+ * An idle pooled connection failed (the server closed it, as Neon does when its
+ * compute suspends). The pool drops it and opens a new one on demand; this only
+ * makes it visible. Without a handler of its own the pool would emit an
+ * unhandled 'error' event and end the process, so the adapter always listens.
+ */
+export function logPoolError(error: Error): void {
+  poolLogger.warn(`Idle database connection failed and was dropped: ${error.message}`);
+}
 
 /**
  * Prisma 7 has no built-in query engine: the client is constructed with a
@@ -13,7 +25,9 @@ import { ConfigService } from '../config/config.service';
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   constructor(config: ConfigService) {
-    super({ adapter: new PrismaPg({ connectionString: config.get('DATABASE_URL') }) });
+    super({
+      adapter: new PrismaPg({ connectionString: config.get('DATABASE_URL') }, { onPoolError: logPoolError }),
+    });
   }
 
   /**
