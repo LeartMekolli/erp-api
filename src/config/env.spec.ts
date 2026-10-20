@@ -2,7 +2,6 @@ import { loadEnv } from './env';
 
 const valid = {
   DATABASE_URL: 'postgresql://erp_app:pw@localhost:5432/erp',
-  DATABASE_MIGRATE_URL: 'postgresql://erp_owner:pw@localhost:5432/erp',
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'a'.repeat(32),
   JWT_SECRET: 'j'.repeat(32),
@@ -37,9 +36,15 @@ describe('loadEnv', () => {
     }
 
     expect(message).toContain('DATABASE_URL');
-    expect(message).toContain('DATABASE_MIGRATE_URL');
+    expect(message).not.toContain('DATABASE_MIGRATE_URL');
     expect(message).toContain('REDIS_URL');
     expect(message).toContain('APP_SECRET');
+  });
+
+  it('does not read DATABASE_MIGRATE_URL: only the Prisma CLI does', () => {
+    const env = loadEnv({ ...valid, DATABASE_MIGRATE_URL: 'postgresql://erp_owner:pw@localhost:5432/erp' });
+
+    expect('DATABASE_MIGRATE_URL' in env).toBe(false);
   });
 
   it('rejects a non-numeric PORT', () => {

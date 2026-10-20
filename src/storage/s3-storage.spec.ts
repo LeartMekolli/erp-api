@@ -44,7 +44,6 @@ describe('S3Storage signing address', () => {
   // Signing is computed locally: nothing here talks to storage.
   const env = {
     DATABASE_URL: 'postgresql://a',
-    DATABASE_MIGRATE_URL: 'postgresql://b',
     REDIS_URL: 'redis://c',
     APP_SECRET: 'a'.repeat(32),
     JWT_SECRET: 'j'.repeat(32),

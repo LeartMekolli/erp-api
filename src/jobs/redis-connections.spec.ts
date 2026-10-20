@@ -6,7 +6,6 @@ function configFor(redisUrl: string): ConfigService {
   return new ConfigService(
     loadEnv({
       DATABASE_URL: 'x',
-      DATABASE_MIGRATE_URL: 'x',
       REDIS_URL: redisUrl,
       APP_SECRET: 'a'.repeat(32),
       JWT_SECRET: 'b'.repeat(32),

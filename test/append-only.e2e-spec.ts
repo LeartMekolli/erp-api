@@ -1,7 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { ConfigModule } from '../src/config/config.module';
-import { ConfigService } from '../src/config/config.service';
 import { DatabaseModule } from '../src/database/database.module';
 import { PrismaService } from '../src/database/prisma.service';
 import { PrismaClient } from '../src/generated/prisma/client';
@@ -25,7 +24,8 @@ describe('append-only tables', () => {
     await moduleRef.init();
     app = moduleRef.get(PrismaService);
 
-    const migrateUrl = moduleRef.get(ConfigService).get('DATABASE_MIGRATE_URL');
+    // The application no longer reads the owner URL; this fixture plays the migration.
+    const migrateUrl = process.env.DATABASE_MIGRATE_URL;
     owner = new PrismaClient({ adapter: new PrismaPg({ connectionString: migrateUrl }) });
 
     await owner.$executeRawUnsafe('DROP TABLE IF EXISTS append_only_fixture');

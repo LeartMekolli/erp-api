@@ -5,7 +5,6 @@ const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     DATABASE_URL: z.string().min(1),
-    DATABASE_MIGRATE_URL: z.string().min(1),
     REDIS_URL: z.string().min(1),
     APP_SECRET: z.string().min(32),
     JWT_SECRET: z.string().min(32),

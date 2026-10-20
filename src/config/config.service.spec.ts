@@ -2,7 +2,6 @@ import { ConfigService, createConfigService } from './config.service';
 
 const valid = {
   DATABASE_URL: 'postgresql://erp_app:pw@localhost:5432/erp',
-  DATABASE_MIGRATE_URL: 'postgresql://erp_owner:pw@localhost:5432/erp',
   REDIS_URL: 'redis://localhost:6379',
   APP_SECRET: 'a'.repeat(32),
   JWT_SECRET: 'j'.repeat(32),
@@ -49,7 +48,6 @@ describe('ConfigService', () => {
       NODE_ENV: 'test',
       PORT: 3001,
       DATABASE_URL: 'postgresql://a',
-      DATABASE_MIGRATE_URL: 'postgresql://b',
       REDIS_URL: 'redis://c',
       APP_SECRET: 'b'.repeat(32),
       JWT_SECRET: 'c'.repeat(32),
