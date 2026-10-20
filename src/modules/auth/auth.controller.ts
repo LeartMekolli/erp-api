@@ -86,8 +86,8 @@ export class AuthController {
 
   /**
    * Always 202, whether or not the email belongs to anyone. The per-IP limit
-   * needs Express `trust proxy` configured behind a proxy (README, "Before
-   * deploying"); otherwise every client shares the proxy's address.
+   * needs `TRUST_PROXY_HOPS` set behind a proxy (README, "Before deploying");
+   * otherwise every client shares the proxy's address.
    */
   @Public()
   @Post('password-reset')

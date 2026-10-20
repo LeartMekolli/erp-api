@@ -47,6 +47,15 @@ describe('loadEnv', () => {
     expect('DATABASE_MIGRATE_URL' in env).toBe(false);
   });
 
+  it('defaults TRUST_PROXY_HOPS to 0 and accepts 0 to 5', () => {
+    expect(loadEnv({ ...valid }).TRUST_PROXY_HOPS).toBe(0);
+    expect(loadEnv({ ...valid, TRUST_PROXY_HOPS: '5' }).TRUST_PROXY_HOPS).toBe(5);
+  });
+
+  it.each(['-1', '6', '1.5', 'many'])('rejects TRUST_PROXY_HOPS=%s', (value) => {
+    expect(() => loadEnv({ ...valid, TRUST_PROXY_HOPS: value })).toThrow(/TRUST_PROXY_HOPS/);
+  });
+
   it('rejects a non-numeric PORT', () => {
     expect(() => loadEnv({ ...valid, PORT: 'abc' })).toThrow(/PORT/);
   });

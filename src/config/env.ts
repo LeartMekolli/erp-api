@@ -4,6 +4,9 @@ const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
+    // How many reverse proxies sit in front of the API (Express `trust proxy`).
+    // 0 never trusts X-Forwarded-For, which is right for a direct connection.
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().min(1),
     APP_SECRET: z.string().min(32),
