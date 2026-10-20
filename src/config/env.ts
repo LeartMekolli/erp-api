@@ -40,8 +40,14 @@ const envSchema = z
     S3_SECRET_ACCESS_KEY: z.string().min(1),
     // MinIO serves buckets at <endpoint>/<bucket>; R2 accepts either form.
     S3_FORCE_PATH_STYLE: z.enum(['true', 'false']).default('false'),
-    // The largest upload accepted, in bytes (plan S4).
-    FILE_MAX_BYTES: z.coerce.number().int().positive().default(104_857_600),
+    // The largest upload accepted, in bytes (plan S4). At most 5 GiB, the
+    // largest single PUT that S3 and R2 accept.
+    FILE_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(5 * 1024 ** 3)
+      .default(104_857_600),
   })
   .superRefine((env, ctx) => {
     // One leaked secret must not compromise both cursors and access tokens.

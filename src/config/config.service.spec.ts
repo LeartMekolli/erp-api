@@ -28,6 +28,13 @@ describe('ConfigService', () => {
     expect(() => createConfigService({})).toThrow(/DATABASE_URL/);
   });
 
+  it('refuses FILE_MAX_BYTES above the 5 GiB single-upload limit', () => {
+    expect(createConfigService({ ...valid, FILE_MAX_BYTES: String(5 * 1024 ** 3) }).get('FILE_MAX_BYTES')).toBe(
+      5 * 1024 ** 3,
+    );
+    expect(() => createConfigService({ ...valid, FILE_MAX_BYTES: String(5 * 1024 ** 3 + 1) })).toThrow(/FILE_MAX_BYTES/);
+  });
+
   it('reads the environment once, so later changes to the source are ignored', () => {
     const source = { ...valid, PORT: '8080' };
     const config = createConfigService(source);
