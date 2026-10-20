@@ -1,5 +1,21 @@
 import { z } from 'zod';
 
+function splitOrigins(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+}
+
+/** Scheme, host and optional port only: no `*`, path or trailing slash. */
+function isExactOrigin(entry: string): boolean {
+  if (!URL.canParse(entry)) {
+    return false;
+  }
+  const url = new URL(entry);
+  return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === entry;
+}
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -7,6 +23,16 @@ const envSchema = z
     // How many reverse proxies sit in front of the API (Express `trust proxy`).
     // 0 never trusts X-Forwarded-For, which is right for a direct connection.
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+    // Browser origins allowed to call the API, comma separated, exact. Empty
+    // sends no CORS headers at all. Tokens travel in the Authorization header,
+    // so credentials stay off.
+    CORS_ORIGINS: z
+      .string()
+      .default('')
+      .refine((value) => splitOrigins(value).every(isExactOrigin), {
+        message: 'must be exact origins such as https://app.example.com (no *, no path, no trailing slash)',
+      })
+      .transform(splitOrigins),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().min(1),
     APP_SECRET: z.string().min(32),

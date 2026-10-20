@@ -16,7 +16,13 @@ export function configureApp(app: INestApplication): void {
 
   // Behind a reverse proxy every socket address is the proxy's. This makes
   // req.ip (and so @Ip()) the client's, for exactly this many hops.
-  (app as NestExpressApplication).set('trust proxy', app.get(ConfigService).get('TRUST_PROXY_HOPS'));
+  const config = app.get(ConfigService);
+  (app as NestExpressApplication).set('trust proxy', config.get('TRUST_PROXY_HOPS'));
+
+  const origins = config.get('CORS_ORIGINS');
+  if (origins.length > 0) {
+    app.enableCors({ origin: origins, credentials: false, maxAge: 600 });
+  }
 
   // Order matters: the request logger reads the context the first one creates.
   app.use(requestIdMiddleware);

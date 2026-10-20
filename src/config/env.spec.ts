@@ -56,6 +56,23 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, TRUST_PROXY_HOPS: value })).toThrow(/TRUST_PROXY_HOPS/);
   });
 
+  it('defaults CORS_ORIGINS to an empty list', () => {
+    expect(loadEnv({ ...valid }).CORS_ORIGINS).toEqual([]);
+  });
+
+  it('parses CORS_ORIGINS, trimming spaces and dropping empty entries', () => {
+    const env = loadEnv({ ...valid, CORS_ORIGINS: ' https://app.example.test , http://localhost:5173,, ' });
+
+    expect(env.CORS_ORIGINS).toEqual(['https://app.example.test', 'http://localhost:5173']);
+  });
+
+  it.each(['*', 'https://app.example.test/app', 'https://app.example.test/', 'app.example.test', 'localhost:5173'])(
+    'rejects CORS_ORIGINS=%s',
+    (value) => {
+      expect(() => loadEnv({ ...valid, CORS_ORIGINS: value })).toThrow(/CORS_ORIGINS/);
+    },
+  );
+
   it('rejects a non-numeric PORT', () => {
     expect(() => loadEnv({ ...valid, PORT: 'abc' })).toThrow(/PORT/);
   });
