@@ -24,6 +24,7 @@ export const PLATFORM_PERMISSIONS = [
   'platform.tenant.suspend',
   'platform.jobs.read',
   'platform.jobs.retry',
+  'platform.diagnostics',
 ] as const;
 
 export type TenantPermission = (typeof TENANT_PERMISSIONS)[number];
