@@ -73,6 +73,16 @@ describe('loadEnv', () => {
     },
   );
 
+  it('defaults WORKER_IN_PROCESS to false and reads true and false', () => {
+    expect(loadEnv({ ...valid }).WORKER_IN_PROCESS).toBe(false);
+    expect(loadEnv({ ...valid, WORKER_IN_PROCESS: 'true' }).WORKER_IN_PROCESS).toBe(true);
+    expect(loadEnv({ ...valid, WORKER_IN_PROCESS: 'false' }).WORKER_IN_PROCESS).toBe(false);
+  });
+
+  it.each(['1', 'yes', 'TRUE', ''])('rejects WORKER_IN_PROCESS=%j', (value) => {
+    expect(() => loadEnv({ ...valid, WORKER_IN_PROCESS: value })).toThrow(/WORKER_IN_PROCESS/);
+  });
+
   it('rejects a non-numeric PORT', () => {
     expect(() => loadEnv({ ...valid, PORT: 'abc' })).toThrow(/PORT/);
   });

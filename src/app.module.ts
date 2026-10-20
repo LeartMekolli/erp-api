@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ErrorsModule } from './common/errors/errors.module';
 import { LoggingModule } from './common/logging/logging.module';
@@ -6,6 +6,7 @@ import { ReportingModule } from './common/reporting/reporting.module';
 import { StripCredentialsInterceptor } from './common/serialization/strip-credentials.interceptor';
 import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
+import { JobsWorkerModule } from './jobs/jobs-worker.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { FilesModule } from './modules/files/files.module';
@@ -48,4 +49,13 @@ import { StorageModule } from './storage/storage.module';
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
   ],
 })
-export class AppModule {}
+export class AppModule {
+  /**
+   * The API alone enqueues. With `withWorker` it also consumes (WORKER_IN_PROCESS):
+   * the same consumer module `worker.ts` runs, added last so that on shutdown it
+   * is destroyed before the database and Redis modules and waits for active jobs.
+   */
+  static register(options: { withWorker: boolean }): DynamicModule {
+    return { module: AppModule, imports: options.withWorker ? [JobsWorkerModule] : [] };
+  }
+}

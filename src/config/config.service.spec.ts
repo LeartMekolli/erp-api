@@ -49,6 +49,7 @@ describe('ConfigService', () => {
       PORT: 3001,
       TRUST_PROXY_HOPS: 0,
       CORS_ORIGINS: [],
+      WORKER_IN_PROCESS: false,
       DATABASE_URL: 'postgresql://a',
       REDIS_URL: 'redis://c',
       APP_SECRET: 'b'.repeat(32),

@@ -33,6 +33,13 @@ const envSchema = z
         message: 'must be exact origins such as https://app.example.com (no *, no path, no trailing slash)',
       })
       .transform(splitOrigins),
+    // Also run the job consumers and scheduled jobs in the process that serves
+    // HTTP. For hosts with no background workers (staging on Render's free
+    // tier); elsewhere run `node dist/worker` separately.
+    WORKER_IN_PROCESS: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().min(1),
     APP_SECRET: z.string().min(32),
