@@ -99,6 +99,11 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, NODE_ENV: 'staging' })).toThrow(/NODE_ENV/);
   });
 
+  it('leaves SENTRY_ENVIRONMENT unset by default', () => {
+    expect(loadEnv({ ...valid }).SENTRY_ENVIRONMENT).toBeUndefined();
+    expect(loadEnv({ ...valid, SENTRY_ENVIRONMENT: 'staging' }).SENTRY_ENVIRONMENT).toBe('staging');
+  });
+
   it('rejects a SENTRY_DSN that is not a URL', () => {
     expect(() => loadEnv({ ...valid, SENTRY_DSN: 'nonsense' })).toThrow(/SENTRY_DSN/);
   });

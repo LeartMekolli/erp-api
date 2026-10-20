@@ -67,6 +67,7 @@ describe('ConfigService', () => {
       S3_FORCE_PATH_STYLE: 'true',
       FILE_MAX_BYTES: 104_857_600,
       SENTRY_DSN: undefined,
+      SENTRY_ENVIRONMENT: undefined,
     });
 
     expect(config.get('NODE_ENV')).toBe('test');

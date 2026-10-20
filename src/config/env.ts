@@ -47,6 +47,9 @@ const envSchema = z
       .regex(/^[a-z0-9-]{1,32}$/)
       .default('erp'),
     SENTRY_DSN: z.url().optional(),
+    // Tags events in Sentry. Unset, it is NODE_ENV; staging runs with
+    // NODE_ENV=production and would otherwise be tagged as production.
+    SENTRY_ENVIRONMENT: z.string().min(1).max(64).optional(),
     // Mailpit locally (smtp://localhost:1025), Resend's SMTP endpoint in production (F7).
     SMTP_URL: z.url(),
     // The sender when a tenant has not set notification.sender: an address, or "Name <address>".
