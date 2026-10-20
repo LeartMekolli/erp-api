@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { newId } from '../src/common/ids/uuid';
 import { ConfigModule } from '../src/config/config.module';
 import { ConfigService } from '../src/config/config.service';
-import { ObjectStorage, STORAGE } from '../src/storage/object-storage';
+import { ObjectChangedError, ObjectNotFoundError, ObjectStorage, STORAGE } from '../src/storage/object-storage';
 import { StorageModule } from '../src/storage/storage.module';
 import { putToSignedUrl } from './storage';
 
@@ -40,39 +40,68 @@ describe('object storage', () => {
 
     await store(key, Buffer.from('hello'), 'text/plain');
 
-    expect(await storage.head(key)).toEqual({ size: 5, contentType: 'text/plain' });
+    expect(await storage.head(key)).toEqual({ size: 5, contentType: 'text/plain', etag: expect.any(String) });
   });
 
-  it('a PUT asks for exactly the signed type and length, and only to create', async () => {
+  it('a PUT asks for exactly the signed type and length', async () => {
     const signed = await storage.presignPut(newKey(), {
       contentType: 'text/plain',
       contentLength: 5,
       expiresInSeconds: 60,
     });
 
-    expect(signed.headers).toEqual({ 'content-type': 'text/plain', 'content-length': '5', 'if-none-match': '*' });
+    expect(signed.headers).toEqual({ 'content-type': 'text/plain', 'content-length': '5' });
   });
 
-  it('a second PUT to the same key is refused, so a stored object never changes', async () => {
+  it('the same link can write again until it expires: write-once comes from copy-on-completion, not storage', async () => {
     const key = newKey();
     const signed = await storage.presignPut(key, {
       contentType: 'text/plain',
       contentLength: 5,
       expiresInSeconds: 60,
     });
-    const first = await putToSignedUrl(signed.url, Buffer.from('hello'), signed.headers);
-    await first.arrayBuffer();
-    expect(first.status).toBe(200);
-
-    const second = await putToSignedUrl(signed.url, Buffer.from('HELLO'), signed.headers);
-    await second.arrayBuffer();
-
-    expect(second.status).toBe(412);
-    const chunks: Buffer[] = [];
-    for await (const chunk of await storage.read(key)) {
-      chunks.push(Buffer.from(chunk as Uint8Array));
+    for (const body of ['hello', 'HELLO']) {
+      const response = await putToSignedUrl(signed.url, Buffer.from(body), signed.headers);
+      await response.arrayBuffer();
+      expect(response.status).toBe(200);
     }
-    expect(Buffer.concat(chunks).toString()).toBe('hello');
+  });
+
+  it('copy duplicates the object server-side, keeps the source, and keeps the content type', async () => {
+    const from = newKey();
+    const to = newKey();
+    await store(from, Buffer.from('hello'), 'text/plain');
+    const source = await storage.head(from);
+
+    await storage.copy(from, to, { ifMatchEtag: source?.etag });
+
+    expect(await storage.head(to)).toEqual({ size: 5, contentType: 'text/plain', etag: expect.any(String) });
+    expect(await storage.head(from)).not.toBeNull();
+  });
+
+  it('copy is refused when the source is no longer the object that was checked', async () => {
+    const from = newKey();
+    await store(from, Buffer.from('hello'), 'text/plain');
+    const checked = await storage.head(from);
+    await store(from, Buffer.from('HELLO'), 'text/plain');
+    const to = newKey();
+
+    await expect(storage.copy(from, to, { ifMatchEtag: checked?.etag })).rejects.toBeInstanceOf(ObjectChangedError);
+    expect(await storage.head(to)).toBeNull();
+  });
+
+  it('copy of a missing key is ObjectNotFoundError', async () => {
+    await expect(storage.copy(newKey(), newKey())).rejects.toBeInstanceOf(ObjectNotFoundError);
+  });
+
+  it('delete removes an object, and deleting a missing key is not an error', async () => {
+    const key = newKey();
+    await store(key, Buffer.from('hello'), 'text/plain');
+
+    await storage.delete(key);
+    await storage.delete(key);
+
+    expect(await storage.head(key)).toBeNull();
   });
 
   it('a PUT with more bytes than signed is refused', async () => {

@@ -127,7 +127,6 @@ describe('files: starting uploads', () => {
     expect(upload.headers).toEqual({
       'content-type': 'application/pdf',
       'content-length': String(pdf.length),
-      'if-none-match': '*',
     });
     const expiresAt = Date.parse(upload.expires_at);
     expect(expiresAt).toBeGreaterThanOrEqual(before + 15 * 60_000 - 1000);
@@ -139,12 +138,10 @@ describe('files: starting uploads', () => {
     expect(await storage.head(await storedKey(tenant.id, version.id))).toEqual({
       size: pdf.length,
       contentType: 'application/pdf',
+      etag: expect.any(String),
     });
-
-    // Write-once: the same link cannot replace the bytes afterwards.
-    const again = await putToSignedUrl(upload.url, Buffer.from(pdf.toString().toUpperCase()), upload.headers);
-    await again.arrayBuffer();
-    expect(again.status).toBe(412);
+    // No "412 on a second PUT" any more: the checked bytes are protected by the
+    // copy made on completion, not by the link.
   });
 
   it('builds the storage key from ids, whatever the name', async () => {

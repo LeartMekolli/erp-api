@@ -1,5 +1,7 @@
 import { Readable } from 'node:stream';
 import {
+  CopyObjectCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -9,7 +11,8 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '../config/config.service';
-import type { ObjectStorage, SignedPutHeaders } from './object-storage';
+import { ObjectChangedError, ObjectNotFoundError } from './object-storage';
+import type { ObjectStorage, SignedPutHeaders, StoredObject } from './object-storage';
 
 /**
  * Types a browser may show in place (plan S8). Everything else, SVG and HTML
@@ -56,7 +59,7 @@ export function contentDisposition(fileName: string, contentType: string): strin
 
 /** `ObjectStorage` over the S3 API: MinIO locally, Cloudflare R2 in production (plan S1). */
 export class S3Storage implements ObjectStorage, OnModuleDestroy {
-  /** Talks to storage: HEAD and reads. */
+  /** Talks to storage: HEAD, copy, delete and reads. */
   private readonly client: S3Client;
   /** Signs links for clients. Same settings, but the address clients use (S3_PUBLIC_ENDPOINT). */
   private readonly signer: S3Client;
@@ -88,19 +91,17 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
     const headers: SignedPutHeaders = {
       'content-type': options.contentType,
       'content-length': String(options.contentLength),
-      // Create-only: a second PUT, even through this same link, gets 412, so the
-      // bytes that were checked and measured are the bytes that stay.
-      'if-none-match': '*',
     };
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       ContentType: options.contentType,
       ContentLength: options.contentLength,
-      IfNoneMatch: '*',
     });
-    // The presigner leaves Content-Type unsigned by default; signing every
-    // header makes storage refuse any other type, size or overwrite (plan S4).
+    // The presigner leaves Content-Type unsigned by default; signing both
+    // headers makes storage refuse any other type or size (plan S4). The link
+    // can write again until it expires: the checked bytes are protected by the
+    // copy made on completion, not by storage.
     const url = await getSignedUrl(this.signer, command, {
       expiresIn: options.expiresInSeconds,
       signableHeaders: new Set(Object.keys(headers)),
@@ -121,16 +122,46 @@ export class S3Storage implements ObjectStorage, OnModuleDestroy {
     return getSignedUrl(this.signer, command, { expiresIn: options.expiresInSeconds });
   }
 
-  async head(key: string): Promise<{ size: number; contentType: string } | null> {
+  async head(key: string): Promise<StoredObject | null> {
     try {
       const result = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
-      return { size: result.ContentLength ?? 0, contentType: result.ContentType ?? '' };
+      return { size: result.ContentLength ?? 0, contentType: result.ContentType ?? '', etag: result.ETag ?? '' };
     } catch (error) {
       if (error instanceof S3ServiceException && error.$metadata.httpStatusCode === 404) {
         return null;
       }
       throw error;
     }
+  }
+
+  async copy(from: string, to: string, options: { ifMatchEtag?: string } = {}): Promise<void> {
+    try {
+      await this.client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          Key: to,
+          // "<bucket>/<key>", each key segment percent-encoded.
+          CopySource: `${this.bucket}/${from.split('/').map(encodeURIComponent).join('/')}`,
+          CopySourceIfMatch: options.ifMatchEtag,
+          // Keep the content type the client declared.
+          MetadataDirective: 'COPY',
+        }),
+      );
+    } catch (error) {
+      if (error instanceof S3ServiceException) {
+        if (error.$metadata.httpStatusCode === 412) {
+          throw new ObjectChangedError(from);
+        }
+        if (error.$metadata.httpStatusCode === 404) {
+          throw new ObjectNotFoundError(from);
+        }
+      }
+      throw error;
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
   async read(key: string): Promise<Readable> {

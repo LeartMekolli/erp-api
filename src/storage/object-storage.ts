@@ -6,19 +6,41 @@ export const STORAGE = Symbol('STORAGE');
 export type SignedPutHeaders = {
   'content-type': string;
   'content-length': string;
-  'if-none-match': '*';
 };
+
+export interface StoredObject {
+  size: number;
+  contentType: string;
+  /** Opaque, quotes included, exactly as storage returns it. Pass it back to `copy`. */
+  etag: string;
+}
+
+/** The source of a copy does not exist. */
+export class ObjectNotFoundError extends Error {
+  constructor(key: string) {
+    super(`No object under ${key}`);
+    this.name = 'ObjectNotFoundError';
+  }
+}
+
+/** The source of a copy is no longer the object whose ETag was given. */
+export class ObjectChangedError extends Error {
+  constructor(key: string) {
+    super(`Object ${key} changed since it was checked`);
+    this.name = 'ObjectChangedError';
+  }
+}
 
 /**
  * Private object storage (D60). Files enter and leave only through signed
- * URLs; the API itself only signs, checks with HEAD, and (in the worker) reads.
+ * URLs; the API itself signs, checks with HEAD, copies and deletes server-side,
+ * and (in the worker) reads.
  * Keys are built by the caller from ids alone, never from a client's name.
  */
 export interface ObjectStorage {
   /**
-   * A PUT URL that accepts exactly this content type and length, and only to
-   * create the object: once stored, it can never be replaced through any link.
-   * `headers` are what the PUT must carry; the signature covers them all.
+   * A PUT URL that accepts exactly this content type and length, until it
+   * expires. `headers` are what the PUT must carry; the signature covers them.
    */
   presignPut(
     key: string,
@@ -34,8 +56,17 @@ export interface ObjectStorage {
     options: { fileName: string; contentType: string; expiresInSeconds: number },
   ): Promise<string>;
 
-  /** The stored size and type, or `null` when nothing is stored under `key`. */
-  head(key: string): Promise<{ size: number; contentType: string } | null>;
+  /** The stored size, type and ETag, or `null` when nothing is stored under `key`. */
+  head(key: string): Promise<StoredObject | null>;
+
+  /**
+   * Server-side copy: no bytes pass through the API. Replaces `to`. With
+   * `ifMatchEtag`, copies only if `from` still has that ETag.
+   */
+  copy(from: string, to: string, options?: { ifMatchEtag?: string }): Promise<void>;
+
+  /** Deletes `key`; already gone is not an error. */
+  delete(key: string): Promise<void>;
 
   /** Streams the object; the caller consumes or destroys the stream. */
   read(key: string): Promise<Readable>;
