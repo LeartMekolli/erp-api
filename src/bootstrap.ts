@@ -27,4 +27,9 @@ export function configureApp(app: INestApplication): void {
   // Order matters: the request logger reads the context the first one creates.
   app.use(requestIdMiddleware);
   app.use(createHttpLogger(app.get<Logger>(LOGGER)));
+
+  // SIGTERM (every deploy and spin-down on Render) and SIGINT close the
+  // application: queue consumers wait for active jobs, then the database pool
+  // and Redis disconnect.
+  app.enableShutdownHooks();
 }
