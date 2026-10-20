@@ -394,7 +394,9 @@ model File {
 }
 
 /// One uploaded version. Claimed by the measurement job (rule A1):
-/// pending -> uploaded -> measuring -> measured, or failed after the last attempt.
+/// pending -> completing -> uploaded -> measuring -> measured, or failed after
+/// the last attempt. `completing` is the claim held while an upload is copied
+/// to its final key.
 model FileVersion {
   id               String    @id @default(uuid(7)) @db.Uuid
   tenantId         String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid

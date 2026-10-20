@@ -7,6 +7,7 @@ import { newId } from '../src/common/ids/uuid';
 import { ConfigService } from '../src/config/config.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { uploadKeyFor } from '../src/modules/files/storage-keys';
 import { ObjectStorage, STORAGE } from '../src/storage/object-storage';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { putToSignedUrl } from './storage';
@@ -135,7 +136,9 @@ describe('files: starting uploads', () => {
     const put = await putToSignedUrl(upload.url, pdf, upload.headers);
     await put.arrayBuffer();
     expect(put.status).toBe(200);
-    expect(await storage.head(await storedKey(tenant.id, version.id))).toEqual({
+    // Nothing at the final key until complete copies it there.
+    expect(await storage.head(await storedKey(tenant.id, version.id))).toBeNull();
+    expect(await storage.head(uploadKeyFor(await storedKey(tenant.id, version.id)))).toEqual({
       size: pdf.length,
       contentType: 'application/pdf',
       etag: expect.any(String),
@@ -151,7 +154,8 @@ describe('files: starting uploads', () => {
     const { file, version, upload } = response.body as { file: FileBody; version: VersionBody; upload: Upload };
 
     expect(file.name).toBe('../../etc/passwd');
-    expect(await storedKey(tenant.id, version.id)).toBe(`${tenant.id}/${file.id}/${version.id}`);
+    expect(await storedKey(tenant.id, version.id)).toBe(`files/${tenant.id}/${file.id}/${version.id}`);
+    expect(new URL(upload.url).pathname).toContain(`uploads/${tenant.id}/${file.id}/${version.id}`);
     expect(new URL(upload.url).pathname).not.toContain('passwd');
   });
 
@@ -177,7 +181,7 @@ describe('files: starting uploads', () => {
 
     expect(version).toMatchObject({ number: 2, original_name: 'report-v2.pdf', status: 'pending' });
     expect(upload.url).not.toBe(first.url);
-    expect(await storedKey(tenant.id, version.id)).toBe(`${tenant.id}/${file.id}/${version.id}`);
+    expect(await storedKey(tenant.id, version.id)).toBe(`files/${tenant.id}/${file.id}/${version.id}`);
   });
 
   it('numbers two versions started at once 2 and 3', async () => {

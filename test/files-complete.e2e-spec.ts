@@ -12,6 +12,7 @@ import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/reg
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { MEASURERS, NoopMeasurer } from '../src/modules/files/measurers';
 import type { Measurer, MeasureType, MeasureUnit } from '../src/modules/files/measurers';
+import { uploadKeyFor } from '../src/modules/files/storage-keys';
 import { ObjectStorage, STORAGE } from '../src/storage/object-storage';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { putToSignedUrl } from './storage';
@@ -121,6 +122,8 @@ describe('files: completing, measuring and downloading', () => {
   const versionRow = (tenantId: string, versionId: string) =>
     prisma.inTenant(tenantId, (tx) => tx.fileVersion.findUniqueOrThrow({ where: { id: versionId } }));
 
+  const finalKeyOf = async (tenantId: string, versionId: string) => (await versionRow(tenantId, versionId)).storageKey;
+
   const untilMeasured = (tenantId: string, versionId: string) =>
     waitFor(async () => {
       const row = await versionRow(tenantId, versionId);
@@ -222,9 +225,9 @@ describe('files: completing, measuring and downloading', () => {
     const tenant = await freshTenant();
     const { fileId, version, body } = await startUpload(tenant.ownerToken, { send: false });
     const { storageKey } = await versionRow(tenant.id, version.id);
-    // Bypasses the declared upload: a bigger object lands under the same key.
+    // Bypasses the declared upload: a bigger object lands under the same upload key.
     const bigger = Buffer.concat([body, Buffer.from('!')]);
-    const signed = await storage.presignPut(storageKey, {
+    const signed = await storage.presignPut(uploadKeyFor(storageKey), {
       contentType: 'application/pdf',
       contentLength: bigger.length,
       expiresInSeconds: 60,
@@ -237,6 +240,140 @@ describe('files: completing, measuring and downloading', () => {
 
     expect((response.body as { detail: string }).detail).toBe('Upload does not match what was declared');
     expect((await versionRow(tenant.id, version.id)).status).toBe('pending');
+    expect(await storage.head(storageKey)).toBeNull();
+  });
+
+  it('refuses an object of another type than declared, and leaves no final object', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version, body } = await startUpload(tenant.ownerToken, { send: false });
+    const { storageKey } = await versionRow(tenant.id, version.id);
+    const signed = await storage.presignPut(uploadKeyFor(storageKey), {
+      contentType: 'text/plain',
+      contentLength: body.length,
+      expiresInSeconds: 60,
+    });
+    const put = await putToSignedUrl(signed.url, body, signed.headers);
+    await put.arrayBuffer();
+
+    const response = await complete(tenant.ownerToken, fileId, version.id).expect(409);
+
+    expect((response.body as { detail: string }).detail).toBe('Upload does not match what was declared');
+    expect(await storage.head(storageKey)).toBeNull();
+    expect((await versionRow(tenant.id, version.id)).status).toBe('pending');
+  });
+
+  it('moves the object to the final key, removes the upload key, and the worker checksums those bytes', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version, body } = await startUpload(tenant.ownerToken);
+    const finalKey = await finalKeyOf(tenant.id, version.id);
+    expect(await storage.head(finalKey)).toBeNull();
+
+    await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    const measured = await untilMeasured(tenant.id, version.id);
+
+    expect(await storage.head(finalKey)).toMatchObject({ size: body.length, contentType: 'application/pdf' });
+    expect(await storage.head(uploadKeyFor(finalKey))).toBeNull();
+    expect(measured.checksum).toBe(createHash('sha256').update(body).digest('hex'));
+  });
+
+  it('copies once and measures once when completed twice at the same time', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version, body } = await startUpload(tenant.ownerToken);
+    const finalKey = await finalKeyOf(tenant.id, version.id);
+    const copy = jest.spyOn(storage, 'copy');
+
+    try {
+      const [first, second] = await Promise.all([
+        complete(tenant.ownerToken, fileId, version.id),
+        complete(tenant.ownerToken, fileId, version.id),
+      ]);
+
+      expect([first.status, second.status]).toEqual([200, 200]);
+      for (const response of [first, second]) {
+        expect(['completing', 'uploaded']).toContain((response.body as VersionBody).status);
+      }
+      await untilMeasured(tenant.id, version.id);
+      expect(copy.mock.calls.filter(([, to]) => to === finalKey)).toHaveLength(1);
+      expect(timesMeasured(body)).toBe(1);
+    } finally {
+      copy.mockRestore();
+    }
+  });
+
+  it('keeps the checked bytes when the old upload link is used after completion', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version, upload, body } = await startUpload(tenant.ownerToken);
+    await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    const measured = await untilMeasured(tenant.id, version.id);
+
+    // Same length and type, other bytes, through the still-valid link.
+    const other = Buffer.from(body.toString().toUpperCase());
+    expect(other.equals(body)).toBe(false);
+    const put = await putToSignedUrl(upload.url, other, upload.headers);
+    await put.arrayBuffer();
+    expect(put.status).toBe(200);
+
+    const link = (await downloadUrl(tenant.ownerToken, fileId, version.id).expect(200)).body as { url: string };
+    expect(await (await fetch(link.url)).text()).toBe(body.toString());
+    expect((await versionRow(tenant.id, version.id)).checksum).toBe(measured.checksum);
+  });
+
+  it('completes cleanly when the copy was made but the version never advanced', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version, body } = await startUpload(tenant.ownerToken);
+    const finalKey = await finalKeyOf(tenant.id, version.id);
+    // As if the process died right after the copy: the final object exists, the row is still pending.
+    await storage.copy(uploadKeyFor(finalKey), finalKey);
+
+    await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    const measured = await untilMeasured(tenant.id, version.id);
+
+    expect(measured.checksum).toBe(createHash('sha256').update(body).digest('hex'));
+    expect(await storage.head(uploadKeyFor(finalKey))).toBeNull();
+  });
+
+  it('hands a stale completing claim back to pending, and the client can complete again', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version } = await startUpload(tenant.ownerToken);
+    const longAgo = new Date(Date.now() - 6 * 60_000);
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.fileVersion.update({ where: { id: version.id }, data: { status: 'completing', claimedAt: longAgo } }),
+    );
+    // While the claim is held, a call just reports the version as it is, and
+    // there is nothing to download yet.
+    const waiting = await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    expect((waiting.body as VersionBody).status).toBe('completing');
+    await downloadUrl(tenant.ownerToken, fileId, version.id).expect(409);
+
+    await worker.get(ClaimSweeper).sweep();
+
+    const row = await versionRow(tenant.id, version.id);
+    expect(row).toMatchObject({ status: 'pending', claimedAt: null });
+    await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    await untilMeasured(tenant.id, version.id);
+  });
+
+  it('refuses, deletes the copy and releases the claim when the copied object does not match', async () => {
+    const tenant = await freshTenant();
+    const { fileId, version } = await startUpload(tenant.ownerToken);
+    const finalKey = await finalKeyOf(tenant.id, version.id);
+    const realHead = storage.head.bind(storage);
+    // First HEAD (the upload) is real; the second (the copy) reports another size.
+    const head = jest
+      .spyOn(storage, 'head')
+      .mockImplementationOnce(realHead)
+      .mockImplementationOnce(() => Promise.resolve({ size: 1, contentType: 'application/pdf', etag: '"x"' }));
+
+    let response: request.Response;
+    try {
+      response = await complete(tenant.ownerToken, fileId, version.id).expect(409);
+    } finally {
+      head.mockRestore();
+    }
+
+    expect((response.body as { detail: string }).detail).toBe('Upload does not match what was declared');
+    expect(await storage.head(finalKey)).toBeNull();
+    expect(await versionRow(tenant.id, version.id)).toMatchObject({ status: 'pending', claimedAt: null });
   });
 
   it('retries a measurer that fails, rather than skipping the version', async () => {
@@ -257,13 +394,16 @@ describe('files: completing, measuring and downloading', () => {
 
   it('recovers a version stuck in measuring through the sweeper', async () => {
     const tenant = await freshTenant();
-    const { version } = await startUpload(tenant.ownerToken);
-    // As if a worker claimed it 11 minutes ago and died: no job is queued.
+    const { fileId, version } = await startUpload(tenant.ownerToken);
+    // Completed for real, so the object is at its final key.
+    await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    await untilMeasured(tenant.id, version.id);
+    // As if a worker claimed it again 11 minutes ago and died: no job is queued.
     const longAgo = new Date(Date.now() - 11 * 60_000);
     await prisma.inTenant(tenant.id, (tx) =>
       tx.fileVersion.update({
         where: { id: version.id },
-        data: { status: 'measuring', claimedAt: longAgo, completedAt: longAgo },
+        data: { status: 'measuring', claimedAt: longAgo, completedAt: longAgo, checksum: null },
       }),
     );
 
