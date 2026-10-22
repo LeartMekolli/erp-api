@@ -180,6 +180,7 @@ describe('users and roles administration', () => {
       ]);
       expect(roles.find((role) => role.name === 'member')?.permissions).toEqual([
         'catalog.read',
+        'customer.read',
         'file.read',
         'quote.create',
         'role.read',

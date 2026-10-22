@@ -13,6 +13,7 @@ describe('permissions', () => {
   it('keeps the member to reading, plus requesting quotes', () => {
     expect([...SYSTEM_ROLES.member].sort()).toEqual([
       'catalog.read',
+      'customer.read',
       'file.read',
       'quote.create',
       'role.read',

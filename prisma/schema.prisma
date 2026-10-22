@@ -54,6 +54,7 @@ model Tenant {
   deliverySpeeds  DeliverySpeed[]
   minSizeSurcharges MinSizeSurcharge[]
   quotes          Quote[]
+  customers       Customer[]
 
   @@map("tenant")
 }
@@ -86,6 +87,8 @@ model User {
   name         String
   status       String   @default("active")
   locale       String
+  // staff | customer: a customer person holds customer memberships, never workspace roles
+  kind         String   @default("staff")
   createdAt    DateTime @default(now()) @map("created_at")
 
   tenant         Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -865,7 +868,8 @@ model CustomerGroup {
   percent   Decimal  @db.Decimal(9, 4)
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customers Customer[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -936,4 +940,22 @@ model Quote {
 
   @@index([tenantId])
   @@map("quote")
+}
+
+// A customer organisation: a brand, or one person on their own (Customers spec, D44).
+model Customer {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name            String
+  // active | disabled: a disabled customer's people cannot act for it
+  status          String   @default("active")
+  customerGroupId String?  @map("customer_group_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerGroup CustomerGroup? @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId])
+  @@map("customer")
 }

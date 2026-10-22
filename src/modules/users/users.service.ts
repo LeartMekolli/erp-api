@@ -42,7 +42,8 @@ export class UsersService {
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     const rows = await this.prisma.inTenant(tenantId, (tx) =>
       tx.user.findMany({
-        where: { status: query.status, ...(after ? { id: { lt: after.id } } : {}) },
+        // Customer people are listed with their customer, never as staff.
+        where: { kind: 'staff', status: query.status, ...(after ? { id: { lt: after.id } } : {}) },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
       }),
