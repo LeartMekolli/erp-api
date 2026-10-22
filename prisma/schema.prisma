@@ -53,6 +53,7 @@ model Tenant {
   customerGroups  CustomerGroup[]
   deliverySpeeds  DeliverySpeed[]
   minSizeSurcharges MinSizeSurcharge[]
+  quotes          Quote[]
 
   @@map("tenant")
 }
@@ -653,6 +654,7 @@ model Product {
   optionGroups ProductOptionGroup[]
   optionValues ProductOptionValue[]
   chain        ProductChain?
+  quotes       Quote[]
   steps        ProductStep[]
   margin       MarginOverride?
 
@@ -906,4 +908,32 @@ model MinSizeSurcharge {
 
   @@index([tenantId])
   @@map("min_size_surcharge")
+}
+
+// A saved price for a configuration, held until it expires (Pricing spec). Everything is copied in,
+// never re-read: later price changes do not move it.
+model Quote {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  productId       String   @map("product_id") @db.Uuid
+  quantity        Int
+  currency        String   @db.Char(3)
+  unitPrice       Decimal  @map("unit_price") @db.Decimal(18, 2)
+  total           Decimal  @db.Decimal(18, 2)
+  // Options, size, file version, customer group and delivery speed as requested and resolved.
+  inputs          Json
+  // Every material priced, with its price, source and staleness at quote time.
+  materials       Json
+  breakdown       Json
+  summary         Json
+  expiresAt       DateTime @map("expires_at")
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // A quoted product is kept: a saved quote outlives changes to the catalog.
+  product Product @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+
+  @@index([tenantId])
+  @@map("quote")
 }

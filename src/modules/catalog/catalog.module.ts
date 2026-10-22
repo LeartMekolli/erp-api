@@ -43,6 +43,6 @@ import { UnitsController } from './units.controller';
       },
     },
   ],
-  exports: [UnitsService, MaterialsService, OptionsService, ProductsService],
+  exports: [UnitsService, MaterialsService, OptionsService, ProductsService, CheckService],
 })
 export class CatalogModule {}

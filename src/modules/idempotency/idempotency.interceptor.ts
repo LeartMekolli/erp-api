@@ -59,11 +59,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
       return of(begun.body);
     }
 
-    // Nest sets the status after interceptors run, so read what it will be.
-    const status = this.reflector.get<number | undefined>(HTTP_CODE_METADATA, context.getHandler()) ?? HttpStatus.CREATED;
+    const declared = this.reflector.get<number | undefined>(HTTP_CODE_METADATA, context.getHandler()) ?? HttpStatus.CREATED;
 
     return next.handle().pipe(
       mergeMap(async (body: unknown) => {
+        // Nest applies the declared status before interceptors run; a handler may then set its own
+        // (a quote refusal answers 200), so the status to replay is the response's once it has run.
+        const status = response.statusCode || declared;
         await this.store.complete(tenantId, header, requestFingerprint, status, body);
         return body;
       }),

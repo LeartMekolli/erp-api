@@ -31,6 +31,8 @@ export type CheckResult =
   | {
       accepted: true;
       values: { group: string; value: string }[];
+      /** The chosen and defaulted value ids, for what they add to or remove from a step chain (Pricing). */
+      valueIds: string[];
       materialId: string;
       scale: Prisma.Decimal;
       /** Scaled, in catalog units. */
@@ -139,6 +141,7 @@ export function checkConfiguration(input: CheckInput): CheckResult {
     values: product.groups
       .filter((group) => chosen.has(group.id))
       .map((group) => ({ group: group.key, value: keyOf(chosen.get(group.id) ?? '') })),
+    valueIds: [...chosenIds],
     materialId: [...materials][0],
     scale,
     measures: scaleMeasures(file.measures, scale).map((measure) => ({

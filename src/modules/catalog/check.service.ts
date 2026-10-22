@@ -2,16 +2,19 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
+import type { Material } from '../../generated/prisma/client';
 import type { MeasureType } from '../files/measurers';
 import type { CheckResponse } from './check-response';
 import { checkConfiguration } from './config-check';
-import type { CheckInput } from './config-check';
+import type { CheckInput, Refusal } from './config-check';
+import type { ResolvedPrice } from './material-price';
 import { toCurrentPrice } from './material-response';
 import { MaterialsService } from './materials.service';
 import { OptionsService } from './options.service';
 import { ProductsService } from './products.service';
 import type { ProductForCheck } from './products.service';
 import { scaleSchema } from './scaling';
+import type { ScalableMeasure } from './scaling';
 
 export const checkRequestSchema = z.object({
   /** Chosen value key by group key, such as `{ "material": "silver_925" }`. */
@@ -23,6 +26,20 @@ export const checkRequestSchema = z.object({
   /** The customer's design file version, for a custom product. */
   file_version_id: z.uuid().optional(),
 });
+
+export type Evaluation =
+  | { accepted: false; reasons: Refusal[] }
+  | {
+      accepted: true;
+      values: { group: string; value: string }[];
+      /** The chosen and defaulted option value ids. */
+      valueIds: string[];
+      scale: Prisma.Decimal;
+      /** The design's measures at `scale`, in catalog units. */
+      measures: ScalableMeasure[];
+      material: Material;
+      price: ResolvedPrice;
+    };
 
 /** Checks a configuration of a product; nothing is stored (Catalog spec, "Configuration check"). */
 @Injectable()
@@ -36,27 +53,9 @@ export class CheckService {
 
   async check(tenantId: string, productId: string, body: z.infer<typeof checkRequestSchema>): Promise<CheckResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
-      const product = await this.products.loadForCheck(tx, productId);
-      const file = await this.designFile(tx, product, body.file_version_id);
-      const groups = await this.options.groupsWithValues(tx);
-      const result = checkConfiguration({
-        product,
-        values: groups.flatMap((group) =>
-          group.values.map((value) => ({ id: value.id, key: value.key, groupId: value.group_id, materialId: value.material_id })),
-        ),
-        rules: await this.options.rules(tx),
-        options: body.options,
-        size: body.size && ('scale' in body.size ? { scale: new Prisma.Decimal(body.size.scale) } : body.size),
-        file,
-      });
+      const result = await this.evaluate(tx, tenantId, productId, body);
       if (!result.accepted) {
-        return { accepted: false, reasons: result.reasons };
-      }
-
-      const material = await this.materials.find(tx, result.materialId);
-      const price = await this.materials.priceOf(tx, tenantId, material);
-      if ('missing' in price) {
-        return { accepted: false, reasons: [{ code: 'price_missing', message: price.missing }] };
+        return result;
       }
       return {
         accepted: true,
@@ -67,9 +66,54 @@ export class CheckService {
           value: measure.value.toFixed(6),
           unit: measure.unit,
         })),
-        material: { id: material.id, key: material.key, name: material.name, price: toCurrentPrice(price) },
+        material: {
+          id: result.material.id,
+          key: result.material.key,
+          name: result.material.name,
+          price: toCurrentPrice(result.price),
+        },
       };
     });
+  }
+
+  /** The check inside a caller's transaction, with what pricing needs from an accepted configuration. */
+  async evaluate(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    productId: string,
+    body: z.infer<typeof checkRequestSchema>,
+  ): Promise<Evaluation> {
+    const product = await this.products.loadForCheck(tx, productId);
+    const file = await this.designFile(tx, product, body.file_version_id);
+    const groups = await this.options.groupsWithValues(tx);
+    const result = checkConfiguration({
+      product,
+      values: groups.flatMap((group) =>
+        group.values.map((value) => ({ id: value.id, key: value.key, groupId: value.group_id, materialId: value.material_id })),
+      ),
+      rules: await this.options.rules(tx),
+      options: body.options,
+      size: body.size && ('scale' in body.size ? { scale: new Prisma.Decimal(body.size.scale) } : body.size),
+      file,
+    });
+    if (!result.accepted) {
+      return { accepted: false, reasons: result.reasons };
+    }
+
+    const material = await this.materials.find(tx, result.materialId);
+    const price = await this.materials.priceOf(tx, tenantId, material);
+    if ('missing' in price) {
+      return { accepted: false, reasons: [{ code: 'price_missing', message: price.missing }] };
+    }
+    return {
+      accepted: true,
+      values: result.values,
+      valueIds: result.valueIds,
+      scale: result.scale,
+      measures: result.measures,
+      material,
+      price,
+    };
   }
 
   /** A ready-made product's own version, or the customer's for a custom product (B1, B2). */
