@@ -36,10 +36,17 @@ export function uploadSchemas(maxBytes: number) {
     content_type: contentTypeSchema,
     size: z.number().int().min(1).max(maxBytes),
   });
-  const file = version.extend({
-    kind: z.enum(FILE_KINDS),
-    declared_unit: z.enum(DECLARED_UNITS).optional(),
-  });
+  const file = version
+    .extend({
+      kind: z.enum(FILE_KINDS),
+      declared_unit: z.enum(DECLARED_UNITS).optional(),
+    })
+    // A mesh has no unit of its own, so a design must say which one it uses (Catalog spec B4).
+    .superRefine((input, ctx) => {
+      if (input.kind === 'design' && input.declared_unit === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['declared_unit'], message: 'Required for a design file' });
+      }
+    });
   return { file, version };
 }
 

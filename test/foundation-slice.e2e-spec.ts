@@ -154,7 +154,7 @@ describe('foundation slice', () => {
     const bytes = Buffer.from(`%PDF-1.7 foundation slice ${run}`);
     const started = await call('post', '/files', {
       token: owner,
-      body: { kind: 'design', name: 'poster.pdf', content_type: 'application/pdf', size: bytes.length },
+      body: { kind: 'design', name: 'poster.pdf', content_type: 'application/pdf', size: bytes.length, declared_unit: 'mm' },
     });
     expect(started.status).toBe(201);
     const { file, version, upload } = started.body as {

@@ -232,6 +232,17 @@ describe('files: starting uploads', () => {
     }
   });
 
+  it('requires a declared unit for a design file, naming the field', async () => {
+    const tenant = await freshTenant();
+    const design = { kind: 'design', name: 'part.stl', content_type: 'model/stl', size: 84 };
+
+    const refused = await startUpload(tenant.ownerToken, design).expect(400);
+    expect((refused.body as { errors: { path: string }[] }).errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: 'declared_unit' })]),
+    );
+    await startUpload(tenant.ownerToken, { ...design, declared_unit: 'mm' }).expect(201);
+  });
+
   it('shows a file with its versions newest first and their measures', async () => {
     const tenant = await freshTenant();
     const { file, version: first } = await created(tenant.ownerToken);

@@ -1,13 +1,19 @@
 import { Readable } from 'node:stream';
+import { cube, stl } from '../../../test/stl';
 import { DEFAULT_MEASURERS, MEASURE_TYPES, MEASURE_UNITS, measurerFor, NoopMeasurer } from './measurers';
 import type { Measurer } from './measurers';
 
 /**
- * A small sample per content type a registered measurer claims. A measurer
- * added without a fixture here fails the contract test until it gets one.
+ * A small sample per content type a registered measurer claims, with the
+ * unit it declares. A measurer added without a fixture here fails the
+ * contract test until it gets one.
  */
-const FIXTURES: Record<string, Buffer> = {
-  '*/*': Buffer.from('any bytes at all'),
+const stlCube = stl(cube(10), 'binary');
+const FIXTURES: Record<string, { body: Buffer; declaredUnit: string | null }> = {
+  '*/*': { body: Buffer.from('any bytes at all'), declaredUnit: null },
+  'model/stl': { body: stlCube, declaredUnit: 'mm' },
+  'application/sla': { body: stlCube, declaredUnit: 'mm' },
+  'application/vnd.ms-pki.stl': { body: stlCube, declaredUnit: 'mm' },
 };
 
 const DECIMAL = /^-?\d+(\.\d+)?$/;
@@ -21,8 +27,8 @@ describe('measurer contract', () => {
 
         const measures = await measurer.measure({
           contentType,
-          declaredUnit: null,
-          read: () => Promise.resolve(Readable.from([fixture])),
+          declaredUnit: fixture.declaredUnit,
+          read: () => Promise.resolve(Readable.from([fixture.body])),
         });
 
         for (const measure of measures) {

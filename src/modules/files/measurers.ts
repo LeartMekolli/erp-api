@@ -1,4 +1,5 @@
 import type { Readable } from 'node:stream';
+import { StlMeasurer } from './stl-measurer';
 
 /** Q4's list; Catalog decides which of these a product category needs. */
 export const MEASURE_TYPES = [
@@ -33,7 +34,7 @@ export interface Measurer {
   }): Promise<{ type: MeasureType; value: string; unit: MeasureUnit }[]>;
 }
 
-/** Measures nothing. No parser ships with the foundation (Q4); Catalog adds real ones. */
+/** Measures nothing: the fallback for content types no parser claims (Q4). */
 export class NoopMeasurer implements Measurer {
   readonly name = 'noop';
   readonly contentTypes = ['*/*'];
@@ -46,7 +47,8 @@ export class NoopMeasurer implements Measurer {
 /** DI token for the registered measurers. */
 export const MEASURERS = Symbol('MEASURERS');
 
-export const DEFAULT_MEASURERS: readonly Measurer[] = [new NoopMeasurer()];
+// An exact content-type match wins, so STL files reach StlMeasurer and everything else the no-op.
+export const DEFAULT_MEASURERS: readonly Measurer[] = [new StlMeasurer(), new NoopMeasurer()];
 
 /** An exact match wins over `type/*`, which wins over `*\/*`. */
 export function measurerFor(contentType: string, measurers: readonly Measurer[]): Measurer {

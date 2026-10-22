@@ -17,10 +17,12 @@ import {
   fileDetailResponseSchema,
   versionResponseSchema,
 } from '../src/modules/files/file-response';
+import { StlMeasurer } from '../src/modules/files/stl-measurer';
 import { uploadKeyFor } from '../src/modules/files/storage-keys';
 import { ObjectStorage, STORAGE } from '../src/storage/object-storage';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { cube, stl } from './stl';
 import { putToSignedUrl } from './storage';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
@@ -159,7 +161,7 @@ describe('files: completing, measuring and downloading', () => {
         .overrideProvider(JOB_REGISTRY)
         .useValue(fixture)
         .overrideProvider(MEASURERS)
-        .useValue([pdfMeasurer, new NoopMeasurer()]),
+        .useValue([pdfMeasurer, new StlMeasurer(), new NoopMeasurer()]),
     );
   });
 
@@ -203,6 +205,33 @@ describe('files: completing, measuring and downloading', () => {
     const [latest] = (file.body as { versions: (VersionBody & { measures: object[] })[] }).versions;
     expect(latest.status).toBe('measured');
     expect(latest.measures).toEqual([{ type: 'page_count', value: '3', unit: 'count' }]);
+  });
+
+  it('measures an uploaded STL design: volume, surface area and bounding box', async () => {
+    const tenant = await freshTenant();
+    const body = stl(cube(2), 'binary');
+    const started = await http()
+      .post('/files')
+      .set('Authorization', `Bearer ${tenant.ownerToken}`)
+      .send({ kind: 'design', name: 'part.stl', content_type: 'model/stl', size: body.length, declared_unit: 'cm' })
+      .expect(201);
+    const { file, version, upload } = started.body as { file: { id: string }; version: VersionBody; upload: Upload };
+    const put = await putToSignedUrl(upload.url, body, upload.headers);
+    await put.arrayBuffer();
+    expect(put.status).toBe(200);
+
+    await complete(tenant.ownerToken, file.id, version.id).expect(200);
+    await untilMeasured(tenant.id, version.id);
+
+    const detail = await http().get(`/files/${file.id}`).set('Authorization', `Bearer ${tenant.ownerToken}`).expect(200);
+    const [latest] = (detail.body as { versions: { measures: { type: string; value: string; unit: string }[] }[] }).versions;
+    expect(latest.measures).toEqual(
+      expect.arrayContaining([
+        { type: 'volume', value: '8000', unit: 'mm3' },
+        { type: 'surface_area', value: '2400', unit: 'mm2' },
+        { type: 'bounding_box_x', value: '20', unit: 'mm' },
+      ]),
+    );
   });
 
   it('refuses to complete before the upload, and leaves the version pending', async () => {
