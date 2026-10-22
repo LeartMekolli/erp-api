@@ -58,11 +58,14 @@ export function convert(value: Prisma.Decimal, from: UnitDef, to: UnitDef): Pris
   return value.times(from.factor).dividedBy(to.factor);
 }
 
+const PLAIN_DECIMAL = /^\d{1,9}(\.\d{1,9})?$/;
+
 /** A positive decimal written plainly: no exponent, no sign, at most 9 decimals. */
 export const positiveDecimalSchema = z
   .string()
-  .regex(/^\d{1,9}(\.\d{1,9})?$/, 'must be a decimal such as 1.5')
-  .refine((value) => new Prisma.Decimal(value).greaterThan(0), 'must be greater than 0');
+  .regex(PLAIN_DECIMAL, 'must be a decimal such as 1.5')
+  // Zod runs refinements after a failed regex too, so only parse what the regex accepted.
+  .refine((value) => !PLAIN_DECIMAL.test(value) || new Prisma.Decimal(value).greaterThan(0), 'must be greater than 0');
 
 export const createUnitSchema = z.object({
   key: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/, 'lowercase letters, digits and _, starting with a letter'),

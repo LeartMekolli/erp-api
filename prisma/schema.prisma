@@ -37,6 +37,10 @@ model Tenant {
   optionValues    OptionValue[]
   optionRules     OptionRule[]
   optionRuleTargets OptionRuleTarget[]
+  categories      Category[]
+  products        Product[]
+  productOptionGroups ProductOptionGroup[]
+  productOptionValues ProductOptionValue[]
 
   @@map("tenant")
 }
@@ -424,6 +428,7 @@ model FileVersion {
   file       File      @relation(fields: [tenantId, fileId], references: [tenantId, id], onDelete: Cascade)
   uploadedBy User      @relation(fields: [tenantId, uploadedByUserId], references: [tenantId, id], onDelete: NoAction)
   measures   Measure[]
+  products   Product[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -493,6 +498,7 @@ model Material {
 
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   optionValues OptionValue[]
+  products     Product[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -522,7 +528,8 @@ model OptionGroup {
   createdAt DateTime @default(now()) @map("created_at")
 
   tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  values OptionValue[]
+  values        OptionValue[]
+  productGroups ProductOptionGroup[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -544,6 +551,8 @@ model OptionValue {
   material    Material?          @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: NoAction)
   rules       OptionRule[]
   ruleTargets OptionRuleTarget[]
+  productDefaults ProductOptionGroup[]
+  productOffers   ProductOptionValue[]
 
   @@unique([groupId, key])
   @@unique([tenantId, id])
@@ -581,4 +590,89 @@ model OptionRuleTarget {
   @@unique([ruleId, valueId])
   @@index([tenantId])
   @@map("option_rule_target")
+}
+
+// Groups products and names the measures a design file must have (Catalog spec, B1).
+model Category {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key              String
+  name             String
+  // A subset of MEASURE_TYPES in src/modules/files/measurers.ts.
+  requiredMeasures String[] @map("required_measures")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("category")
+}
+
+// custom: the customer brings the design file; ready_made: the product pins its own measured version (C2, B1).
+model Product {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  categoryId    String   @map("category_id") @db.Uuid
+  key           String
+  name          String
+  // custom | ready_made
+  kind          String
+  fileVersionId String?  @map("file_version_id") @db.Uuid
+  // A material the product fixes, instead of one chosen through an option (B11).
+  materialId    String?  @map("material_id") @db.Uuid
+  // { mode: none } | { mode: range, min, max } | { mode: named, sizes: [{ key, scale }] }, scales as decimal strings (C3).
+  sizing        Json
+  // active
+  status        String   @default("active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category     Category             @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: NoAction)
+  fileVersion  FileVersion?         @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
+  material     Material?            @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: NoAction)
+  optionGroups ProductOptionGroup[]
+  optionValues ProductOptionValue[]
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("product")
+}
+
+// An option group a product offers, whether it must be answered, and its default (C4, B10).
+model ProductOptionGroup {
+  id             String  @id @default(uuid(7)) @db.Uuid
+  tenantId       String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  productId      String  @map("product_id") @db.Uuid
+  groupId        String  @map("group_id") @db.Uuid
+  required       Boolean
+  defaultValueId String? @map("default_value_id") @db.Uuid
+  position       Int
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Cascade)
+  group        OptionGroup  @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  defaultValue OptionValue? @relation(fields: [tenantId, defaultValueId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([productId, groupId])
+  @@index([tenantId])
+  @@map("product_option_group")
+}
+
+// An option value a product allows.
+model ProductOptionValue {
+  id        String @id @default(uuid(7)) @db.Uuid
+  tenantId  String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  productId String @map("product_id") @db.Uuid
+  valueId   String @map("value_id") @db.Uuid
+
+  tenant  Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product     @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Cascade)
+  value   OptionValue @relation(fields: [tenantId, valueId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([productId, valueId])
+  @@index([tenantId])
+  @@map("product_option_value")
 }

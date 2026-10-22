@@ -16,11 +16,23 @@ import { SnapshotsService } from './price-feed/snapshots.service';
 import { UnitsService } from './units';
 import type { UnitDef } from './units';
 
-const decimal = (pattern: RegExp, message: string) => z.string().regex(pattern, message);
-const priceSchema = decimal(/^\d{1,12}(\.\d{1,6})?$/, 'must be a decimal with at most 6 places, such as 0.85').refine(
-  (value) => new Prisma.Decimal(value).greaterThan(0),
-  'must be greater than 0',
-);
+/**
+ * A decimal string matching `pattern`, optionally with a bound. Zod runs refinements after a failed
+ * regex too, so the bound only parses what the regex accepted.
+ */
+const decimal = (
+  pattern: RegExp,
+  message: string,
+  bound?: { test: (value: Prisma.Decimal) => boolean; message: string },
+) =>
+  z
+    .string()
+    .regex(pattern, message)
+    .refine((value) => !bound || !pattern.test(value) || bound.test(new Prisma.Decimal(value)), bound?.message);
+const priceSchema = decimal(/^\d{1,12}(\.\d{1,6})?$/, 'must be a decimal with at most 6 places, such as 0.85', {
+  test: (value) => value.greaterThan(0),
+  message: 'must be greater than 0',
+});
 
 const fieldsSchema = z.object({
   name: z.string().trim().min(1).max(200),
@@ -32,9 +44,10 @@ const fieldsSchema = z.object({
     .regex(/^[a-z][a-z0-9_]{0,31}$/, 'a lowercase metal key, such as silver')
     .nullable()
     .optional(),
-  addon_percent: decimal(/^-?\d{1,4}(\.\d{1,4})?$/, 'a percentage with at most 4 places, such as 8')
-    .refine((value) => new Prisma.Decimal(value).greaterThan(-100), 'must be above -100')
-    .optional(),
+  addon_percent: decimal(/^-?\d{1,4}(\.\d{1,4})?$/, 'a percentage with at most 4 places, such as 8', {
+    test: (value) => value.greaterThan(-100),
+    message: 'must be above -100',
+  }).optional(),
   addon_amount: decimal(/^\d{1,12}(\.\d{1,6})?$/, 'must be a decimal with at most 6 places').optional(),
   manual_price: priceSchema.nullable().optional(),
   fallback_price: priceSchema.nullable().optional(),
