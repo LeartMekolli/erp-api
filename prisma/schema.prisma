@@ -33,6 +33,10 @@ model Tenant {
   files           File[]
   units           Unit[]
   materials       Material[]
+  optionGroups    OptionGroup[]
+  optionValues    OptionValue[]
+  optionRules     OptionRule[]
+  optionRuleTargets OptionRuleTarget[]
 
   @@map("tenant")
 }
@@ -487,7 +491,8 @@ model Material {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  optionValues OptionValue[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -506,4 +511,74 @@ model MetalPriceSnapshot {
 
   @@index([metal, currency, fetchedAt(sort: Desc)])
   @@map("metal_price_snapshot")
+}
+
+// A configurable dimension of a product, such as material or finish (Catalog spec C4).
+model OptionGroup {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key       String
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  values OptionValue[]
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("option_group")
+}
+
+// One choice within a group. Choosing it may select a material (the catalog's option effect).
+model OptionValue {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  groupId    String   @map("group_id") @db.Uuid
+  key        String
+  name       String
+  materialId String?  @map("material_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group       OptionGroup        @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  material    Material?          @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: NoAction)
+  rules       OptionRule[]
+  ruleTargets OptionRuleTarget[]
+
+  @@unique([groupId, key])
+  @@unique([tenantId, id])
+  @@map("option_value")
+}
+
+// excludes: choosing the value rules out every target. requires: it needs at least one target (spec C4, B9).
+model OptionRule {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // excludes | requires
+  kind      String
+  valueId   String   @map("value_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  value   OptionValue        @relation(fields: [tenantId, valueId], references: [tenantId, id], onDelete: Cascade)
+  targets OptionRuleTarget[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, valueId])
+  @@map("option_rule")
+}
+
+model OptionRuleTarget {
+  id       String @id @default(uuid(7)) @db.Uuid
+  tenantId String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  ruleId   String @map("rule_id") @db.Uuid
+  valueId  String @map("value_id") @db.Uuid
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rule   OptionRule  @relation(fields: [tenantId, ruleId], references: [tenantId, id], onDelete: Cascade)
+  value  OptionValue @relation(fields: [tenantId, valueId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([ruleId, valueId])
+  @@index([tenantId])
+  @@map("option_rule_target")
 }

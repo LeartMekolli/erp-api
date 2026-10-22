@@ -4,6 +4,8 @@ import { AuditModule } from '../audit/audit.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { MaterialsController } from './materials.controller';
 import { MaterialsService } from './materials.service';
+import { OptionsController } from './options.controller';
+import { OptionsService } from './options.service';
 import { FakeMetalPriceProvider } from './price-feed/fake.provider';
 import { METAL_PRICE_PROVIDER } from './price-feed/metal-price-provider';
 import type { MetalPriceProvider } from './price-feed/metal-price-provider';
@@ -16,10 +18,11 @@ import { UnitsController } from './units.controller';
 /** Products, choices, materials and units: what a tenant can make and sell (Catalog spec). */
 @Module({
   imports: [AuditModule, NotificationsModule],
-  controllers: [UnitsController, MaterialsController],
+  controllers: [UnitsController, MaterialsController, OptionsController],
   providers: [
     UnitsService,
     MaterialsService,
+    OptionsService,
     SnapshotsService,
     PriceSnapshotHandler,
     {
@@ -34,6 +37,6 @@ import { UnitsController } from './units.controller';
       },
     },
   ],
-  exports: [UnitsService, MaterialsService],
+  exports: [UnitsService, MaterialsService, OptionsService],
 })
 export class CatalogModule {}
