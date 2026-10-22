@@ -22,7 +22,7 @@ export interface VariableSpec {
 export interface EventDefinition {
   audience: Audience;
   channels: readonly ('email' | 'feed')[];
-  subjectType: 'invitation' | 'user' | 'file_version';
+  subjectType: 'invitation' | 'user' | 'file_version' | 'material';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -114,6 +114,24 @@ export const EVENTS = {
       en: {
         subject: '{{ file_name }} is ready',
         body: 'Your file {{ file_name }} has been checked and measured.\n\nMeasures: {{ measures }}',
+      },
+    },
+  },
+  // Raised once a day by the price feed job for a feed material with no fresh price (Catalog spec B5, B6).
+  'material.price.stale': {
+    audience: { kind: 'permission', permission: 'catalog.write' },
+    channels: ['email', 'feed'],
+    subjectType: 'material',
+    variables: {
+      material_name: { sample: 'Silver 925' },
+      reason: { sample: 'The last feed price is from 2026-10-20T05:00:00.000Z, older than 48 hours.' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ material_name }} has no fresh price',
+        body:
+          '{{ reason }}\n\nUntil a fresh feed price arrives, {{ material_name }} uses its last feed price or its ' +
+          'fallback price. Check the fallback, or override the price by hand.',
       },
     },
   },

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -49,13 +50,15 @@ describe('catalog: materials', () => {
   }
 
   const brass = { key: 'brass', name: 'Brass', priced_unit: 'g', density_g_cm3: '8.5', price_source: 'manual', manual_price: '0.012' };
+  // Feed snapshots are platform-wide and outlive test runs; a metal of this run's own has none.
+  const runMetal = `testmetal_${randomBytes(4).toString('hex')}`;
   const silver = {
     key: 'silver_925',
     name: 'Silver 925',
     priced_unit: 'g',
     density_g_cm3: '10.36',
     price_source: 'feed',
-    feed_metal: 'silver',
+    feed_metal: runMetal,
     addon_percent: '8',
     fallback_price: '0.85',
   };

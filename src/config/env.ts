@@ -92,6 +92,15 @@ const envSchema = z
       .positive()
       .max(5 * 1024 ** 3)
       .default(104_857_600),
+    // Where feed-priced materials get their daily metal prices (Catalog spec C5, C6).
+    // `fake` returns fixed prices, for local work and tests.
+    METAL_PRICE_PROVIDER: z.enum(['fake', 'metalsdev']).default('fake'),
+    // Required with metalsdev. Never logged.
+    METAL_PRICE_API_KEY: z.string().min(1).optional(),
+    // One provider call per currency per day; the free plan allows 100 a month (spec B5).
+    METAL_PRICE_MAX_CURRENCIES: z.coerce.number().int().min(1).max(10).default(3),
+    // A feed price older than this is flagged stale and staff are told (spec B6).
+    METAL_PRICE_STALE_HOURS: z.coerce.number().int().min(1).max(720).default(48),
   })
   .superRefine((env, ctx) => {
     // One leaked secret must not compromise both cursors and access tokens.
@@ -100,6 +109,13 @@ const envSchema = z
         code: 'custom',
         path: ['JWT_SECRET'],
         message: 'must differ from APP_SECRET',
+      });
+    }
+    if (env.METAL_PRICE_PROVIDER === 'metalsdev' && !env.METAL_PRICE_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['METAL_PRICE_API_KEY'],
+        message: 'required when METAL_PRICE_PROVIDER is metalsdev',
       });
     }
   });

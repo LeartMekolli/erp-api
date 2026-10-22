@@ -493,3 +493,17 @@ model Material {
   @@unique([tenantId, id])
   @@map("material")
 }
+
+// Daily metal prices from the price provider (Catalog spec C5, D87). Platform
+// data, not tenant-owned: one fetch per currency serves every tenant.
+model MetalPriceSnapshot {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  provider     String
+  metal        String
+  currency     String   @db.Char(3)
+  pricePerGram Decimal  @map("price_per_gram") @db.Decimal(18, 9)
+  fetchedAt    DateTime @map("fetched_at")
+
+  @@index([metal, currency, fetchedAt(sort: Desc)])
+  @@map("metal_price_snapshot")
+}

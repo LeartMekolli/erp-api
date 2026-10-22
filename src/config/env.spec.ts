@@ -83,6 +83,30 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, WORKER_IN_PROCESS: value })).toThrow(/WORKER_IN_PROCESS/);
   });
 
+  it('defaults the metal price feed to the fake provider, 3 currencies and 48 hours', () => {
+    expect(loadEnv({ ...valid })).toMatchObject({
+      METAL_PRICE_PROVIDER: 'fake',
+      METAL_PRICE_MAX_CURRENCIES: 3,
+      METAL_PRICE_STALE_HOURS: 48,
+    });
+    expect(loadEnv({ ...valid }).METAL_PRICE_API_KEY).toBeUndefined();
+  });
+
+  it('requires an API key for the metals.dev provider', () => {
+    expect(() => loadEnv({ ...valid, METAL_PRICE_PROVIDER: 'metalsdev' })).toThrow(/METAL_PRICE_API_KEY/);
+    expect(loadEnv({ ...valid, METAL_PRICE_PROVIDER: 'metalsdev', METAL_PRICE_API_KEY: 'k' }).METAL_PRICE_API_KEY).toBe('k');
+  });
+
+  it.each([
+    ['METAL_PRICE_PROVIDER', 'other'],
+    ['METAL_PRICE_MAX_CURRENCIES', '0'],
+    ['METAL_PRICE_MAX_CURRENCIES', '11'],
+    ['METAL_PRICE_STALE_HOURS', '0'],
+    ['METAL_PRICE_STALE_HOURS', '721'],
+  ])('rejects %s=%s', (name, value) => {
+    expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
+  });
+
   it('defaults API_DOCS to false and reads true', () => {
     expect(loadEnv({ ...valid }).API_DOCS).toBe(false);
     expect(loadEnv({ ...valid, API_DOCS: 'true' }).API_DOCS).toBe(true);

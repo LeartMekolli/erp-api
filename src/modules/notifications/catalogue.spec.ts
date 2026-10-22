@@ -4,10 +4,11 @@ import { validateTemplate } from './render';
 const events = Object.keys(EVENTS) as EventKey[];
 
 describe('notification catalogue', () => {
-  it('declares the five events of the foundation', () => {
+  it('declares the events of the foundation and the catalog', () => {
     expect(events.sort()).toEqual([
       'auth.password_reset_requested',
       'file.measured',
+      'material.price.stale',
       'user.invited',
       'user.joined',
       'user.roles_changed',

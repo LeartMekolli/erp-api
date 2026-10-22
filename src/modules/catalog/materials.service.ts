@@ -16,9 +16,6 @@ import { SnapshotsService } from './price-feed/snapshots.service';
 import { UnitsService } from './units';
 import type { UnitDef } from './units';
 
-/** Until the price feed ships its setting (plan Task 4). */
-const STALE_HOURS = 48;
-
 const decimal = (pattern: RegExp, message: string) => z.string().regex(pattern, message);
 const priceSchema = decimal(/^\d{1,12}(\.\d{1,6})?$/, 'must be a decimal with at most 6 places, such as 0.85').refine(
   (value) => new Prisma.Decimal(value).greaterThan(0),
@@ -196,7 +193,7 @@ export class MaterialsService {
       tenantCurrency,
       snapshot,
       now: new Date(),
-      staleHours: STALE_HOURS,
+      staleHours: this.config.get('METAL_PRICE_STALE_HOURS'),
     });
   }
 

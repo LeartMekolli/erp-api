@@ -68,6 +68,9 @@ describe('ConfigService', () => {
       S3_SECRET_ACCESS_KEY: 'minio-password',
       S3_FORCE_PATH_STYLE: 'true',
       FILE_MAX_BYTES: 104_857_600,
+      METAL_PRICE_PROVIDER: 'fake',
+      METAL_PRICE_MAX_CURRENCIES: 3,
+      METAL_PRICE_STALE_HOURS: 48,
       SENTRY_DSN: undefined,
       SENTRY_ENVIRONMENT: undefined,
     });

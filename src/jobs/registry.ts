@@ -87,6 +87,12 @@ export const SCHEDULED_JOBS = {
     schedule: { pattern: '0 3 * * *', tz: 'UTC' },
     lockTtlMs: 600_000,
   },
+  // Fetches metal prices for feed-priced materials and flags stale ones (Catalog spec C5, B5, B6).
+  'material.prices.fetch': {
+    queue: 'maintenance',
+    schedule: { pattern: '0 5 * * *', tz: 'UTC' },
+    lockTtlMs: 600_000,
+  },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;
