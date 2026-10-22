@@ -1,5 +1,7 @@
 import { Readable } from 'node:stream';
+import { UnrecoverableError } from 'bullmq';
 import { cube, inverted, stl, tetrahedron } from '../../../test/stl';
+import type { Triangle } from '../../../test/stl';
 import { StlMeasurer } from './stl-measurer';
 
 const measurer = new StlMeasurer();
@@ -76,6 +78,26 @@ describe('StlMeasurer', () => {
   });
 
   it.each(['empty', 'truncated', 'count larger than the file'])('refuses a broken STL: %s', async (kind) => {
+    await expect(measure(broken(kind), 'mm')).rejects.toThrow(UnrecoverableError);
     await expect(measure(broken(kind), 'mm')).rejects.toThrow(/STL/);
+  });
+
+  it('refuses a binary STL holding values that are not numbers', async () => {
+    const file = stl(cube(10), 'binary');
+    file.writeFloatLE(Number.NaN, 84 + 12);
+    await expect(measure(file, 'mm')).rejects.toThrow(/STL: .*not numbers/);
+  });
+
+  it('refuses a flat mesh that encloses no volume', async () => {
+    // Two triangles back to back: a surface, but nothing inside it.
+    const flat: Triangle[] = [
+      [[0, 0, 0], [10, 0, 0], [0, 10, 0]],
+      [[0, 0, 0], [0, 10, 0], [10, 0, 0]],
+    ];
+    await expect(measure(stl(flat, 'binary'), 'mm')).rejects.toThrow(/STL: .*no volume/);
+  });
+
+  it('refuses a model too large for its declared unit', async () => {
+    await expect(measure(stl(cube(100_000), 'binary'), 'm')).rejects.toThrow(/STL: .*too large/);
   });
 });

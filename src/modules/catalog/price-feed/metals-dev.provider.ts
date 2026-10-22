@@ -5,6 +5,8 @@ import type { MetalPriceProvider } from './metal-price-provider';
 
 const LATEST_URL = 'https://api.metals.dev/v1/latest';
 const PER_GRAM_DECIMALS = 9;
+/** Snapshot prices are Decimal(18, 9): at most 9 digits before the point. */
+const MAX_PER_GRAM = new Prisma.Decimal('1e9');
 
 interface LatestBody {
   status?: string;
@@ -52,10 +54,13 @@ export class MetalsDevProvider implements MetalPriceProvider {
         this.logger.warn(`metals.dev gave no usable ${currency} price for ${metal}; skipped`);
         continue;
       }
-      prices.push({
-        metal,
-        pricePerGram: new Prisma.Decimal(String(value)).dividedBy(GRAMS_PER_TROY_OUNCE).toDecimalPlaces(PER_GRAM_DECIMALS),
-      });
+      const pricePerGram = new Prisma.Decimal(String(value)).dividedBy(GRAMS_PER_TROY_OUNCE).toDecimalPlaces(PER_GRAM_DECIMALS);
+      // One out-of-range price would make the whole currency's insert fail; skip just that metal.
+      if (pricePerGram.isZero() || pricePerGram.greaterThanOrEqualTo(MAX_PER_GRAM)) {
+        this.logger.warn(`metals.dev gave an out-of-range ${currency} price for ${metal}; skipped`);
+        continue;
+      }
+      prices.push({ metal, pricePerGram });
     }
     return prices;
   }

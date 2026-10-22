@@ -1,4 +1,5 @@
 import type { Readable } from 'node:stream';
+import { UnrecoverableError } from 'bullmq';
 import type { Measurer, MeasureType, MeasureUnit } from './measurers';
 
 /** Millimetres per declared unit (DECLARED_UNITS). */
@@ -7,6 +8,15 @@ const MM_PER_UNIT: Record<string, number> = { mm: 1, cm: 10, m: 1000, in: 25.4 }
 const BINARY_HEADER_BYTES = 84;
 const BINARY_TRIANGLE_BYTES = 50;
 const VERTEX = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/g;
+/** Measure columns are Decimal(18, 6): at most 12 digits before the point. */
+const MAX_MEASURE = 1e12;
+
+/** A broken file stays broken, so the job fails at once instead of retrying (the version ends `failed`). */
+class StlError extends UnrecoverableError {
+  constructor(problem: string) {
+    super(`STL: ${problem}`);
+  }
+}
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -19,7 +29,7 @@ async function readAll(stream: Readable): Promise<Buffer> {
 /** Every triangle as nine numbers (three points), from a binary or ASCII STL. */
 export function parseStl(file: Buffer): Float64Array {
   if (file.length === 0) {
-    throw new Error('STL: the file is empty');
+    throw new StlError('the file is empty');
   }
 
   // Binary first: its 80-byte header may itself start with "solid".
@@ -33,6 +43,9 @@ export function parseStl(file: Buffer): Float64Array {
           triangles[t * 9 + i] = file.readFloatLE(at + 4 * i);
         }
       }
+      if (triangles.some((value) => !Number.isFinite(value))) {
+        throw new StlError('the binary triangles contain values that are not numbers');
+      }
       return triangles;
     }
   }
@@ -44,12 +57,12 @@ export function parseStl(file: Buffer): Float64Array {
       values.push(Number(match[1]), Number(match[2]), Number(match[3]));
     }
     if (values.length === 0 || values.length % 9 !== 0 || values.some((value) => !Number.isFinite(value))) {
-      throw new Error('STL: the ASCII triangles are incomplete or not numeric');
+      throw new StlError('the ASCII triangles are incomplete or not numeric');
     }
     return Float64Array.from(values);
   }
 
-  throw new Error('STL: not a binary or ASCII STL file, or it is truncated');
+  throw new StlError('not a binary or ASCII STL file, or it is truncated');
 }
 
 /** Volume (signed tetrahedra, so inward-facing cavities subtract), surface area and bounding box. */
@@ -99,12 +112,19 @@ export class StlMeasurer implements Measurer {
   }): Promise<{ type: MeasureType; value: string; unit: MeasureUnit }[]> {
     const mm = input.declaredUnit === null ? undefined : MM_PER_UNIT[input.declaredUnit];
     if (mm === undefined) {
-      throw new Error(`STL: the file has no usable declared unit (${String(input.declaredUnit)})`);
+      throw new StlError(`the file has no usable declared unit (${String(input.declaredUnit)})`);
     }
 
     const { volume, area, bbox } = meshMeasures(parseStl(await readAll(await input.read())));
+    const volumeMm3 = volume * mm ** 3;
+    if (Number(decimal(volumeMm3)) === 0) {
+      throw new StlError('the mesh encloses no volume; is it closed?');
+    }
+    if ([volumeMm3, area * mm ** 2, ...bbox.map((side) => side * mm)].some((value) => value >= MAX_MEASURE)) {
+      throw new StlError(`the model is too large in ${String(input.declaredUnit)}; check the declared unit`);
+    }
     return [
-      { type: 'volume', value: decimal(volume * mm ** 3), unit: 'mm3' },
+      { type: 'volume', value: decimal(volumeMm3), unit: 'mm3' },
       { type: 'surface_area', value: decimal(area * mm ** 2), unit: 'mm2' },
       { type: 'bounding_box_x', value: decimal(bbox[0] * mm), unit: 'mm' },
       { type: 'bounding_box_y', value: decimal(bbox[1] * mm), unit: 'mm' },

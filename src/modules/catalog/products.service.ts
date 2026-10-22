@@ -215,6 +215,8 @@ export class ProductsService {
   async setOptions(tenantId: string, id: string, input: z.infer<typeof productOptionsInputSchema>): Promise<ProductResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       await this.find(tx, id);
+      // Two replacements at once would both delete, then collide on insert; the second waits here instead.
+      await tx.$queryRaw`SELECT id FROM product WHERE id = ${id}::uuid FOR UPDATE`;
       const groupIds = input.groups.map((group) => group.group_id);
       // Row-level security hides other tenants' groups and values, so a foreign id is simply not found.
       if ((await tx.optionGroup.count({ where: { id: { in: groupIds } } })) !== groupIds.length) {

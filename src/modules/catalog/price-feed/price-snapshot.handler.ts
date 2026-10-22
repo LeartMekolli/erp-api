@@ -65,43 +65,48 @@ export class PriceSnapshotHandler implements JobHandler<Record<string, never>> {
     });
 
     for (const tenant of tenants) {
-      const due = await this.prisma.inTenant(tenant.id, async (tx) => {
-        const materials = await tx.material.findMany({
-          where: { priceSource: 'feed', feedMetal: { not: null } },
-          select: { id: true, name: true, feedMetal: true },
-        });
-        const alerts: { id: string; name: string; reason: string }[] = [];
-        for (const material of materials) {
-          const metal = material.feedMetal;
-          if (!metal) continue;
-          const snapshot = await this.snapshots.latest(metal, tenant.defaultCurrency);
-          let reason: string;
-          if (!snapshot) {
-            reason = `There is no feed price for ${metal} in ${tenant.defaultCurrency}.`;
-          } else if (now - snapshot.fetchedAt.getTime() > staleHours * 3_600_000) {
-            reason = `The last feed price is from ${snapshot.fetchedAt.toISOString()}, older than ${staleHours} hours.`;
-          } else {
-            continue;
-          }
-          const recent = await tx.notification.count({
-            where: {
-              eventKey: 'material.price.stale',
-              subjectId: material.id,
-              createdAt: { gt: new Date(now - DAY_MS) },
-            },
+      // One workspace failing must not cost the others their alerts.
+      try {
+        const due = await this.prisma.inTenant(tenant.id, async (tx) => {
+          const materials = await tx.material.findMany({
+            where: { priceSource: 'feed', feedMetal: { not: null } },
+            select: { id: true, name: true, feedMetal: true },
           });
-          if (recent === 0) alerts.push({ id: material.id, name: material.name, reason });
-        }
-        return alerts;
-      });
+          const alerts: { id: string; name: string; reason: string }[] = [];
+          for (const material of materials) {
+            const metal = material.feedMetal;
+            if (!metal) continue;
+            const snapshot = await this.snapshots.latest(metal, tenant.defaultCurrency);
+            let reason: string;
+            if (!snapshot) {
+              reason = `There is no feed price for ${metal} in ${tenant.defaultCurrency}.`;
+            } else if (now - snapshot.fetchedAt.getTime() > staleHours * 3_600_000) {
+              reason = `The last feed price is from ${snapshot.fetchedAt.toISOString()}, older than ${staleHours} hours.`;
+            } else {
+              continue;
+            }
+            const recent = await tx.notification.count({
+              where: {
+                eventKey: 'material.price.stale',
+                subjectId: material.id,
+                createdAt: { gt: new Date(now - DAY_MS) },
+              },
+            });
+            if (recent === 0) alerts.push({ id: material.id, name: material.name, reason });
+          }
+          return alerts;
+        });
 
-      for (const alert of due) {
-        await this.notifications.raise(
-          tenant.id,
-          'material.price.stale',
-          { type: 'material', id: alert.id },
-          { material_name: alert.name, reason: alert.reason },
-        );
+        for (const alert of due) {
+          await this.notifications.raise(
+            tenant.id,
+            'material.price.stale',
+            { type: 'material', id: alert.id },
+            { material_name: alert.name, reason: alert.reason },
+          );
+        }
+      } catch (error) {
+        this.logger.error({ err: error, tenantId: tenant.id }, 'stale-price alerts failed for a workspace');
       }
     }
   }

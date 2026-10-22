@@ -40,5 +40,6 @@ yarn-error.log*
 
 # local reference material and agent workspace, not committed
 /docs
+/resources
 /.context
 /.superpowers

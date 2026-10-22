@@ -44,6 +44,12 @@ describe('MetalsDevProvider', () => {
     expect(metals).not.toContain('zinc');
   });
 
+  it('skips a price the snapshot cannot hold, keeping the other metals', async () => {
+    const { fetchFn } = stubFetch(200, { ...LATEST, metals: { silver: 22.905, gold: 1e12, copper: 1e-12 } });
+    const metals = (await new MetalsDevProvider('k', fetchFn).latest('EUR')).map((price) => price.metal);
+    expect(metals).toEqual(['silver']);
+  });
+
   it('throws on an error status without leaking the key', async () => {
     const { fetchFn } = stubFetch(401, {
       status: 'failure',
