@@ -12,7 +12,9 @@ export type AuditAction =
   | 'user.roles_changed'
   | 'user.deactivated'
   | 'auth.refresh_chain_revoked'
-  | 'template.override_changed';
+  | 'template.override_changed'
+  | 'material.price_overridden'
+  | 'material.price_override_removed';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };

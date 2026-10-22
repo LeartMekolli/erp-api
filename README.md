@@ -96,6 +96,8 @@ After changing `prisma/schema.prisma`, run `npx prisma migrate dev` and then `np
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.
 
+Adding a route: give it `@ApiDoc({ summary, body, query, response, errors })` next to its access marker. `test/api-docs.e2e-spec.ts` fails for any route without a summary, access or a request body schema where it reads one.
+
 ## Tests
 
 ```bash

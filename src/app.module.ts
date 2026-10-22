@@ -9,6 +9,7 @@ import { DatabaseModule } from './database/database.module';
 import { JobsWorkerModule } from './jobs/jobs-worker.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
 import { FilesModule } from './modules/files/files.module';
 import { HealthModule } from './modules/health/health.module';
 import { IdempotencyModule } from './modules/idempotency/idempotency.module';
@@ -42,6 +43,8 @@ import { StorageModule } from './storage/storage.module';
     IdempotencyModule,
     NotificationsModule,
     FilesModule,
+    CatalogModule,
+    CatalogModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [

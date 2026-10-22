@@ -31,6 +31,7 @@ model Tenant {
   notifications   Notification[]
   notificationTemplates NotificationTemplate[]
   files           File[]
+  units           Unit[]
 
   @@map("tenant")
 }
@@ -439,4 +440,22 @@ model Measure {
   @@unique([fileVersionId, type])
   @@index([tenantId])
   @@map("measure")
+}
+
+// Catalog (spec 2026-10-22). Seeded units live in code (units.ts); a tenant's own are here.
+model Unit {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key       String
+  name      String
+  // mass | volume | area | length | count
+  dimension String
+  // Base units of the dimension per one of this unit.
+  factor    Decimal  @db.Decimal(18, 9)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@map("unit")
 }
