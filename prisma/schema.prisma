@@ -47,6 +47,7 @@ model Tenant {
   productChains   ProductChain[]
   productSteps    ProductStep[]
   optionStepEffects OptionStepEffect[]
+  stepPrices      StepPrice[]
 
   @@map("tenant")
 }
@@ -505,6 +506,7 @@ model Material {
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   optionValues OptionValue[]
   products     Product[]
+  stepPrices   StepPrice[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -703,6 +705,7 @@ model StepType {
   categorySteps CategoryStep[]
   productSteps  ProductStep[]
   optionEffects OptionStepEffect[]
+  prices        StepPrice[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -785,4 +788,26 @@ model OptionStepEffect {
   @@unique([valueId, stepTypeId])
   @@index([tenantId])
   @@map("option_step_effect")
+}
+
+// What a step costs, from typed building blocks (Pricing spec, Q2). With a material, the price for
+// that material only; without, the step's default. Saves lock the step type, so a step has at most
+// one default even though Postgres treats the null material_id as distinct.
+model StepPrice {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  stepTypeId     String   @map("step_type_id") @db.Uuid
+  materialId     String?  @map("material_id") @db.Uuid
+  failurePercent Decimal  @map("failure_percent") @db.Decimal(9, 4)
+  // Validated by blocksSchema (src/modules/pricing/blocks.ts) on every save.
+  blocks         Json
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stepType StepType  @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+  material Material? @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, stepTypeId, materialId])
+  @@index([tenantId])
+  @@map("step_price")
 }

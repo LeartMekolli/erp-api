@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { blocksSchema } from './blocks';
 
 // What clients receive for pricing configuration; checked against real
 // responses in the e2e tests. Decimals are strings, never floats.
@@ -49,3 +50,14 @@ export const stepEffectsResponseSchema = z.strictObject({
   remove: z.array(stepTypeResponseSchema),
 });
 export type StepEffectsResponse = z.infer<typeof stepEffectsResponseSchema>;
+
+export const stepPriceResponseSchema = z.strictObject({
+  id: z.uuid(),
+  step_type_id: z.uuid(),
+  /** The material this price is for; null for the step's default, used for any other material. */
+  material_id: z.uuid().nullable(),
+  /** A % on the step's whole cost per piece. */
+  failure_percent: z.string(),
+  blocks: blocksSchema,
+});
+export type StepPriceResponse = z.infer<typeof stepPriceResponseSchema>;
