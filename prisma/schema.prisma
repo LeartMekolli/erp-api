@@ -32,6 +32,7 @@ model Tenant {
   notificationTemplates NotificationTemplate[]
   files           File[]
   units           Unit[]
+  materials       Material[]
 
   @@map("tenant")
 }
@@ -458,4 +459,37 @@ model Unit {
 
   @@unique([tenantId, key])
   @@map("unit")
+}
+
+// A material a step consumes, with its price source (Catalog spec C5, B6, B7).
+model Material {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key              String
+  name             String
+  // A unit key (seeded or the tenant's) of dimension mass, volume or count.
+  pricedUnit       String    @map("priced_unit")
+  densityGCm3      Decimal?  @map("density_g_cm3") @db.Decimal(18, 6)
+  // feed | manual
+  priceSource      String    @map("price_source")
+  // The price provider's metal key, such as silver.
+  feedMetal        String?   @map("feed_metal")
+  addonPercent     Decimal   @default(0) @map("addon_percent") @db.Decimal(9, 4)
+  addonAmount      Decimal   @default(0) @map("addon_amount") @db.Decimal(18, 6)
+  manualPrice      Decimal?  @map("manual_price") @db.Decimal(18, 6)
+  fallbackPrice    Decimal?  @map("fallback_price") @db.Decimal(18, 6)
+  // Every price above, and the override, is in this currency.
+  currency         String    @db.Char(3)
+  overridePrice    Decimal?  @map("override_price") @db.Decimal(18, 6)
+  overrideReason   String?   @map("override_reason")
+  overrideAt       DateTime? @map("override_at")
+  overrideByUserId String?   @map("override_by_user_id") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("material")
 }
