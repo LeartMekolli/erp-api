@@ -109,6 +109,21 @@ A walkthrough in Swagger, as the owner:
 5. `POST /catalog/products/{id}/check`: brass + gold plated is refused naming the rule; silver + polished with `size: { "scale": "1.5" }` and the customer's `file_version_id` is accepted with scaled measures and the silver price.
 6. `PUT /catalog/materials/{id}/price-override` for silver, then check again: the new price shows.
 
+## Pricing
+
+Staff set what each production step costs and how a price is built, through the API: step types (with the summary group a customer sees them under), the usual chain of steps per category (a product can have its own, and an option value can add or remove a step), step prices from typed building blocks (material, machine time, labour, a rate per measure, a fixed amount, setup per run, batch), and the adjustments: margin (per workspace, category or product), quantity discount tiers, customer groups, delivery speeds and minimum-size surcharges. `POST /pricing/quotes` checks the configuration, prices every step for the quantity, applies overhead, margin, tier, group and speed, rounds the price per piece once, and saves the quote with its breakdown; its price holds until it expires. Staff read every number at `GET /pricing/quotes/{id}`; the customer's view is `GET /pricing/quotes/{id}/summary`: material, making, finishing and the discount and speed lines, always adding up to the price. `npm run seed` also gives the `demo` workspace example pricing for its catalog.
+
+A walkthrough in Swagger, as the owner, after the Catalog walkthrough:
+
+1. `POST /pricing/step-types`: print pattern, casting tree, casting, polishing, plating; `PUT /pricing/step-types/{id}/prices` for each (for example casting: silver by weight with 5 % loss, plus a setup of 15; casting tree: 8 per batch, 40 per batch plus 20 g of metal).
+2. `PUT /pricing/categories/{id}/steps` for "Cast metal parts", and `PUT /pricing/option-values/{id}/step-effects` so gold plated adds plating. `PUT /pricing/profile`, `PUT /pricing/discount-tiers`, `POST /pricing/delivery-speeds` (standard as default, rush).
+3. `POST /pricing/quotes`: the custom cast part in silver, polished, `size: { "scale": "1.5" }`, the customer's `file_version_id`, `quantity: 1`. Then `GET /pricing/quotes/{id}`: the grams of silver and their price, each step's cost, the total.
+4. The same for `quantity: 20`: less per piece.
+5. `finish: gold_plated`: the plating step appears and the price rises.
+6. `delivery_speed: rush`: the surcharge appears.
+7. `PUT /catalog/materials/{id}/price-override` for silver: the saved quote keeps its price; a new quote uses the new one.
+8. `GET /pricing/quotes/{id}/summary`: only the grouped lines.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

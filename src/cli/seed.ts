@@ -6,6 +6,7 @@ import { TenantService } from '../platform/tenant.service';
 import { createPlatformAdmin } from './platform-admins';
 import { runCli } from './run-cli';
 import { seedCatalog } from './seed-catalog';
+import { seedPricing } from './seed-pricing';
 
 const SEED_ADMIN = { email: 'admin@example.test', name: 'Platform Admin' };
 
@@ -31,7 +32,7 @@ const SEED_TENANTS: CreateTenantInput[] = [
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
- * The demo workspace also gets the example catalog (`seed-catalog.ts`).
+ * The demo workspace also gets the example catalog (`seed-catalog.ts`) and its pricing (`seed-pricing.ts`).
  * The admin's generated password is printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
@@ -72,5 +73,11 @@ void runCli(async (app) => {
     `catalog for demo: created ${created.categories} categories, ${created.materials} materials, ` +
       `${created.optionGroups} option groups, ${created.optionValues} option values, ${created.optionRules} rules, ` +
       `${created.products} products\n`,
+  );
+
+  const pricing = await seedPricing(prisma, demo.id);
+  process.stdout.write(
+    `pricing for demo: created ${pricing.stepTypes} step types, ${pricing.stepPrices} step prices, ${pricing.chains} chains, ` +
+      `${pricing.tiers} discount tiers, ${pricing.groups} customer groups, ${pricing.speeds} delivery speeds\n`,
   );
 });
