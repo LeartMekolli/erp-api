@@ -1,11 +1,12 @@
 import { Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
-import { paginationQuerySchema, toPage } from '../../common/pagination/page';
+import { pageSchema, paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { Authenticated } from '../identity/route-markers';
@@ -16,15 +17,16 @@ const listSchema = paginationQuerySchema.extend({
 
 const idSchema = z.uuid();
 
-export interface FeedEntry {
-  id: string;
-  event_key: string;
-  subject: { type: string; id: string };
-  title: string;
-  body: string;
-  created_at: Date;
-  read_at: Date | null;
-}
+export const feedEntrySchema = z.strictObject({
+  id: z.uuid(),
+  event_key: z.string(),
+  subject: z.strictObject({ type: z.string(), id: z.string() }),
+  title: z.string(),
+  body: z.string(),
+  created_at: z.string(),
+  read_at: z.string().nullable(),
+});
+export type FeedEntry = z.infer<typeof feedEntrySchema>;
 
 /**
  * The in-app feed (spec 6.5). Everyone reads their own, so the routes need a
@@ -39,6 +41,13 @@ export class FeedController {
     private readonly config: ConfigService,
   ) {}
 
+  @ApiDoc({
+    summary: 'Your in-app notifications, newest first.',
+    description: '`unread=true` lists only the unread ones. Pass `next_cursor` back as `cursor` for the next page.',
+    query: listSchema,
+    response: pageSchema(feedEntrySchema),
+    errors: [400, 401],
+  })
   @Authenticated()
   @Get()
   async list(
@@ -69,14 +78,19 @@ export class FeedController {
         subject: { type: row.notification.subjectType, id: row.notification.subjectId },
         title: row.title,
         body: row.body,
-        created_at: row.createdAt,
-        read_at: row.readAt,
+        created_at: row.createdAt.toISOString(),
+        read_at: row.readAt?.toISOString() ?? null,
       })),
       next_cursor: page.next_cursor,
     };
   }
 
   /** Idempotent: an entry already read keeps its first read time. */
+  @ApiDoc({
+    summary: 'Mark one of your notifications as read.',
+    description: 'Marking it again keeps the first read time.',
+    errors: [400, 401, 404],
+  })
   @Authenticated()
   @Post(':id/read')
   @HttpCode(204)

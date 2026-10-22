@@ -5,8 +5,10 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { LOG_DESTINATION } from '../src/common/logging/logging.module';
 import { PrismaService } from '../src/database/prisma.service';
+import { sessionTokensSchema } from '../src/modules/auth/session.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { parseOpaqueToken } from '../src/modules/identity/opaque-token';
+import { expectDocumented } from './documented';
 import { TEST_PASSWORD, createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
 interface SessionTokens {
@@ -33,6 +35,7 @@ describe('auth sessions', () => {
 
   async function loginAs(email: string, password = TEST_PASSWORD): Promise<SessionTokens> {
     const response = await login({ email, password, workspace: tenant.slug }).expect(200);
+    expectDocumented(sessionTokensSchema, response.body);
     return response.body as SessionTokens;
   }
 
@@ -129,6 +132,7 @@ describe('auth sessions', () => {
       const first = await loginAs(user.email);
 
       const rotated = (await refresh(first.refresh_token).expect(200)).body as SessionTokens;
+      expectDocumented(sessionTokensSchema, rotated);
 
       expect(rotated.refresh_token).not.toBe(first.refresh_token);
       await expect(tokens.verify(rotated.access_token)).resolves.toMatchObject({ sub: user.id });

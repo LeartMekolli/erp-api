@@ -40,6 +40,12 @@ const envSchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((value) => value === 'true'),
+    // Serve the Swagger docs at /docs (and /docs/openapi.json). Off unless set,
+    // so no deployment exposes them by accident.
+    API_DOCS: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().min(1),
     APP_SECRET: z.string().min(32),

@@ -2,6 +2,7 @@ import { Body, Controller, Headers, HttpCode, Ip, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { passwordSchema } from '../identity/passwords';
@@ -9,6 +10,7 @@ import { Authenticated, Public } from '../identity/route-markers';
 import { InvitationAcceptService } from './invitation-accept.service';
 import { PasswordResetService } from './password-reset.service';
 import { SessionService } from './session.service';
+import { sessionTokensSchema } from './session.service';
 import type { SessionTokens } from './session.service';
 import { resolveTenantSlug } from './tenant-resolver';
 
@@ -47,6 +49,15 @@ export class AuthController {
     private readonly config: ConfigService,
   ) {}
 
+  @ApiDoc({
+    summary: 'Log in to a workspace with email and password.',
+    description:
+      'The workspace is the tenant slug: taken from the subdomain, or from `workspace` when calling the API host directly. ' +
+      'Answers a 15-minute access token and a refresh token.',
+    body: loginSchema,
+    response: sessionTokensSchema,
+    errors: [400, 401, 429],
+  })
   @Public()
   @Post('login')
   @HttpCode(200)
@@ -58,6 +69,13 @@ export class AuthController {
     return this.sessions.login(slug, body.email, body.password);
   }
 
+  @ApiDoc({
+    summary: 'Swap a refresh token for a new access and refresh token.',
+    description: 'Each refresh token works once. Reusing one revokes the whole session.',
+    body: refreshTokenSchema,
+    response: sessionTokensSchema,
+    errors: [400, 401],
+  })
   @Public()
   @Post('refresh')
   @HttpCode(200)
@@ -65,6 +83,11 @@ export class AuthController {
     return this.sessions.refresh(body.refresh_token);
   }
 
+  @ApiDoc({
+    summary: 'Log out: revoke the session the refresh token belongs to.',
+    body: refreshTokenSchema,
+    errors: [400, 401],
+  })
   @Authenticated()
   @Post('logout')
   @HttpCode(204)
@@ -75,6 +98,12 @@ export class AuthController {
     await this.sessions.logout(auth, body.refresh_token);
   }
 
+  @ApiDoc({
+    summary: 'Accept an invitation: set your name and password, which creates your user.',
+    description: 'The token is the one in the invitation email link.',
+    body: acceptInvitationSchema,
+    errors: [400, 409],
+  })
   @Public()
   @Post('invitations/accept')
   @HttpCode(204)
@@ -89,6 +118,12 @@ export class AuthController {
    * needs `TRUST_PROXY_HOPS` set behind a proxy (README, "Before deploying");
    * otherwise every client shares the proxy's address.
    */
+  @ApiDoc({
+    summary: 'Ask for a password reset email.',
+    description: 'Always answers 202, whether or not the email belongs to anyone.',
+    body: resetRequestSchema,
+    errors: [400, 429],
+  })
   @Public()
   @Post('password-reset')
   @HttpCode(202)
@@ -101,6 +136,11 @@ export class AuthController {
     await this.passwordResets.request(slug, body.email, ip);
   }
 
+  @ApiDoc({
+    summary: 'Set a new password with the token from the reset email.',
+    body: resetConfirmSchema,
+    errors: [400],
+  })
   @Public()
   @Post('password-reset/confirm')
   @HttpCode(204)

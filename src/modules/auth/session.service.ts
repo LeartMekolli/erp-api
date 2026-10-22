@@ -1,4 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { z } from 'zod';
 import { newId } from '../../common/ids/uuid';
 import { RateLimiter, tooManyAttempts } from '../../common/rate-limit/rate-limiter';
 import { PrismaService } from '../../database/prisma.service';
@@ -17,11 +18,13 @@ const REFRESH_TOKEN_DAYS = 30;
 const LOGIN_LIMIT = 10;
 const LOGIN_WINDOW_SECONDS = 15 * 60;
 
-export interface SessionTokens {
-  access_token: string;
-  refresh_token: string;
-  expires_at: string;
-}
+/** What login and refresh answer: a 15-minute access token and a rotating refresh token. */
+export const sessionTokensSchema = z.strictObject({
+  access_token: z.string(),
+  refresh_token: z.string(),
+  expires_at: z.string(),
+});
+export type SessionTokens = z.infer<typeof sessionTokensSchema>;
 
 type RefreshOutcome = { kind: 'ok'; userId: string; refreshToken: string } | { kind: 'refused' };
 

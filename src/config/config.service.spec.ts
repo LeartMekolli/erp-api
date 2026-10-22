@@ -50,6 +50,7 @@ describe('ConfigService', () => {
       TRUST_PROXY_HOPS: 0,
       CORS_ORIGINS: [],
       WORKER_IN_PROCESS: false,
+      API_DOCS: false,
       DATABASE_URL: 'postgresql://a',
       REDIS_URL: 'redis://c',
       APP_SECRET: 'b'.repeat(32),

@@ -83,6 +83,15 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, WORKER_IN_PROCESS: value })).toThrow(/WORKER_IN_PROCESS/);
   });
 
+  it('defaults API_DOCS to false and reads true', () => {
+    expect(loadEnv({ ...valid }).API_DOCS).toBe(false);
+    expect(loadEnv({ ...valid, API_DOCS: 'true' }).API_DOCS).toBe(true);
+  });
+
+  it.each(['1', 'yes', ''])('rejects API_DOCS=%j', (value) => {
+    expect(() => loadEnv({ ...valid, API_DOCS: value })).toThrow(/API_DOCS/);
+  });
+
   it('rejects a non-numeric PORT', () => {
     expect(() => loadEnv({ ...valid, PORT: 'abc' })).toThrow(/PORT/);
   });

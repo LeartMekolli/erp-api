@@ -14,6 +14,11 @@ export interface Page<T> {
   next_cursor: string | null;
 }
 
+/** The documented shape of a page of `item`. */
+export function pageSchema<T extends z.ZodType>(item: T) {
+  return z.strictObject({ data: z.array(item), next_cursor: z.string().nullable() });
+}
+
 /**
  * Callers fetch `limit + 1` rows ordered by id descending, starting after the
  * decoded cursor (`where: { id: { lt: cursor.id } }`). The extra row only

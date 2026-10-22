@@ -1,43 +1,67 @@
+import { z } from 'zod';
 import type { File, FileVersion, Measure } from '../../generated/prisma/client';
-import type { SignedPutHeaders } from '../../storage/object-storage';
 
-export interface FileResponse {
-  id: string;
-  kind: string;
-  name: string;
-  declared_unit: string | null;
-  owner: { type: string; id: string } | null;
-  status: string;
-  created_at: string;
-}
+// The shapes below are what clients receive: the docs show them and the e2e
+// tests check real responses against them. Nothing parses with them at runtime.
 
-export interface VersionResponse {
-  id: string;
-  number: number;
-  original_name: string;
-  content_type: string;
+export const fileResponseSchema = z.strictObject({
+  id: z.uuid(),
+  kind: z.string(),
+  name: z.string(),
+  declared_unit: z.string().nullable(),
+  owner: z.strictObject({ type: z.string(), id: z.string() }).nullable(),
+  status: z.string(),
+  created_at: z.string(),
+});
+export type FileResponse = z.infer<typeof fileResponseSchema>;
+
+export const versionResponseSchema = z.strictObject({
+  id: z.uuid(),
+  number: z.number().int(),
+  original_name: z.string(),
+  content_type: z.string(),
   /** A number in JSON: FILE_MAX_BYTES keeps it far below 2^53. */
-  size: number;
-  checksum: string | null;
-  status: string;
-  created_at: string;
-  completed_at: string | null;
-}
+  size: z.number().int(),
+  checksum: z.string().nullable(),
+  status: z.string(),
+  created_at: z.string(),
+  completed_at: z.string().nullable(),
+});
+export type VersionResponse = z.infer<typeof versionResponseSchema>;
 
 /** `value` is a decimal string, never a float, so no precision is lost (ADR 0002 style). */
-export interface MeasureResponse {
-  type: string;
-  value: string;
-  unit: string;
-}
+export const measureResponseSchema = z.strictObject({
+  type: z.string(),
+  value: z.string(),
+  unit: z.string(),
+});
+export type MeasureResponse = z.infer<typeof measureResponseSchema>;
 
-export interface UploadResponse {
-  url: string;
-  method: 'PUT';
+export const uploadResponseSchema = z.strictObject({
+  url: z.string(),
+  method: z.literal('PUT'),
   /** Exactly what the PUT must carry; the signature covers them all. */
-  headers: SignedPutHeaders;
-  expires_at: string;
-}
+  headers: z.strictObject({ 'content-type': z.string(), 'content-length': z.string() }),
+  expires_at: z.string(),
+});
+export type UploadResponse = z.infer<typeof uploadResponseSchema>;
+
+export const startUploadResponseSchema = z.strictObject({
+  file: fileResponseSchema,
+  version: versionResponseSchema,
+  upload: uploadResponseSchema,
+});
+
+export const addVersionResponseSchema = z.strictObject({
+  version: versionResponseSchema,
+  upload: uploadResponseSchema,
+});
+
+export const fileDetailResponseSchema = fileResponseSchema.extend({
+  versions: z.array(versionResponseSchema.extend({ measures: z.array(measureResponseSchema) })),
+});
+
+export const downloadUrlResponseSchema = z.strictObject({ url: z.string(), expires_at: z.string() });
 
 export function toFileResponse(file: File): FileResponse {
   return {

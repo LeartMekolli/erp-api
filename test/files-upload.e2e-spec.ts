@@ -7,9 +7,11 @@ import { newId } from '../src/common/ids/uuid';
 import { ConfigService } from '../src/config/config.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { startUploadResponseSchema } from '../src/modules/files/file-response';
 import { uploadKeyFor } from '../src/modules/files/storage-keys';
 import { ObjectStorage, STORAGE } from '../src/storage/object-storage';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { expectDocumented } from './documented';
 import { putToSignedUrl } from './storage';
 
 interface VersionBody {
@@ -104,6 +106,7 @@ describe('files: starting uploads', () => {
 
     const { file, version, upload } = await created(tenant.ownerToken);
 
+    expectDocumented(startUploadResponseSchema, { file, version, upload });
     expect(file).toEqual({
       id: expect.any(String),
       kind: 'document',

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
@@ -27,6 +28,12 @@ const setRolesSchema = z.object({
 export class UsersController {
   constructor(private readonly users: UsersService) {}
 
+  @ApiDoc({
+    summary: "List the tenant's users, newest first.",
+    description: 'A page of users: `data` and `next_cursor`, which goes back as `cursor` for the next page.',
+    query: listSchema,
+    errors: [400, 401, 403],
+  })
   @RequirePermission('user.read')
   @Get()
   list(
@@ -36,6 +43,11 @@ export class UsersController {
     return this.users.list(tenantId, query);
   }
 
+  @ApiDoc({
+    summary: 'Deactivate a user: their sessions end and they can no longer log in.',
+    description: 'The last active owner cannot be deactivated (409).',
+    errors: [400, 401, 403, 404, 409],
+  })
   @RequirePermission('user.deactivate')
   @Post(':id/deactivate')
   @HttpCode(204)
@@ -46,6 +58,12 @@ export class UsersController {
     await this.users.deactivate(auth, id);
   }
 
+  @ApiDoc({
+    summary: "Replace a user's roles.",
+    description: 'Answers the role ids the user now has. Ids must not repeat.',
+    body: setRolesSchema,
+    errors: [400, 401, 403, 404, 409],
+  })
   @RequirePermission('role.assign')
   @Put(':id/roles')
   setRoles(

@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { TENANT_PERMISSIONS } from '../identity/permissions';
@@ -27,12 +28,23 @@ const idSchema = z.uuid();
 export class RolesController {
   constructor(private readonly roles: RolesService) {}
 
+  @ApiDoc({
+    summary: "List the tenant's roles with their permissions.",
+    description: 'Answers `data`: each role with `id`, `name`, `is_system` and `permissions`.',
+    errors: [401, 403],
+  })
   @RequirePermission('role.read')
   @Get()
   list(@CurrentTenant() tenantId: string): Promise<{ data: RoleResponse[] }> {
     return this.roles.list(tenantId);
   }
 
+  @ApiDoc({
+    summary: 'Create a custom role with a set of tenant permissions.',
+    description: 'Answers the new role. Names are unique per tenant (409); permissions must not repeat.',
+    body: createRoleSchema,
+    errors: [400, 401, 403, 409],
+  })
   @RequirePermission('role.write')
   @Post()
   create(
@@ -42,6 +54,12 @@ export class RolesController {
     return this.roles.create(auth, body);
   }
 
+  @ApiDoc({
+    summary: "Replace a custom role's permissions.",
+    description: 'Answers the updated role. System roles cannot be changed (409). Takes effect from the next request.',
+    body: setPermissionsSchema,
+    errors: [400, 401, 403, 404, 409],
+  })
   @RequirePermission('role.write')
   @Put(':id/permissions')
   setPermissions(
@@ -52,6 +70,11 @@ export class RolesController {
     return this.roles.setPermissions(auth, id, body.permissions);
   }
 
+  @ApiDoc({
+    summary: 'Delete a custom role.',
+    description: 'System roles cannot be deleted (409).',
+    errors: [400, 401, 403, 404, 409],
+  })
   @RequirePermission('role.write')
   @Delete(':id')
   @HttpCode(204)

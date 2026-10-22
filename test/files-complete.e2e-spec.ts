@@ -12,8 +12,14 @@ import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/reg
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { MEASURERS, NoopMeasurer } from '../src/modules/files/measurers';
 import type { Measurer, MeasureType, MeasureUnit } from '../src/modules/files/measurers';
+import {
+  downloadUrlResponseSchema,
+  fileDetailResponseSchema,
+  versionResponseSchema,
+} from '../src/modules/files/file-response';
 import { uploadKeyFor } from '../src/modules/files/storage-keys';
 import { ObjectStorage, STORAGE } from '../src/storage/object-storage';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { putToSignedUrl } from './storage';
 import { waitFor } from './wait-for';
@@ -171,6 +177,7 @@ describe('files: completing, measuring and downloading', () => {
     });
 
     const response = await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    expectDocumented(versionResponseSchema, response.body);
     expect(response.body as VersionBody).toMatchObject({
       id: version.id,
       status: 'uploaded',
@@ -192,6 +199,7 @@ describe('files: completing, measuring and downloading', () => {
     await untilMeasured(tenant.id, version.id);
 
     const file = await http().get(`/files/${fileId}`).set('Authorization', `Bearer ${tenant.ownerToken}`).expect(200);
+    expectDocumented(fileDetailResponseSchema, file.body);
     const [latest] = (file.body as { versions: (VersionBody & { measures: object[] })[] }).versions;
     expect(latest.status).toBe('measured');
     expect(latest.measures).toEqual([{ type: 'page_count', value: '3', unit: 'count' }]);
@@ -429,6 +437,7 @@ describe('files: completing, measuring and downloading', () => {
       url: string;
     };
 
+    expectDocumented(downloadUrlResponseSchema, pdfLink);
     const expiresAt = Date.parse(pdfLink.expires_at);
     expect(expiresAt).toBeGreaterThanOrEqual(before + 5 * 60_000 - 1000);
     expect(expiresAt).toBeLessThanOrEqual(Date.now() + 5 * 60_000 + 1000);

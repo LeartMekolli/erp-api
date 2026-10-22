@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put } 
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { PrismaService } from '../../database/prisma.service';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
@@ -18,10 +19,10 @@ function addTemplateIssues(event: EventKey, template: { subject: string; body: s
   }
 }
 
+const overrideFieldsSchema = z.object({ subject: z.string(), body: z.string(), enabled: z.boolean().default(true) });
+
 const overrideSchema = (event: EventKey) =>
-  z
-    .object({ subject: z.string(), body: z.string(), enabled: z.boolean().default(true) })
-    .superRefine((template, ctx) => addTemplateIssues(event, template, ctx));
+  overrideFieldsSchema.superRefine((template, ctx) => addTemplateIssues(event, template, ctx));
 
 const previewSchema = z
   .object({
@@ -48,12 +49,24 @@ export class TemplatesController {
     private readonly templates: TemplatesService,
   ) {}
 
+  @ApiDoc({
+    summary: 'Every notification event with its variables, default wording and your overrides.',
+    errors: [401, 403],
+  })
   @RequirePermission('template.read')
   @Get()
   async list(@CurrentTenant() tenantId: string): Promise<{ data: TemplateEntry[] }> {
     return { data: await this.prisma.inTenant(tenantId, (tx) => this.templates.list(tx)) };
   }
 
+  @ApiDoc({
+    summary: 'Save your wording for one event and locale, replacing the default.',
+    description:
+      'Answers the saved override. The subject and body may only use the variables the event lists, and must keep ' +
+      'its required ones; otherwise a 400 names the field. An unknown event is a 404.',
+    body: overrideFieldsSchema,
+    errors: [400, 401, 403, 404],
+  })
   @RequirePermission('template.write')
   @Put(':event_key/:locale')
   save(
@@ -71,6 +84,12 @@ export class TemplatesController {
   }
 
   /** Renders against sample data; stores nothing. */
+  @ApiDoc({
+    summary: 'Render a subject and body against sample data, without saving anything.',
+    description: 'Answers the rendered `subject`, `text` and `html`.',
+    body: previewSchema,
+    errors: [400, 401, 403],
+  })
   @RequirePermission('template.write')
   @Post('preview')
   @HttpCode(200)

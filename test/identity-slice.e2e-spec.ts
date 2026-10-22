@@ -7,8 +7,12 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { hashPassword } from '../src/modules/identity/passwords';
+import { pageSchema } from '../src/common/pagination/page';
 import { TENANT_PERMISSIONS } from '../src/modules/identity/permissions';
+import { meResponseSchema } from '../src/modules/users/me.controller';
+import { tenantResponseSchema } from '../src/platform/tenant.service';
 import { CapturingIdentityNotifier } from './capturing-notifier';
+import { expectDocumented } from './documented';
 
 interface Session {
   access_token: string;
@@ -114,6 +118,9 @@ describe('identity slice', () => {
     expect(adminLogin.status).toBe(200);
     const adminToken = (adminLogin.body as { access_token: string }).access_token;
     const tenantA = await provisionTenant(adminToken, 'a');
+    const tenantList = await call('platform.tenants.list', 'get', '/platform/tenants', { token: adminToken });
+    expect(tenantList.status).toBe(200);
+    expectDocumented(pageSchema(tenantResponseSchema), tenantList.body);
 
     // 2. The owner accepts the invitation and logs in at the tenant's subdomain.
     await acceptInvitation(tenantA.ownerEmail, 'Owner A');
@@ -127,6 +134,7 @@ describe('identity slice', () => {
 
     const me = await call('me', 'get', '/me', { token: second.access_token });
     expect(me.status).toBe(200);
+    expectDocumented(meResponseSchema, me.body);
     expect((me.body as { permissions: string[] }).permissions).toEqual([...TENANT_PERMISSIONS].sort());
 
     // 4. Reusing the rotated refresh token is refused and revokes the chain.

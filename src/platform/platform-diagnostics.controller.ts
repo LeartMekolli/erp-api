@@ -1,4 +1,5 @@
 import { Controller, Post } from '@nestjs/common';
+import { ApiDoc } from '../docs/api-doc';
 import { RequirePermission } from '../modules/identity/route-markers';
 
 /**
@@ -7,6 +8,11 @@ import { RequirePermission } from '../modules/identity/route-markers';
  */
 @Controller('platform/diagnostics')
 export class PlatformDiagnosticsController {
+  @ApiDoc({
+    summary: 'Fail on purpose with a 500, to check that errors reach logs and error reporting.',
+    description: 'Never answers successfully.',
+    errors: [401, 403],
+  })
   @RequirePermission('platform.diagnostics')
   @Post('error')
   fail(): never {

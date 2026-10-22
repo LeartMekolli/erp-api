@@ -1,6 +1,7 @@
 import { Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/validation/zod-validation.pipe';
+import { ApiDoc } from '../docs/api-doc';
 import { RequirePermission } from '../modules/identity/route-markers';
 import { JobsService } from './jobs.service';
 import { QUEUES } from './registry';
@@ -41,6 +42,10 @@ export interface FailedJobResponse {
 export class PlatformJobsController {
   constructor(private readonly jobs: JobsService) {}
 
+  @ApiDoc({
+    summary: 'Job counts per queue: waiting, active, delayed and failed.',
+    errors: [401, 403],
+  })
   @RequirePermission('platform.jobs.read')
   @Get('queues')
   async queues(): Promise<{ data: QueueCounts[] }> {
@@ -60,6 +65,12 @@ export class PlatformJobsController {
   }
 
   /** Newest first. */
+  @ApiDoc({
+    summary: "A queue's failed jobs, newest first.",
+    description: 'Answers `data`: each job with its payload, failure reason and attempts. Paged with `limit` and `offset`.',
+    query: failedQuerySchema,
+    errors: [400, 401, 403],
+  })
   @RequirePermission('platform.jobs.read')
   @Get('failed')
   async failed(
@@ -80,6 +91,11 @@ export class PlatformJobsController {
   }
 
   /** Back to waiting with its attempt counts reset, so it gets a full set of retries again. */
+  @ApiDoc({
+    summary: 'Retry a failed job with a fresh set of attempts.',
+    description: 'A job that is not in the failed set of that queue is a 404.',
+    errors: [400, 401, 403, 404],
+  })
   @RequirePermission('platform.jobs.retry')
   @Post('failed/:queue/:id/retry')
   @HttpCode(204)

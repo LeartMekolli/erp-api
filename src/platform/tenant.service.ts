@@ -1,4 +1,5 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { z } from 'zod';
 import { newId } from '../common/ids/uuid';
 import { decodeCursor } from '../common/pagination/cursor';
 import { Page, toPage } from '../common/pagination/page';
@@ -14,16 +15,17 @@ import { CreateTenantInput, createTenantSchema } from './tenant-input';
 
 export type TenantStatus = 'active' | 'suspended';
 
-export interface TenantResponse {
-  id: string;
-  name: string;
-  slug: string;
-  status: string;
-  default_currency: string;
-  default_locale: string;
-  timezone: string;
-  created_at: string;
-}
+export const tenantResponseSchema = z.strictObject({
+  id: z.uuid(),
+  name: z.string(),
+  slug: z.string(),
+  status: z.string(),
+  default_currency: z.string(),
+  default_locale: z.string(),
+  timezone: z.string(),
+  created_at: z.string(),
+});
+export type TenantResponse = z.infer<typeof tenantResponseSchema>;
 
 /**
  * Platform-level tenant administration (ADR 0001: a platform-admin action).

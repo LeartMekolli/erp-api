@@ -7,7 +7,10 @@ import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { LOG_DESTINATION } from '../src/common/logging/logging.module';
 import { PrismaService } from '../src/database/prisma.service';
+import { pageSchema } from '../src/common/pagination/page';
 import { hashPassword } from '../src/modules/identity/passwords';
+import { feedEntrySchema } from '../src/modules/notifications/feed.controller';
+import { expectDocumented } from './documented';
 import { messagesTo, waitForMessage } from './mailpit';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
@@ -87,8 +90,11 @@ describe('notifications slice', () => {
     return { id, slug, ownerEmail };
   }
 
-  const feed = async (token: string) =>
-    ((await call('get', '/notifications', { token })).body as { data: FeedEntry[] }).data;
+  const feed = async (token: string) => {
+    const response = await call('get', '/notifications', { token });
+    expectDocumented(pageSchema(feedEntrySchema), response.body);
+    return (response.body as { data: FeedEntry[] }).data;
+  };
 
   /** Waits until the worker has dispatched every notification of a tenant. */
   const settled = (tenantId: string) =>

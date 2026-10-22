@@ -1,6 +1,7 @@
 import { Body, Controller, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { emailSchema } from '../identity/email';
@@ -14,6 +15,12 @@ const inviteSchema = z.object({ email: emailSchema, role_id: z.uuid() });
 export class InvitationsController {
   constructor(private readonly invitations: InvitationsService) {}
 
+  @ApiDoc({
+    summary: 'Invite someone by email, with the role they get on accepting.',
+    description: "Answers the invitation id, email and expiry; the token goes only to the invitee's inbox.",
+    body: inviteSchema,
+    errors: [400, 401, 403, 404, 409],
+  })
   @RequirePermission('user.invite')
   @Post()
   create(

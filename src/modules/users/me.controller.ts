@@ -1,18 +1,22 @@
 import { Controller, Get } from '@nestjs/common';
+import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
+import { ApiDoc } from '../../docs/api-doc';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
-import type { TenantPermission } from '../identity/permissions';
+import { TENANT_PERMISSIONS } from '../identity/permissions';
 import { Authenticated } from '../identity/route-markers';
-import { toUserResponse } from './user-response';
-import type { UserResponse } from './user-response';
+import { toUserResponse, userResponseSchema } from './user-response';
 
-export interface MeResponse {
-  user: UserResponse;
-  roles: { id: string; name: string }[];
-  permissions: TenantPermission[];
-  memberships: { organisation_type: string; organisation_id: string; role: string }[];
-}
+export const meResponseSchema = z.strictObject({
+  user: userResponseSchema,
+  roles: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),
+  permissions: z.array(z.enum(TENANT_PERMISSIONS)),
+  memberships: z.array(
+    z.strictObject({ organisation_type: z.string(), organisation_id: z.string(), role: z.string() }),
+  ),
+});
+export type MeResponse = z.infer<typeof meResponseSchema>;
 
 /**
  * The caller's own identity (spec 4.7). There is deliberately no lookup of
@@ -22,6 +26,11 @@ export interface MeResponse {
 export class MeController {
   constructor(private readonly prisma: PrismaService) {}
 
+  @ApiDoc({
+    summary: "The caller's own user, roles, permissions and memberships.",
+    response: meResponseSchema,
+    errors: [401],
+  })
   @Authenticated()
   @Get()
   async me(@CurrentUser() auth: TenantAuth): Promise<MeResponse> {
