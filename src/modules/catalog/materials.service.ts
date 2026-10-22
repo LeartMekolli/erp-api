@@ -11,6 +11,7 @@ import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { resolveMaterialPrice } from './material-price';
 import type { ResolvedPrice } from './material-price';
+import { toCurrentPrice } from './material-response';
 import type { MaterialResponse } from './material-response';
 import { SnapshotsService } from './price-feed/snapshots.service';
 import { UnitsService } from './units';
@@ -265,17 +266,7 @@ export class MaterialsService {
               by_user_id: row.overrideByUserId,
             }
           : null,
-      current_price:
-        'missing' in price
-          ? null
-          : {
-              unit_price: price.unitPrice.toFixed(),
-              currency: price.currency,
-              per_unit: price.perUnit,
-              source: price.source,
-              as_of: price.asOf?.toISOString() ?? null,
-              stale: price.stale,
-            },
+      current_price: 'missing' in price ? null : toCurrentPrice(price),
       price_missing: 'missing' in price ? price.missing : null,
       created_at: row.createdAt.toISOString(),
       updated_at: row.updatedAt.toISOString(),

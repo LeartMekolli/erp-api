@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { AuditModule } from '../audit/audit.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CheckController } from './check.controller';
+import { CheckService } from './check.service';
 import { MaterialsController } from './materials.controller';
 import { MaterialsService } from './materials.service';
 import { OptionsController } from './options.controller';
@@ -20,12 +22,13 @@ import { UnitsController } from './units.controller';
 /** Products, choices, materials and units: what a tenant can make and sell (Catalog spec). */
 @Module({
   imports: [AuditModule, NotificationsModule],
-  controllers: [UnitsController, MaterialsController, OptionsController, ProductsController],
+  controllers: [UnitsController, MaterialsController, OptionsController, ProductsController, CheckController],
   providers: [
     UnitsService,
     MaterialsService,
     OptionsService,
     ProductsService,
+    CheckService,
     SnapshotsService,
     PriceSnapshotHandler,
     {

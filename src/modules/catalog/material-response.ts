@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ResolvedPrice } from './material-price';
 
 // What clients receive for a material: the docs show it and the e2e tests check
 // real responses against it. Decimals are strings, never floats.
@@ -35,3 +36,15 @@ export const materialResponseSchema = z.strictObject({
   updated_at: z.string(),
 });
 export type MaterialResponse = z.infer<typeof materialResponseSchema>;
+
+/** A resolved price as clients see it, in material and check responses alike. */
+export function toCurrentPrice(price: ResolvedPrice): z.infer<typeof currentPriceSchema> {
+  return {
+    unit_price: price.unitPrice.toFixed(),
+    currency: price.currency,
+    per_unit: price.perUnit,
+    source: price.source,
+    as_of: price.asOf?.toISOString() ?? null,
+    stale: price.stale,
+  };
+}
