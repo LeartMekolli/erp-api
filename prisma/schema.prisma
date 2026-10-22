@@ -43,6 +43,10 @@ model Tenant {
   productOptionValues ProductOptionValue[]
   stepTypes       StepType[]
   pricingProfile  PricingProfile?
+  categorySteps   CategoryStep[]
+  productChains   ProductChain[]
+  productSteps    ProductStep[]
+  optionStepEffects OptionStepEffect[]
 
   @@map("tenant")
 }
@@ -555,6 +559,7 @@ model OptionValue {
   ruleTargets OptionRuleTarget[]
   productDefaults ProductOptionGroup[]
   productOffers   ProductOptionValue[]
+  stepEffects     OptionStepEffect[]
 
   @@unique([groupId, key])
   @@unique([tenantId, id])
@@ -604,8 +609,9 @@ model Category {
   requiredMeasures String[] @map("required_measures")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   products Product[]
+  steps    CategoryStep[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -637,6 +643,8 @@ model Product {
   material     Material?            @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: NoAction)
   optionGroups ProductOptionGroup[]
   optionValues ProductOptionValue[]
+  chain        ProductChain?
+  steps        ProductStep[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -691,7 +699,10 @@ model StepType {
   summaryGroup String   @map("summary_group")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  categorySteps CategoryStep[]
+  productSteps  ProductStep[]
+  optionEffects OptionStepEffect[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -710,4 +721,68 @@ model PricingProfile {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("pricing_profile")
+}
+
+// The usual chain of steps for a category's products (Pricing spec R4).
+model CategoryStep {
+  id         String @id @default(uuid(7)) @db.Uuid
+  tenantId   String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  categoryId String @map("category_id") @db.Uuid
+  stepTypeId String @map("step_type_id") @db.Uuid
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Cascade)
+  stepType StepType @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([categoryId, stepTypeId])
+  @@index([tenantId])
+  @@map("category_step")
+}
+
+// Present when a product replaces its category's chain with its own (which may be empty).
+model ProductChain {
+  id        String @id @default(uuid(7)) @db.Uuid
+  tenantId  String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  productId String @unique @map("product_id") @db.Uuid
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Cascade)
+
+  // One-to-one through the tenant-scoped key needs it unique; `product_id` alone stays unique for upserts.
+  @@unique([tenantId, productId])
+  @@index([tenantId])
+  @@map("product_chain")
+}
+
+model ProductStep {
+  id         String @id @default(uuid(7)) @db.Uuid
+  tenantId   String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  productId  String @map("product_id") @db.Uuid
+  stepTypeId String @map("step_type_id") @db.Uuid
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Cascade)
+  stepType StepType @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([productId, stepTypeId])
+  @@index([tenantId])
+  @@map("product_step")
+}
+
+// Choosing the value adds or removes the step (the option effect on steps, Pricing spec R4).
+model OptionStepEffect {
+  id         String @id @default(uuid(7)) @db.Uuid
+  tenantId   String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  valueId    String @map("value_id") @db.Uuid
+  stepTypeId String @map("step_type_id") @db.Uuid
+  // add | remove
+  effect     String
+
+  tenant   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  value    OptionValue @relation(fields: [tenantId, valueId], references: [tenantId, id], onDelete: Cascade)
+  stepType StepType    @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([valueId, stepTypeId])
+  @@index([tenantId])
+  @@map("option_step_effect")
 }

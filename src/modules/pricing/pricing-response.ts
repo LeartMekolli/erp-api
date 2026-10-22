@@ -25,3 +25,27 @@ export const pricingProfileResponseSchema = z.strictObject({
   quote_valid_days: z.number().int(),
 });
 export type PricingProfileResponse = z.infer<typeof pricingProfileResponseSchema>;
+
+export const categoryChainResponseSchema = z.strictObject({
+  category_id: z.uuid(),
+  /** In chain order. */
+  steps: z.array(stepTypeResponseSchema),
+});
+export type CategoryChainResponse = z.infer<typeof categoryChainResponseSchema>;
+
+export const productChainResponseSchema = z.strictObject({
+  product_id: z.uuid(),
+  /** True when the product replaces its category's chain; `steps` is then the product's own. */
+  own_chain: z.boolean(),
+  steps: z.array(stepTypeResponseSchema),
+});
+export type ProductChainResponse = z.infer<typeof productChainResponseSchema>;
+
+export const stepEffectsResponseSchema = z.strictObject({
+  value_id: z.uuid(),
+  /** Steps choosing the value adds. */
+  add: z.array(stepTypeResponseSchema),
+  /** Steps choosing the value removes. */
+  remove: z.array(stepTypeResponseSchema),
+});
+export type StepEffectsResponse = z.infer<typeof stepEffectsResponseSchema>;
