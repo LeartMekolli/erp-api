@@ -151,6 +151,20 @@ describe('priceConfiguration', () => {
     expect(breakdown.total.toFixed(2)).toBe('30.03');
   });
 
+  it('refuses a configuration with no steps, whose material would never be priced', () => {
+    expect(priceConfiguration(input({ steps: [], overheadPerPiece: D('2') }))).toEqual({
+      accepted: false,
+      reasons: [{ code: 'no_steps', message: expect.any(String) }],
+    });
+  });
+
+  it('refuses a total too large to keep, rather than failing to save it', () => {
+    const result = priceConfiguration(
+      input({ quantity: 1_000_000, marginPercent: D('1000'), steps: [{ step: step('casting', 30), price: fixed('999999999999') }] }),
+    );
+    expect(result).toEqual({ accepted: false, reasons: [{ code: 'price_too_large', message: expect.any(String) }] });
+  });
+
   it('keeps intermediate amounts to 10 places', () => {
     const breakdown = priced(priceConfiguration(input({ marginPercent: D('33.3333'), steps: [{ step: step('casting', 30), price: fixed('0.000001') }] })));
     expect(breakdown.margin.amount.decimalPlaces()).toBeLessThanOrEqual(10);

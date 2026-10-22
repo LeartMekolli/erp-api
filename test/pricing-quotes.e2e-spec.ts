@@ -310,6 +310,17 @@ describe('pricing: saved quotes', () => {
     expect(await quoteCount(tenant.id)).toBe(0);
   });
 
+  it('refuses a product whose chain has no steps, without saving', async () => {
+    const tenant = await freshTenant();
+    const setup = await walkthrough(tenant);
+    await tenant.owner.put(`/pricing/products/${setup.productId}/steps`, { step_type_ids: [] }).expect(200);
+
+    const response = await tenant.owner.post('/pricing/quotes', silverPolished(setup)).expect(200);
+    expectDocumented(quoteResultResponseSchema, response.body);
+    expect((response.body as Refused).reasons.map((reason) => reason.code)).toEqual(['no_steps']);
+    expect(await quoteCount(tenant.id)).toBe(0);
+  });
+
   it('refuses a quantity that is not a whole number of pieces from 1 to 1,000,000', async () => {
     const tenant = await freshTenant();
     const setup = await walkthrough(tenant);

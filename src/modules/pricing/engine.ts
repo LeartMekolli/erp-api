@@ -34,11 +34,14 @@ export interface EngineInput {
 }
 
 export interface PricingRefusal {
-  code: 'step_price_missing' | StepRefusal['code'];
-  /** The step's key. */
-  step: string;
+  code: 'no_steps' | 'step_price_missing' | 'price_too_large' | StepRefusal['code'];
+  /** The step's key, when one step is the cause. */
+  step?: string;
   message: string;
 }
+
+/** Quote prices are stored as Decimal(18, 2): below 10^16. */
+const PRICE_LIMIT = new Prisma.Decimal('1e16');
 
 export interface Breakdown {
   steps: { key: string; name: string; summaryGroup: SummaryGroup; cost: StepCost }[];
@@ -73,6 +76,10 @@ export function tierFor(tiers: { minQuantity: number; percent: Prisma.Decimal }[
  * rounded once. Every step that cannot be priced is reported, not just the first.
  */
 export function priceConfiguration(input: EngineInput): EngineResult {
+  if (input.steps.length === 0) {
+    // Material is only charged through a step, so a chain without steps would price nothing but overhead.
+    return { accepted: false, reasons: [{ code: 'no_steps', message: 'No production steps are set for this product' }] };
+  }
   const chain = [...input.steps].sort((a, b) => a.step.position - b.step.position || a.step.key.localeCompare(b.step.key));
   const reasons: PricingRefusal[] = [];
   const steps: Breakdown['steps'] = [];
@@ -120,6 +127,10 @@ export function priceConfiguration(input: EngineInput): EngineResult {
   apply('delivery_speed', input.speedPercent, 1);
 
   const unitPrice = running.toDecimalPlaces(CENTS, Prisma.Decimal.ROUND_HALF_UP);
+  const total = unitPrice.times(input.quantity);
+  if (total.abs().greaterThanOrEqualTo(PRICE_LIMIT)) {
+    return { accepted: false, reasons: [{ code: 'price_too_large', message: 'The total is too large to quote' }] };
+  }
   return {
     accepted: true,
     breakdown: {
@@ -132,7 +143,7 @@ export function priceConfiguration(input: EngineInput): EngineResult {
       adjustments,
       unitPriceExact: running,
       unitPrice,
-      total: unitPrice.times(input.quantity),
+      total,
     },
   };
 }

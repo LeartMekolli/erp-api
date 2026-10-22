@@ -10,6 +10,8 @@ import { SUMMARY_GROUPS } from './pricing-response';
 /** The Catalog check's refusals, and the ones pricing adds. */
 export const QUOTE_REFUSAL_CODES = [
   ...REFUSAL_CODES,
+  'no_steps',
+  'price_too_large',
   'step_conflict',
   'step_price_missing',
   'density_missing',

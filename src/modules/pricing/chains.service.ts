@@ -52,9 +52,10 @@ export class ChainsService {
 
   async setCategory(auth: TenantAuth, categoryId: string, input: z.infer<typeof chainSchema>): Promise<CategoryChainResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const before = await this.categoryChain(tx, categoryId);
-      // Two replacements at once would both delete, then collide on insert; the second waits here instead.
+      // Two replacements at once would both delete, then collide on insert; the second waits here
+      // instead, and reads the chain as the first one left it.
       await tx.$queryRaw`SELECT id FROM category WHERE id = ${categoryId}::uuid FOR UPDATE`;
+      const before = await this.categoryChain(tx, categoryId);
       await this.checkSteps(tx, input.step_type_ids);
       await tx.categoryStep.deleteMany({ where: { categoryId } });
       await tx.categoryStep.createMany({ data: input.step_type_ids.map((stepTypeId) => ({ categoryId, stepTypeId })) });
@@ -70,8 +71,8 @@ export class ChainsService {
 
   async setProduct(auth: TenantAuth, productId: string, input: z.infer<typeof chainSchema>): Promise<ProductChainResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const before = await this.productChain(tx, productId);
       await tx.$queryRaw`SELECT id FROM product WHERE id = ${productId}::uuid FOR UPDATE`;
+      const before = await this.productChain(tx, productId);
       await this.checkSteps(tx, input.step_type_ids);
       await tx.productChain.upsert({ where: { productId }, create: { productId }, update: {} });
       await tx.productStep.deleteMany({ where: { productId } });
@@ -89,6 +90,7 @@ export class ChainsService {
   /** The product goes back to its category's chain. */
   async clearProduct(auth: TenantAuth, productId: string): Promise<void> {
     await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await tx.$queryRaw`SELECT id FROM product WHERE id = ${productId}::uuid FOR UPDATE`;
       const before = await this.productChain(tx, productId);
       await tx.productStep.deleteMany({ where: { productId } });
       await tx.productChain.deleteMany({ where: { productId } });
@@ -98,8 +100,8 @@ export class ChainsService {
 
   async setEffects(auth: TenantAuth, valueId: string, input: z.infer<typeof stepEffectsSchema>): Promise<StepEffectsResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const before = await this.effectsOf(tx, valueId);
       await tx.$queryRaw`SELECT id FROM option_value WHERE id = ${valueId}::uuid FOR UPDATE`;
+      const before = await this.effectsOf(tx, valueId);
       await this.checkSteps(tx, [...input.add, ...input.remove]);
       await tx.optionStepEffect.deleteMany({ where: { valueId } });
       await tx.optionStepEffect.createMany({
