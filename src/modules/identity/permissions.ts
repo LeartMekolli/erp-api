@@ -19,6 +19,11 @@ export const TENANT_PERMISSIONS = [
   'catalog.write',
   // Sensitive (F4): replaces a material's price by hand, audited.
   'material.price.override',
+  // Pricing configuration and the staff breakdown of quotes (internal costs and margins).
+  'pricing.read',
+  'pricing.write',
+  // Requesting quotes and reading their customer summary.
+  'quote.create',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */
@@ -41,7 +46,7 @@ export type Permission = TenantPermission | PlatformPermission;
  */
 export const SYSTEM_ROLES = {
   owner: TENANT_PERMISSIONS,
-  member: ['settings.read', 'user.read', 'role.read', 'template.read', 'file.read', 'catalog.read'],
+  member: ['settings.read', 'user.read', 'role.read', 'template.read', 'file.read', 'catalog.read', 'quote.create'],
 } as const satisfies Record<string, readonly TenantPermission[]>;
 
 export type SystemRoleName = keyof typeof SYSTEM_ROLES;

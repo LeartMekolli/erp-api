@@ -14,7 +14,8 @@ export type AuditAction =
   | 'auth.refresh_chain_revoked'
   | 'template.override_changed'
   | 'material.price_overridden'
-  | 'material.price_override_removed';
+  | 'material.price_override_removed'
+  | 'pricing.changed';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };

@@ -41,6 +41,8 @@ model Tenant {
   products        Product[]
   productOptionGroups ProductOptionGroup[]
   productOptionValues ProductOptionValue[]
+  stepTypes       StepType[]
+  pricingProfile  PricingProfile?
 
   @@map("tenant")
 }
@@ -675,4 +677,37 @@ model ProductOptionValue {
   @@unique([productId, valueId])
   @@index([tenantId])
   @@map("product_option_value")
+}
+
+// A kind of production operation, as workspace configuration (Pricing spec). The summary group
+// places its cost in the customer summary: material | making | finishing.
+model StepType {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key          String
+  name         String
+  // Orders the steps of a chain.
+  position     Int
+  summaryGroup String   @map("summary_group")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("step_type")
+}
+
+// The workspace's pricing defaults; absent until first set, and read as the defaults below.
+model PricingProfile {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @unique @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  marginPercent    Decimal  @default(0) @map("margin_percent") @db.Decimal(9, 4)
+  overheadPerPiece Decimal  @default(0) @map("overhead_per_piece") @db.Decimal(18, 6)
+  quoteValidDays   Int      @default(7) @map("quote_valid_days")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("pricing_profile")
 }

@@ -10,10 +10,11 @@ describe('permissions', () => {
     expect([...SYSTEM_ROLES.owner].sort()).toEqual([...TENANT_PERMISSIONS].sort());
   });
 
-  it('keeps the member read-only', () => {
+  it('keeps the member to reading, plus requesting quotes', () => {
     expect([...SYSTEM_ROLES.member].sort()).toEqual([
       'catalog.read',
       'file.read',
+      'quote.create',
       'role.read',
       'settings.read',
       'template.read',
