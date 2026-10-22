@@ -96,6 +96,19 @@ After changing `prisma/schema.prisma`, run `npx prisma migrate dev` and then `np
 
 A feed-priced material takes its price from a daily snapshot of metal prices, plus its add-on; quotes and checks only read snapshots, never the provider. A scheduled job fetches them at 05:00 UTC, one call per workspace currency, at most `METAL_PRICE_MAX_CURRENCIES` (default 3). `METAL_PRICE_PROVIDER=fake` (the default) returns fixed prices; `metalsdev` uses [Metals.Dev](https://metals.dev) and needs `METAL_PRICE_API_KEY`, set as a secret on the host. When a feed price is missing or older than `METAL_PRICE_STALE_HOURS` (default 48), the material falls back to its stored price and holders of `catalog.write` are notified once a day.
 
+## Catalog
+
+Staff set up what a workspace can make and sell, through the API: units, materials (priced by hand or from the metal feed), option groups and values, rules between values (`excludes`, `requires`), categories, and products. A product is `custom` (the customer brings the design file) or `ready_made` (it pins its own measured file), and can be sized by a scale range or named sizes. `POST /catalog/products/{id}/check` answers whether a configuration can be made: accepted, with the measures scaled to the chosen size and the material's current price, or refused with every reason. `npm run seed` gives the `demo` workspace an example catalog of printed and cast parts.
+
+A walkthrough in Swagger, as the owner:
+
+1. `POST /catalog/categories`: "Cast metal parts", `required_measures` volume and bounding box.
+2. `POST /catalog/materials`: "Silver 925" (`price_source: feed`, `feed_metal: silver`, `addon_percent: 8`, a fallback price) and "Brass" (`price_source: manual`).
+3. `POST /catalog/option-groups` Material and Finish, their values (a material value names its `material_id`), and `POST /catalog/option-rules`: gold plated requires silver.
+4. `POST /catalog/products`: "Custom cast part" (`custom`, range 0.5–2) and "Ring model 12" (`ready_made`, sizes S, M, L); `PUT .../options` for each, and `PUT .../design-file` for the ring with a measured STL version.
+5. `POST /catalog/products/{id}/check`: brass + gold plated is refused naming the rule; silver + polished with `size: { "scale": "1.5" }` and the customer's `file_version_id` is accepted with scaled measures and the silver price.
+6. `PUT /catalog/materials/{id}/price-override` for silver, then check again: the new price shows.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

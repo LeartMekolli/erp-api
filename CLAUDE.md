@@ -2,7 +2,7 @@
 
 API for an industry-agnostic, made-to-order production ERP: configurable products, step-based pricing, routing work to production partners by capability and capacity, and a configurable production workflow with quality control.
 
-First target industry: print-on-demand (tentative, may change after domain mapping).
+First target industry: made-to-order 3D objects (printed and cast parts), decided 2026-10-22. The core stays industry-agnostic: processes and machines are step types and partner capabilities, never code.
 
 ## Rules
 

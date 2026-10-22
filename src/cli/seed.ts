@@ -5,6 +5,7 @@ import type { CreateTenantInput } from '../platform/tenant-input';
 import { TenantService } from '../platform/tenant.service';
 import { createPlatformAdmin } from './platform-admins';
 import { runCli } from './run-cli';
+import { seedCatalog } from './seed-catalog';
 
 const SEED_ADMIN = { email: 'admin@example.test', name: 'Platform Admin' };
 
@@ -30,6 +31,7 @@ const SEED_TENANTS: CreateTenantInput[] = [
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
+ * The demo workspace also gets the example catalog (`seed-catalog.ts`).
  * The admin's generated password is printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
@@ -61,4 +63,14 @@ void runCli(async (app) => {
       process.stdout.write(`tenant ${seed.slug} already exists\n`);
     }
   }
+
+  // The demo workspace gets an example catalog for made-to-order 3D objects.
+  const prisma = app.get(PrismaService);
+  const demo = await prisma.tenant.findUniqueOrThrow({ where: { slug: 'demo' }, select: { id: true } });
+  const created = await seedCatalog(prisma, demo.id);
+  process.stdout.write(
+    `catalog for demo: created ${created.categories} categories, ${created.materials} materials, ` +
+      `${created.optionGroups} option groups, ${created.optionValues} option values, ${created.optionRules} rules, ` +
+      `${created.products} products\n`,
+  );
 });
