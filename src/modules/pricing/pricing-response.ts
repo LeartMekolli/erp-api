@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MEASURE_TYPES } from '../files/measurers';
 import { blocksSchema } from './blocks';
 
 // What clients receive for pricing configuration; checked against real
@@ -61,3 +62,54 @@ export const stepPriceResponseSchema = z.strictObject({
   blocks: blocksSchema,
 });
 export type StepPriceResponse = z.infer<typeof stepPriceResponseSchema>;
+
+export const marginOverrideResponseSchema = z.strictObject({
+  /** Set when the override is a category's; then `product_id` is null, and the other way round. */
+  category_id: z.uuid().nullable(),
+  product_id: z.uuid().nullable(),
+  margin_percent: z.string(),
+});
+export type MarginOverrideResponse = z.infer<typeof marginOverrideResponseSchema>;
+
+export const discountTierResponseSchema = z.strictObject({
+  /** From this many pieces on; the highest tier reached applies. */
+  min_quantity: z.number().int(),
+  percent: z.string(),
+});
+export const discountTiersResponseSchema = z.strictObject({
+  /** By quantity, lowest first. */
+  data: z.array(discountTierResponseSchema),
+});
+export type DiscountTiersResponse = z.infer<typeof discountTiersResponseSchema>;
+
+export const customerGroupResponseSchema = z.strictObject({
+  id: z.uuid(),
+  key: z.string(),
+  name: z.string(),
+  /** A markup when positive, a discount when negative. */
+  percent: z.string(),
+});
+export type CustomerGroupResponse = z.infer<typeof customerGroupResponseSchema>;
+
+export const deliverySpeedResponseSchema = z.strictObject({
+  id: z.uuid(),
+  key: z.string(),
+  name: z.string(),
+  surcharge_percent: z.string(),
+  /** The speed a quote gets when it names none; at most one is the default. */
+  is_default: z.boolean(),
+});
+export type DeliverySpeedResponse = z.infer<typeof deliverySpeedResponseSchema>;
+
+export const minSizeSurchargeResponseSchema = z.strictObject({
+  id: z.uuid(),
+  /** Null when it applies to every category. */
+  category_id: z.uuid().nullable(),
+  measure: z.enum(MEASURE_TYPES),
+  /** Applies when the scaled design's measure is below this, in `unit`. */
+  below: z.string(),
+  unit: z.string(),
+  /** Added once per piece. */
+  amount: z.string(),
+});
+export type MinSizeSurchargeResponse = z.infer<typeof minSizeSurchargeResponseSchema>;

@@ -48,6 +48,11 @@ model Tenant {
   productSteps    ProductStep[]
   optionStepEffects OptionStepEffect[]
   stepPrices      StepPrice[]
+  marginOverrides MarginOverride[]
+  discountTiers   DiscountTier[]
+  customerGroups  CustomerGroup[]
+  deliverySpeeds  DeliverySpeed[]
+  minSizeSurcharges MinSizeSurcharge[]
 
   @@map("tenant")
 }
@@ -614,6 +619,8 @@ model Category {
   tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   products Product[]
   steps    CategoryStep[]
+  margin   MarginOverride?
+  minSizeSurcharges MinSizeSurcharge[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -647,6 +654,7 @@ model Product {
   optionValues ProductOptionValue[]
   chain        ProductChain?
   steps        ProductStep[]
+  margin       MarginOverride?
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -810,4 +818,92 @@ model StepPrice {
   @@unique([tenantId, stepTypeId, materialId])
   @@index([tenantId])
   @@map("step_price")
+}
+
+// A category's or a product's own margin instead of the pricing profile's (Pricing spec, Q5).
+// Exactly one of category_id and product_id is set (a CHECK in the migration).
+model MarginOverride {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  categoryId    String?  @unique @map("category_id") @db.Uuid
+  productId     String?  @unique @map("product_id") @db.Uuid
+  marginPercent Decimal  @map("margin_percent") @db.Decimal(9, 4)
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Cascade)
+  product  Product?  @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, categoryId])
+  @@unique([tenantId, productId])
+  @@index([tenantId])
+  @@map("margin_override")
+}
+
+// From `min_quantity` pieces on, `percent` off; the highest tier reached applies (P6).
+model DiscountTier {
+  id          String  @id @default(uuid(7)) @db.Uuid
+  tenantId    String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  minQuantity Int     @map("min_quantity")
+  percent     Decimal @db.Decimal(9, 4)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, minQuantity])
+  @@index([tenantId])
+  @@map("discount_tier")
+}
+
+// A markup (positive) or discount (negative) for a group of customers (D45).
+model CustomerGroup {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key       String
+  name      String
+  percent   Decimal  @db.Decimal(9, 4)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("customer_group")
+}
+
+// Standard, express, rush...: a surcharge on the price (Q11). Saves take a per-tenant advisory
+// lock, so at most one speed is the default.
+model DeliverySpeed {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key              String
+  name             String
+  surchargePercent Decimal  @map("surcharge_percent") @db.Decimal(9, 4)
+  isDefault        Boolean  @default(false) @map("is_default")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("delivery_speed")
+}
+
+// A fixed amount per piece when a measure of the scaled design is below `below` `unit` (P7).
+// Without a category it applies to every category.
+model MinSizeSurcharge {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  categoryId String?  @map("category_id") @db.Uuid
+  measure    String
+  below      Decimal  @db.Decimal(18, 6)
+  // A catalog unit key of the measure's dimension.
+  unit       String
+  amount     Decimal  @db.Decimal(18, 6)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("min_size_surcharge")
 }
