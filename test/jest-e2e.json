@@ -3,6 +3,7 @@
   "rootDir": ".",
   "testEnvironment": "node",
   "testTimeout": 20000,
+  "workerIdleMemoryLimit": "1GB",
   "testRegex": ".e2e-spec.ts$",
   "setupFiles": ["<rootDir>/setup-e2e.ts"],
   "moduleNameMapper": { "^(\\.{1,2}/.*)\\.js$": "$1" },
