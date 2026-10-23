@@ -24,6 +24,10 @@ Read before analysing, specifying or planning:
 
 These are reference material, not a plan. Specs and plans are produced per topic.
 
+## Progress
+
+`docs/progress.md` holds the state of every backend module (from `docs/discovery/domain-map.md`) and an overall estimate. When a module's plan is fully done (every task committed), update that file and show the user the whole table with the new estimate, unasked. Not after single tasks.
+
 ## Legacy source
 
 The legacy code is a read-only reference and lives outside this repo. Ask the user for its location. Never copy legacy code, names or secrets into this repo.

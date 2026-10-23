@@ -184,6 +184,8 @@ export async function seedCatalog(
           kind: product.kind,
           sizing: product.sizing as Prisma.InputJsonValue,
           fileVersionId: product.kind === 'ready_made' ? (options.ringVersionId ?? null) : null,
+          // The demo customers (`seed-customers.ts`) see and quote them in the portal.
+          published: true,
         },
       });
       created.products++;

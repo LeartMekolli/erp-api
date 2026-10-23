@@ -124,6 +124,19 @@ A walkthrough in Swagger, as the owner, after the Catalog walkthrough:
 7. `PUT /catalog/materials/{id}/price-override` for silver: the saved quote keeps its price; a new quote uses the new one.
 8. `GET /pricing/quotes/{id}/summary`: only the grouped lines.
 
+## Customers
+
+Customers are organisations (a brand, or one person on their own) with their own people: an owner, admins, buyers and viewers. Staff manage organisations and their people under `/customers`, invite the first person, and can quote or upload a file for a customer. Customer people log in like staff (`POST /auth/login`, or `POST /auth/google` when the workspace has set `auth.google`), hold no staff permissions, and act for one of their organisations under `/portal/customers/{customerId}/...`: its people and invitations, the published catalog plus its own products, its files, and its quotes, which always come back as the summary with plain refusal reasons. A buyer can save a quote as the organisation's own product, which reprices at current prices. `PUT /workspace/customer-site` sets the customer site that customer emails link to and that may call the API. `npm run seed` gives the `demo` workspace two demo customers, Luna Jewels (trade group: `anna@luna.example.test` owner, `ben@luna.example.test` buyer) and Mira Studio (`mira@mira.example.test`), and prints their shared password once.
+
+A walkthrough in Swagger, after the Pricing walkthrough:
+
+1. As the owner: `PATCH /catalog/products/{id}` with `published: true` for the custom cast part; `POST /customers` "Luna Jewels" with the trade group; `POST /customers/{id}/invitations` for Anna as `owner`.
+2. `POST /auth/customer-invitations/accept` with the token from the email (Mailpit locally), a name and a password; then `POST /auth/login` as Anna.
+3. As Anna: `GET /portal/me`, then `POST /portal/customers/{id}/invitations` for Ben as `buyer`; Ben accepts and logs in.
+4. As Ben: `POST /portal/customers/{id}/files` with a design STL, upload it, complete it; once measured, `POST /portal/customers/{id}/quotes` for the cast part with its `file_version_id`: the summary, with Luna's discount.
+5. `POST /portal/customers/{id}/products` with the quote and "Luna Moon Ring", then quote it with only options and size: the same price.
+6. As another customer's person, none of it is visible: `GET /portal/customers/{theirs}/quotes` is empty and Luna's paths answer 404.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

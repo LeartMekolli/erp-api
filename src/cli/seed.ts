@@ -6,6 +6,7 @@ import { TenantService } from '../platform/tenant.service';
 import { createPlatformAdmin } from './platform-admins';
 import { runCli } from './run-cli';
 import { seedCatalog } from './seed-catalog';
+import { seedCustomers } from './seed-customers';
 import { seedPricing } from './seed-pricing';
 
 const SEED_ADMIN = { email: 'admin@example.test', name: 'Platform Admin' };
@@ -32,8 +33,9 @@ const SEED_TENANTS: CreateTenantInput[] = [
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
- * The demo workspace also gets the example catalog (`seed-catalog.ts`) and its pricing (`seed-pricing.ts`).
- * The admin's generated password is printed here, once. The owners'
+ * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
+ * and demo customers (`seed-customers.ts`). The admin's and the customer people's generated
+ * passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
  */
@@ -79,5 +81,12 @@ void runCli(async (app) => {
   process.stdout.write(
     `pricing for demo: created ${pricing.stepTypes} step types, ${pricing.stepPrices} step prices, ${pricing.chains} chains, ` +
       `${pricing.tiers} discount tiers, ${pricing.groups} customer groups, ${pricing.speeds} delivery speeds\n`,
+  );
+
+  const customers = await seedCustomers(prisma, demo.id);
+  process.stdout.write(
+    `customers for demo: created ${customers.counts.customers} customers, ${customers.counts.people} people` +
+      (customers.password ? ` with password ${customers.password} (anna@luna.example.test, ben@luna.example.test, mira@mira.example.test)` : '') +
+      '\n',
   );
 });
