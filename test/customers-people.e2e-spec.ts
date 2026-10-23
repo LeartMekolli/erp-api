@@ -198,14 +198,39 @@ describe('customers: people and invitations', () => {
       ].sort(),
     );
 
-    const annaToken = await login(tenant, anna);
-    await tenant.as(annaToken).get('/me').expect(200);
-    await tenant.owner.patch(`/customers/${luna}/members/${await id(anna)}`, { status: 'disabled' }).expect(200);
-    await tenant.as(annaToken).get('/me').expect(401);
+    const session = (await http().post('/auth/login').send({ email: anna, password: PASSWORD, workspace: tenant.slug }).expect(200))
+      .body as { access_token: string; refresh_token: string };
+    await tenant.as(session.access_token).get('/me').expect(200);
+    // The same word as staff deactivation, and her sessions end with it.
+    const deactivated = await tenant.owner.patch(`/customers/${luna}/members/${await id(anna)}`, { status: 'deactivated' }).expect(200);
+    expect(deactivated.body).toMatchObject({ status: 'deactivated' });
+    await tenant.as(session.access_token).get('/me').expect(401);
     await http().post('/auth/login').send({ email: anna, password: PASSWORD, workspace: tenant.slug }).expect(401);
+    await tenant.owner.patch(`/customers/${luna}/members/${await id(anna)}`, { status: 'active' }).expect(200);
+    await http().post('/auth/refresh').send({ refresh_token: session.refresh_token }).expect(401);
+    await tenant.owner.patch(`/customers/${luna}/members/${await id(anna)}`, { status: 'disabled' }).expect(400);
 
     await tenant.owner.patch(`/customers/${luna}/members/${await id(anna)}`, { role: 'boss' }).expect(400);
     await tenant.owner.patch(`/customers/${luna}/members/${newId()}`, { role: 'buyer' }).expect(404);
+  });
+
+  it('never lets a customer person hold staff permissions', async () => {
+    const tenant = await freshTenant();
+    const luna = await customer(tenant, 'Luna Jewels');
+    const anna = freshEmail('anna');
+    await accept({ token: await invite(tenant, luna, anna, 'owner'), name: 'Anna', password: PASSWORD }).expect(204);
+    const annaId = (await members(tenant, luna))[0].user_id;
+    const ownerRole = await prisma.inTenant(tenant.id, (tx) => tx.role.findFirstOrThrow({ where: { name: 'owner' } }));
+
+    // The staff user routes do not know customer people.
+    await tenant.owner.put(`/users/${annaId}/roles`, { role_ids: [ownerRole.id] }).expect(404);
+    await tenant.owner.post(`/users/${annaId}/deactivate`, {}).expect(404);
+
+    // A workspace role written past the API still grants a customer person nothing.
+    await prisma.inTenant(tenant.id, (tx) => tx.userRole.create({ data: { userId: annaId, roleId: ownerRole.id } }));
+    const asAnna = tenant.as(await login(tenant, anna));
+    await asAnna.get('/customers').expect(403);
+    await asAnna.get('/users').expect(403);
   });
 
   it('keeps invitations and members to staff who may manage customers, and to the workspace', async () => {

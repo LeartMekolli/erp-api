@@ -59,7 +59,8 @@ export class UsersService {
    */
   async deactivate(auth: TenantAuth, userId: string): Promise<void> {
     await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true } });
+      // Staff users only: a customer person is deactivated through its customer's members.
+      const user = await tx.user.findFirst({ where: { id: userId, kind: 'staff' }, select: { status: true } });
       if (!user) {
         throw new NotFoundException('User not found');
       }
@@ -89,7 +90,8 @@ export class UsersService {
    */
   async setRoles(auth: TenantAuth, userId: string, roleIds: string[]): Promise<{ role_ids: string[] }> {
     const result = await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, name: true } });
+      // Staff users only: a customer person never holds workspace roles.
+      const user = await tx.user.findFirst({ where: { id: userId, kind: 'staff' }, select: { id: true, name: true } });
       if (!user) {
         throw new NotFoundException('User not found');
       }

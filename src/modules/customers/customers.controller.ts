@@ -118,7 +118,7 @@ export class CustomersController {
   }
 
   @ApiDoc({
-    summary: "Change a person's role at the customer, or disable or re-enable the person.",
+    summary: "Change a person's role at the customer, or deactivate or re-activate the person.",
     description:
       'Making someone owner turns the current owner into an admin; taking the owner role away otherwise is a 409. ' +
       "The status is the person's own, for every customer they act for, and applies from their next request.",

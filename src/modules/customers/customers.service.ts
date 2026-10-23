@@ -28,8 +28,8 @@ export const updateCustomerSchema = z.object({
 export const updateMemberSchema = z.object({
   /** Making someone owner turns the current owner into an admin. */
   role: z.enum(CUSTOMER_ROLES).optional(),
-  /** The person's own status, for every customer they act for: disabled people cannot log in. */
-  status: z.enum(['active', 'disabled']).optional(),
+  /** The person's own status, for every customer they act for, as staff users have it: deactivated people cannot log in. */
+  status: z.enum(['active', 'deactivated']).optional(),
 });
 
 type CustomerRow = Customer & { customerGroup: CustomerGroup | null };
@@ -174,6 +174,13 @@ export class CustomersService {
       }
       if (patch.status) {
         await tx.user.update({ where: { id: userId }, data: { status: patch.status } });
+      }
+      // As staff deactivation does: every session ends, not only the next request.
+      if (patch.status === 'deactivated' && membership.user.status !== 'deactivated') {
+        await tx.refreshToken.updateMany({
+          where: { userId, revokedAt: null },
+          data: { revokedAt: new Date(), revokedReason: 'logout' },
+        });
       }
 
       const after = memberResponse(

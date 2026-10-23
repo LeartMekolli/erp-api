@@ -106,7 +106,7 @@ describe('sign in with Google', () => {
     await signIn({ workspace: tenant.slug, id_token: stranger }).expect(401);
     expect(await tenant.links()).toEqual([]);
 
-    const disabled = await createTestUser(prisma, tenant.id, { status: 'disabled' });
+    const disabled = await createTestUser(prisma, tenant.id, { status: 'deactivated' });
     const disabledToken = await keys.mint({ aud: tenant.clientId, sub: 'g-5', email: disabled.email });
     await signIn({ workspace: tenant.slug, id_token: disabledToken }).expect(401);
 

@@ -31,8 +31,8 @@ export const customerMemberResponseSchema = z.strictObject({
   name: z.string(),
   email: z.string(),
   role: z.enum(CUSTOMER_ROLES),
-  /** The person's own status, the same in every customer they act for; disabled people cannot log in. */
-  status: z.enum(['active', 'disabled']),
+  /** The person's own status, the same in every customer they act for; deactivated people cannot log in. */
+  status: z.enum(['active', 'deactivated']),
 });
 export type CustomerMemberResponse = z.infer<typeof customerMemberResponseSchema>;
 

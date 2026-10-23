@@ -123,6 +123,7 @@ export class AuthGuard implements CanActivate {
         where: { id: claims.sub },
         select: {
           status: true,
+          kind: true,
           tenant: { select: { status: true } },
           roles: { select: { role: { select: { permissions: { select: { permission: true } } } } } },
         },
@@ -137,7 +138,8 @@ export class AuthGuard implements CanActivate {
     }
 
     const permissions = new Set<TenantPermission>();
-    for (const { role } of user.roles) {
+    // A customer person holds no workspace permissions, whatever roles a row may claim.
+    for (const { role } of user.kind === 'staff' ? user.roles : []) {
       for (const { permission } of role.permissions) {
         // A key removed from the code constant stops granting anything.
         if (isTenantPermission(permission)) permissions.add(permission);
