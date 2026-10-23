@@ -36,7 +36,20 @@ type CustomerRow = Customer & { customerGroup: CustomerGroup | null };
 
 const include = { customerGroup: true } as const;
 
-const memberInclude = { user: { select: { id: true, name: true, email: true, status: true } } } as const;
+export const memberInclude = { user: { select: { id: true, name: true, email: true, status: true } } } as const;
+
+export function memberResponse(row: {
+  role: string;
+  user: { id: string; name: string; email: string; status: string };
+}): CustomerMemberResponse {
+  return {
+    user_id: row.user.id,
+    name: row.user.name,
+    email: row.user.email,
+    role: row.role as CustomerMemberResponse['role'],
+    status: row.user.status as CustomerMemberResponse['status'],
+  };
+}
 
 /**
  * Locks the customer row for the rest of the transaction, which serialises
@@ -121,7 +134,7 @@ export class CustomersService {
         orderBy: { id: 'asc' },
         include: memberInclude,
       });
-      return { data: rows.map((row) => this.toMember(row)) };
+      return { data: rows.map((row) => memberResponse(row)) };
     });
   }
 
@@ -145,7 +158,7 @@ export class CustomersService {
       if (!membership) {
         throw new NotFoundException('Person not found');
       }
-      const before = this.toMember(membership);
+      const before = memberResponse(membership);
 
       if (patch.role && patch.role !== membership.role) {
         if (membership.role === 'owner') {
@@ -163,7 +176,7 @@ export class CustomersService {
         await tx.user.update({ where: { id: userId }, data: { status: patch.status } });
       }
 
-      const after = this.toMember(
+      const after = memberResponse(
         await tx.organisationMembership.findUniqueOrThrow({ where: { id: membership.id }, include: memberInclude }),
       );
       await this.audit.record(tx, {
@@ -190,19 +203,6 @@ export class CustomersService {
     if (!(await tx.customerGroup.findUnique({ where: { id }, select: { id: true } }))) {
       throw new NotFoundException('Customer group not found');
     }
-  }
-
-  private toMember(row: {
-    role: string;
-    user: { id: string; name: string; email: string; status: string };
-  }): CustomerMemberResponse {
-    return {
-      user_id: row.user.id,
-      name: row.user.name,
-      email: row.user.email,
-      role: row.role as CustomerMemberResponse['role'],
-      status: row.user.status as CustomerMemberResponse['status'],
-    };
   }
 
   private async toResponse(tx: Prisma.TransactionClient, row: CustomerRow): Promise<CustomerResponse> {

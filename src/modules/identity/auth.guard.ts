@@ -1,16 +1,21 @@
 import {
+  BadRequestException,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
+import { z } from 'zod';
 import { requestContextOf } from '../../common/request-context/request-context';
 import { PrismaService } from '../../database/prisma.service';
 import { AccessClaims, AccessTokenService } from './access-token.service';
-import { AuthContext, PlatformAuth, TenantAuth, setAuth } from './auth-context';
+import { CUSTOMER_ROLES, atLeast } from '../customers/customer-roles';
+import type { CustomerRole } from '../customers/customer-roles';
+import { AuthContext, PlatformAuth, TenantAuth, setAuth, setCustomerAuth } from './auth-context';
 import { PLATFORM_PERMISSIONS, TenantPermission, isTenantPermission } from './permissions';
 import { ROUTE_MARKER, RouteMarker } from './route-markers';
 
@@ -66,8 +71,50 @@ export class AuthGuard implements CanActivate {
     if (marker.kind === 'permission' && !(auth.permissions as ReadonlySet<string>).has(marker.permission)) {
       throw new ForbiddenException();
     }
+    if (marker.kind === 'customer') {
+      await this.customerAuth(request, auth, marker.role);
+    }
 
     return true;
+  }
+
+  /**
+   * The caller must be a customer person with a membership in the route's
+   * customer, which must be active, read fresh like the user's own status.
+   * Another organisation's id, a removed membership and a disabled customer
+   * all look the same: not found.
+   */
+  private async customerAuth(request: Request, auth: AuthContext, required: CustomerRole): Promise<void> {
+    if (auth.scope !== 'tenant') {
+      throw new ForbiddenException('This route acts for a customer');
+    }
+    const customerId = z.uuid().safeParse(request.params.customerId);
+    if (!customerId.success) {
+      throw new BadRequestException('customerId must be a UUID');
+    }
+
+    const found = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: auth.userId }, select: { kind: true } });
+      const membership = await tx.organisationMembership.findFirst({
+        where: { userId: auth.userId, organisationType: 'customer', organisationId: customerId.data },
+        select: { role: true },
+      });
+      const customer = await tx.customer.findUnique({ where: { id: customerId.data }, select: { status: true } });
+      return { kind: user?.kind, role: membership?.role, status: customer?.status };
+    });
+
+    if (found.kind !== 'customer') {
+      throw new ForbiddenException('This route is for customer people');
+    }
+    const role = CUSTOMER_ROLES.find((known) => known === found.role);
+    if (!role || found.status !== 'active') {
+      throw new NotFoundException('Customer not found');
+    }
+    if (!atLeast(role, required)) {
+      throw new ForbiddenException();
+    }
+
+    setCustomerAuth(request, { tenantId: auth.tenantId, userId: auth.userId, customerId: customerId.data, role });
   }
 
   private async tenantAuth(claims: AccessClaims, tenantId: string): Promise<TenantAuth> {

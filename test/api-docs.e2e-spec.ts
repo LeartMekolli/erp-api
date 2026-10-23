@@ -118,6 +118,12 @@ describe('API docs', () => {
       expect(doc.paths['/files'].post?.security).toEqual([{ bearer: [] }]);
     });
 
+    it('names the customer role of a portal route', () => {
+      const invite = doc.paths['/portal/customers/{customerId}/invitations'].post;
+      expect(invite?.description).toContain('Access: a person acting for the customer, at least `admin`.');
+      expect(invite?.security).toEqual([{ bearer: [] }]);
+    });
+
     it('documents query parameters from the route schema and drops internal headers', () => {
       const parameters = (doc.paths['/users'].get?.parameters ?? []) as { name: string; in: string; required: boolean }[];
       expect(parameters).toEqual(

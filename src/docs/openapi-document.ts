@@ -101,6 +101,8 @@ function accessLine(marker: RouteMarker | undefined): string {
       return 'Access: any signed-in user.';
     case 'permission':
       return `Access: permission \`${marker.permission}\`.`;
+    case 'customer':
+      return `Access: a person acting for the customer, at least \`${marker.role}\`.`;
     default:
       return 'Access: refused (the route has no access marker).';
   }
@@ -110,7 +112,11 @@ function accessLine(marker: RouteMarker | undefined): string {
 function isTenantPost(route: DocumentedRoute): boolean {
   const { marker } = route;
   if (route.method !== 'post') return false;
-  return marker?.kind === 'authenticated' || (marker?.kind === 'permission' && !marker.permission.startsWith('platform.'));
+  return (
+    marker?.kind === 'authenticated' ||
+    marker?.kind === 'customer' ||
+    (marker?.kind === 'permission' && !marker.permission.startsWith('platform.'))
+  );
 }
 
 function fillOperation(operation: OperationObject, route: DocumentedRoute, ctx: DocContext): void {
@@ -140,6 +146,13 @@ function fillOperation(operation: OperationObject, route: DocumentedRoute, ctx: 
   // Path parameters as Nest generated them. Query parameters come only from
   // `query`; headers read internally (such as Host) are not part of the API.
   const pathParameters = (operation.parameters ?? []).filter((parameter) => 'in' in parameter && parameter.in === 'path');
+  // A parameter only the guard reads, such as a portal route's customerId, has no @Param for Nest to see.
+  for (const match of route.path.matchAll(/\{(\w+)\}/g)) {
+    const name = match[1];
+    if (name && !pathParameters.some((parameter) => 'name' in parameter && parameter.name === name)) {
+      pathParameters.push({ name, in: 'path', required: true, schema: { type: 'string' } });
+    }
+  }
   const queryShape: z.core.$ZodShape = doc?.query?.shape ?? {};
   const queryParameters = Object.entries(queryShape).map(([name, field]) => ({
     name,

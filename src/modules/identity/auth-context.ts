@@ -5,6 +5,7 @@ import {
   createParamDecorator,
 } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
+import type { CustomerRole } from '../customers/customer-roles';
 import type { PlatformPermission, TenantPermission } from './permissions';
 
 export interface TenantAuth {
@@ -26,11 +27,25 @@ export interface PlatformAuth {
 
 export type AuthContext = TenantAuth | PlatformAuth;
 
+/** A customer person acting for one customer, set by the guard on `CustomerAccess` routes. */
+export interface CustomerAuth {
+  tenantId: string;
+  userId: string;
+  customerId: string;
+  role: CustomerRole;
+}
+
 /** Set by the guard, read by the decorators below. */
 const authByRequest = new WeakMap<IncomingMessage, AuthContext>();
 
 export function setAuth(request: IncomingMessage, auth: AuthContext): void {
   authByRequest.set(request, auth);
+}
+
+const customerAuthByRequest = new WeakMap<IncomingMessage, CustomerAuth>();
+
+export function setCustomerAuth(request: IncomingMessage, auth: CustomerAuth): void {
+  customerAuthByRequest.set(request, auth);
 }
 
 /** The verified caller, if the guard authenticated this request. */
@@ -80,3 +95,13 @@ export const CurrentPlatformAdmin = createParamDecorator(
     return auth;
   },
 );
+
+/** The customer the caller acts for, on a `CustomerAccess` route only. */
+export const CurrentCustomer = createParamDecorator((_data: unknown, context: ExecutionContext) => {
+  const auth = customerAuthByRequest.get(context.switchToHttp().getRequest<IncomingMessage>());
+  if (!auth) {
+    // Only reachable on a route without the CustomerAccess marker.
+    throw new ForbiddenException('This route acts for a customer');
+  }
+  return auth;
+});

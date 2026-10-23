@@ -38,3 +38,10 @@ export type CustomerMemberResponse = z.infer<typeof customerMemberResponseSchema
 /** The workspace's customer site: customer emails link there and it may call the API. */
 export const customerSiteResponseSchema = z.strictObject({ origin: z.string().nullable() });
 export type CustomerSiteResponse = z.infer<typeof customerSiteResponseSchema>;
+
+/** A customer person and the active customers they act for, by name. */
+export const portalMeResponseSchema = z.strictObject({
+  user: z.strictObject({ id: z.uuid(), name: z.string(), email: z.string() }),
+  customers: z.array(z.strictObject({ id: z.uuid(), name: z.string(), role: z.enum(CUSTOMER_ROLES) })),
+});
+export type PortalMeResponse = z.infer<typeof portalMeResponseSchema>;
