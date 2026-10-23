@@ -36,18 +36,20 @@ export function uploadSchemas(maxBytes: number) {
     content_type: contentTypeSchema,
     size: z.number().int().min(1).max(maxBytes),
   });
-  const file = version
-    .extend({
-      kind: z.enum(FILE_KINDS),
-      declared_unit: z.enum(DECLARED_UNITS).optional(),
-    })
-    // A mesh has no unit of its own, so a design must say which one it uses (Catalog spec B4).
-    .superRefine((input, ctx) => {
-      if (input.kind === 'design' && input.declared_unit === undefined) {
-        ctx.addIssue({ code: 'custom', path: ['declared_unit'], message: 'Required for a design file' });
-      }
-    });
-  return { file, version };
+  const fileFields = version.extend({
+    kind: z.enum(FILE_KINDS),
+    declared_unit: z.enum(DECLARED_UNITS).optional(),
+  });
+  // A mesh has no unit of its own, so a design must say which one it uses (Catalog spec B4).
+  const requireDesignUnit = (input: z.infer<typeof fileFields>, ctx: z.RefinementCtx) => {
+    if (input.kind === 'design' && input.declared_unit === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['declared_unit'], message: 'Required for a design file' });
+    }
+  };
+  const file = fileFields.superRefine(requireDesignUnit);
+  /** Staff may upload a file for a customer, which its people then see (Customers spec, goal 10). */
+  const staffFile = fileFields.extend({ customer_id: z.uuid().optional() }).superRefine(requireDesignUnit);
+  return { file, staffFile, version };
 }
 
 type UploadSchemas = ReturnType<typeof uploadSchemas>;
@@ -67,10 +69,11 @@ export class FilesController {
     summary: 'Start an upload: create a file and its first version, and get a signed upload link.',
     description:
       'PUT the bytes to `upload.url` with exactly `upload.headers`, before `upload.expires_at`; storage refuses ' +
-      'another size or content type. Then call complete. The upload itself does not go through the API.',
-    body: ({ fileMaxBytes }) => uploadSchemas(fileMaxBytes).file,
+      'another size or content type. Then call complete. The upload itself does not go through the API. ' +
+      'With `customer_id`, the file belongs to that customer, whose people see it in the portal.',
+    body: ({ fileMaxBytes }) => uploadSchemas(fileMaxBytes).staffFile,
     response: startUploadResponseSchema,
-    errors: [400, 401, 403],
+    errors: [400, 401, 403, 404],
   })
   @RequirePermission('file.write')
   @Post()
@@ -78,14 +81,18 @@ export class FilesController {
     @CurrentUser() auth: TenantAuth,
     @Body() body: unknown,
   ): Promise<{ file: FileResponse; version: VersionResponse; upload: UploadResponse }> {
-    const input = this.schemas.file.parse(body);
-    return this.files.start(auth, {
-      kind: input.kind,
-      name: input.name,
-      contentType: input.content_type,
-      size: input.size,
-      declaredUnit: input.declared_unit,
-    });
+    const input = this.schemas.staffFile.parse(body);
+    return this.files.start(
+      auth,
+      {
+        kind: input.kind,
+        name: input.name,
+        contentType: input.content_type,
+        size: input.size,
+        declaredUnit: input.declared_unit,
+      },
+      input.customer_id ? { type: 'customer', id: input.customer_id } : undefined,
+    );
   }
 
   @ApiDoc({

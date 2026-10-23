@@ -1,6 +1,11 @@
 import { ConflictException, Inject, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { newId } from '../../common/ids/uuid';
+import { decodeCursor } from '../../common/pagination/cursor';
+import { toPage } from '../../common/pagination/page';
+import type { Page } from '../../common/pagination/page';
+import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
+import type { Prisma } from '../../generated/prisma/client';
 import { ClaimSweeper } from '../../jobs/claim-sweeper';
 import { claimRow, releaseRow } from '../../jobs/claims';
 import { JobsService } from '../../jobs/jobs.service';
@@ -32,6 +37,23 @@ export interface NewUpload {
 }
 
 /**
+ * Who a file belongs to besides the workspace (Customers spec, goal 6). Every
+ * method that takes one only sees files of that owner; without one (staff),
+ * every file of the workspace.
+ */
+export interface FileOwner {
+  type: 'customer';
+  id: string;
+}
+
+/** The uploader: a staff user or a customer person. */
+type Uploader = Pick<TenantAuth, 'tenantId' | 'userId'>;
+
+function ownedBy(owner: FileOwner | undefined): Prisma.FileWhereInput {
+  return owner ? { ownerType: owner.type, ownerId: owner.id } : {};
+}
+
+/**
  * The one file service (spec 5.4). The API never touches bytes: it records a
  * pending version, signs a PUT for exactly the declared size and type, and the
  * client uploads straight to storage. Keys are built from ids alone (plan S3).
@@ -44,6 +66,7 @@ export class FilesService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly jobs: JobsService,
     private readonly sweeper: ClaimSweeper,
+    private readonly config: ConfigService,
     @Inject(STORAGE) private readonly storage: ObjectStorage,
   ) {}
 
@@ -59,20 +82,27 @@ export class FilesService implements OnModuleInit {
   }
 
   async start(
-    auth: TenantAuth,
+    auth: Uploader,
     input: NewUpload & { kind: FileKind; declaredUnit?: DeclaredUnit },
+    owner?: FileOwner,
   ): Promise<{ file: FileResponse; version: VersionResponse; upload: UploadResponse }> {
     const fileId = newId();
     const versionId = newId();
     const storageKey = finalKeyFor(auth.tenantId, fileId, versionId);
 
     const { file, version } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      // Row-level security hides other workspaces' customers, so a foreign id is not found.
+      if (owner && !(await tx.customer.findUnique({ where: { id: owner.id }, select: { id: true } }))) {
+        throw new NotFoundException('Customer not found');
+      }
       const file = await tx.file.create({
         data: {
           id: fileId,
           kind: input.kind,
           name: input.name,
           declaredUnit: input.declaredUnit ?? null,
+          ownerType: owner?.type ?? null,
+          ownerId: owner?.id ?? null,
           createdByUserId: auth.userId,
         },
       });
@@ -99,9 +129,10 @@ export class FilesService implements OnModuleInit {
   }
 
   async addVersion(
-    auth: TenantAuth,
+    auth: Uploader,
     fileId: string,
     input: NewUpload,
+    owner?: FileOwner,
   ): Promise<{ version: VersionResponse; upload: UploadResponse }> {
     const versionId = newId();
     const storageKey = finalKeyFor(auth.tenantId, fileId, versionId);
@@ -110,7 +141,7 @@ export class FilesService implements OnModuleInit {
       // Locking the file serialises numbering: a concurrent request waits here
       // and then sees this version, so it takes the next number instead of failing.
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM file WHERE id = ${fileId}::uuid FOR UPDATE`;
-      if (locked.length === 0) {
+      if (locked.length === 0 || !(await tx.file.findFirst({ where: { id: fileId, ...ownedBy(owner) }, select: { id: true } }))) {
         throw new NotFoundException('File not found');
       }
       const last = await tx.fileVersion.aggregate({ where: { fileId }, _max: { number: true } });
@@ -132,13 +163,29 @@ export class FilesService implements OnModuleInit {
     return { version: toVersionResponse(version), upload: await this.signUpload(uploadKeyFor(storageKey), input) };
   }
 
+  /** The owner's files, newest first. */
+  async list(tenantId: string, owner: FileOwner, query: { limit: number; cursor?: string }): Promise<Page<FileResponse>> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const rows = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.file.findMany({
+        where: { ...ownedBy(owner), ...(after ? { id: { lt: after.id } } : {}) },
+        orderBy: { id: 'desc' },
+        take: query.limit + 1,
+      }),
+    );
+    const page = toPage(rows, query.limit, secret);
+    return { data: page.data.map(toFileResponse), next_cursor: page.next_cursor };
+  }
+
   async get(
     tenantId: string,
     fileId: string,
+    owner?: FileOwner,
   ): Promise<FileResponse & { versions: (VersionResponse & { measures: MeasureResponse[] })[] }> {
     const file = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.file.findUnique({
-        where: { id: fileId },
+      tx.file.findFirst({
+        where: { id: fileId, ...ownedBy(owner) },
         include: { versions: { orderBy: { number: 'desc' }, include: { measures: { orderBy: { type: 'asc' } } } } },
       }),
     );
@@ -161,8 +208,9 @@ export class FilesService implements OnModuleInit {
    * that wins the `completing` claim copies. Completing again, or while another
    * request holds the claim, returns the version as it is.
    */
-  async complete(tenantId: string, fileId: string, versionId: string): Promise<VersionResponse> {
-    const version = await this.findVersion(tenantId, fileId, versionId);
+  async complete(tenantId: string, fileId: string, versionId: string, owner?: FileOwner): Promise<VersionResponse> {
+    // The owner is checked once, here; the file's owner never changes.
+    const version = await this.findVersion(tenantId, fileId, versionId, owner);
     if (version.status !== 'pending') {
       return toVersionResponse(version);
     }
@@ -247,8 +295,13 @@ export class FilesService implements OnModuleInit {
   }
 
   /** A short-lived GET (plan S4, S8), once the upload has been completed. */
-  async downloadUrl(tenantId: string, fileId: string, versionId: string): Promise<{ url: string; expires_at: string }> {
-    const version = await this.findVersion(tenantId, fileId, versionId);
+  async downloadUrl(
+    tenantId: string,
+    fileId: string,
+    versionId: string,
+    owner?: FileOwner,
+  ): Promise<{ url: string; expires_at: string }> {
+    const version = await this.findVersion(tenantId, fileId, versionId, owner);
     // While completing, the final object may not exist yet.
     if (version.status === 'pending' || version.status === 'completing') {
       throw new ConflictException('Upload not completed');
@@ -263,10 +316,10 @@ export class FilesService implements OnModuleInit {
     return { url, expires_at: expiresAt.toISOString() };
   }
 
-  /** The version, only under its own file and only in this tenant (RLS); 404 otherwise. */
-  private async findVersion(tenantId: string, fileId: string, versionId: string) {
+  /** The version, only under its own file, of the owner if given, and only in this tenant (RLS); 404 otherwise. */
+  private async findVersion(tenantId: string, fileId: string, versionId: string, owner?: FileOwner) {
     const version = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.fileVersion.findFirst({ where: { id: versionId, fileId } }),
+      tx.fileVersion.findFirst({ where: { id: versionId, fileId, ...(owner ? { file: ownedBy(owner) } : {}) } }),
     );
     if (!version) {
       throw new NotFoundException('File version not found');
