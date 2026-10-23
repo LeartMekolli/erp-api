@@ -60,6 +60,9 @@ model Tenant {
   customers       Customer[]
   customerInvitations CustomerInvitation[]
   defects         Defect[]
+  workflows       Workflow[]
+  workflowVersions WorkflowVersion[]
+  workflowSteps   WorkflowStep[]
 
   @@map("tenant")
 }
@@ -469,6 +472,7 @@ model FileVersion {
   uploadedBy User      @relation(fields: [tenantId, uploadedByUserId], references: [tenantId, id], onDelete: NoAction)
   measures   Measure[]
   products   Product[]
+  sopForSteps WorkflowStep[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -642,9 +646,12 @@ model Category {
   name             String
   // A subset of MEASURE_TYPES in src/modules/files/measurers.ts.
   requiredMeasures String[] @map("required_measures")
+  // The workflow its products go through, unless a product has its own (D33).
+  workflowId       String?  @map("workflow_id") @db.Uuid
   createdAt        DateTime @default(now()) @map("created_at")
 
   tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workflow Workflow?      @relation(fields: [tenantId, workflowId], references: [tenantId, id], onDelete: NoAction)
   products Product[]
   steps    CategoryStep[]
   margin   MarginOverride?
@@ -675,11 +682,14 @@ model Product {
   published     Boolean  @default(false)
   // Set for a customer's private product; null for the shared catalog (goal 7).
   customerId    String?  @map("customer_id") @db.Uuid
+  // Replaces its category's workflow when set (D33).
+  workflowId    String?  @map("workflow_id") @db.Uuid
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category     Category             @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: NoAction)
+  workflow     Workflow?            @relation(fields: [tenantId, workflowId], references: [tenantId, id], onDelete: NoAction)
   customer     Customer?            @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   fileVersion  FileVersion?         @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
   material     Material?            @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: NoAction)
@@ -750,6 +760,7 @@ model StepType {
   productSteps  ProductStep[]
   optionEffects OptionStepEffect[]
   prices        StepPrice[]
+  workflowSteps WorkflowStep[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1041,4 +1052,67 @@ model Defect {
   @@unique([tenantId, key])
   @@unique([tenantId, id])
   @@map("defect")
+}
+
+// An ordered list of checked steps, assigned on a category and overridable per product (D33).
+model Workflow {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key       String
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  versions   WorkflowVersion[]
+  categories Category[]
+  products   Product[]
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("workflow")
+}
+
+// One immutable version of a workflow's steps (D34). Editing the steps adds the next number; the
+// latest is the current one.
+model WorkflowVersion {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  workflowId      String   @map("workflow_id") @db.Uuid
+  number          Int
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workflow Workflow       @relation(fields: [tenantId, workflowId], references: [tenantId, id], onDelete: Cascade)
+  steps    WorkflowStep[]
+
+  @@unique([tenantId, workflowId, number])
+  @@unique([tenantId, id])
+  @@map("workflow_version")
+}
+
+// A step of one workflow version, never changed. `config` holds the checklist, defects, rework
+// targets, photo and comment rules and the customer view (src/modules/workflow/workflow-config.ts).
+model WorkflowStep {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  versionId        String   @map("version_id") @db.Uuid
+  // From 0, in the order pieces go through the steps.
+  position         Int
+  key              String
+  name             String
+  stepTypeId       String   @map("step_type_id") @db.Uuid
+  config           Json
+  sopFileVersionId String?  @map("sop_file_version_id") @db.Uuid
+  expectedMinutes  Decimal? @map("expected_minutes") @db.Decimal(9, 2)
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  version        WorkflowVersion @relation(fields: [tenantId, versionId], references: [tenantId, id], onDelete: Cascade)
+  stepType       StepType        @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: NoAction)
+  sopFileVersion FileVersion?    @relation(fields: [tenantId, sopFileVersionId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([versionId, key])
+  @@unique([versionId, position])
+  @@unique([tenantId, id])
+  @@map("workflow_step")
 }
