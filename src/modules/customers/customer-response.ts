@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sizingSchema } from '../catalog/scaling';
 import { CUSTOMER_ROLES } from './customer-roles';
 
 // What staff receive for customer organisations; checked against real responses in the e2e tests.
@@ -45,3 +46,29 @@ export const portalMeResponseSchema = z.strictObject({
   customers: z.array(z.strictObject({ id: z.uuid(), name: z.string(), role: z.enum(CUSTOMER_ROLES) })),
 });
 export type PortalMeResponse = z.infer<typeof portalMeResponseSchema>;
+
+/**
+ * A product as a customer sees it: keys and names only. No material ids,
+ * prices, measures or pricing setup; prices reach customers through quotes.
+ */
+export const portalProductSchema = z.strictObject({
+  id: z.uuid(),
+  name: z.string(),
+  kind: z.enum(['custom', 'ready_made']),
+  /** True for a product that belongs to this customer alone. */
+  private: z.boolean(),
+  sizing: sizingSchema,
+  /** The choices offered, in order; `default` is a value key. */
+  options: z.array(
+    z.strictObject({
+      key: z.string(),
+      name: z.string(),
+      required: z.boolean(),
+      default: z.string().nullable(),
+      values: z.array(z.strictObject({ key: z.string(), name: z.string() })),
+    }),
+  ),
+  /** The design file version a ready-made product is made from. */
+  design_file: z.strictObject({ version_id: z.uuid() }).nullable(),
+});
+export type PortalProduct = z.infer<typeof portalProductSchema>;

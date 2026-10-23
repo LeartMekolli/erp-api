@@ -1,20 +1,23 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { GoogleModule } from '../auth/google.module';
+import { CatalogModule } from '../catalog/catalog.module';
 import { IdentityNotifierModule } from '../identity/identity-notifier';
 import { CustomerInvitationsService } from './customer-invitations.service';
 import { CustomerSiteController } from './customer-site.controller';
 import { CustomerSiteService } from './customer-site.service';
 import { CustomersController } from './customers.controller';
 import { CustomersService } from './customers.service';
+import { PortalCatalogController } from './portal-catalog.controller';
+import { PortalCatalogService } from './portal-catalog.service';
 import { PortalMembersService } from './portal-members.service';
 import { PortalController } from './portal.controller';
 
 /** Customer organisations, their people, and the portal they act through (Customers spec). */
 @Module({
-  imports: [AuditModule, IdentityNotifierModule, GoogleModule],
-  controllers: [CustomersController, CustomerSiteController, PortalController],
-  providers: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalMembersService],
-  exports: [CustomersService, CustomerInvitationsService, CustomerSiteService],
+  imports: [AuditModule, IdentityNotifierModule, GoogleModule, CatalogModule],
+  controllers: [CustomersController, CustomerSiteController, PortalController, PortalCatalogController],
+  providers: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalMembersService, PortalCatalogService],
+  exports: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalCatalogService],
 })
 export class CustomersModule {}

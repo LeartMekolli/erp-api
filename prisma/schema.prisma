@@ -670,11 +670,16 @@ model Product {
   sizing        Json
   // active
   status        String   @default("active")
+  // Customers see a product only once staff publish it (Customers spec, goal 11).
+  published     Boolean  @default(false)
+  // Set for a customer's private product; null for the shared catalog (goal 7).
+  customerId    String?  @map("customer_id") @db.Uuid
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category     Category             @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: NoAction)
+  customer     Customer?            @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   fileVersion  FileVersion?         @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
   material     Material?            @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: NoAction)
   optionGroups ProductOptionGroup[]
@@ -686,6 +691,7 @@ model Product {
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
+  @@index([tenantId, customerId])
   @@map("product")
 }
 
@@ -978,6 +984,7 @@ model Customer {
   tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customerGroup CustomerGroup?       @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: NoAction)
   invitations   CustomerInvitation[]
+  products      Product[]
 
   @@unique([tenantId, id])
   @@index([tenantId])

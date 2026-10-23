@@ -35,5 +35,9 @@ export const productResponseSchema = z.strictObject({
   design_file: z.strictObject({ file_id: z.uuid(), version_id: z.uuid() }).nullable(),
   /** The option groups offered, in order. */
   options: z.array(productOptionsSchema),
+  /** Whether customers see it (shared products) or its customer sees it (private ones). */
+  published: z.boolean(),
+  /** The customer a private product belongs to; null for the shared catalog. */
+  customer_id: z.uuid().nullable(),
 });
 export type ProductResponse = z.infer<typeof productResponseSchema>;

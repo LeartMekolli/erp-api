@@ -109,7 +109,14 @@ describe('catalog: categories and products', () => {
 
     const custom = await tenant.owner.post('/catalog/products', customCastPart(categoryId)).expect(201);
     expectDocumented(productResponseSchema, custom.body);
-    expect(custom.body).toMatchObject({ kind: 'custom', sizing: { mode: 'range', min: '0.5', max: '2' }, design_file: null });
+    // New products are hidden from customers and shared, until staff say otherwise.
+    expect(custom.body).toMatchObject({
+      kind: 'custom',
+      sizing: { mode: 'range', min: '0.5', max: '2' },
+      design_file: null,
+      published: false,
+      customer_id: null,
+    });
     await tenant.owner.post('/catalog/products', ringModel(categoryId)).expect(201);
 
     const listed = await tenant.member.get('/catalog/products').expect(200);
@@ -215,5 +222,31 @@ describe('catalog: categories and products', () => {
       .put(`/catalog/products/${ringA.id}/options`, { groups: [{ group_id: idsB.groupId, required: false, value_ids: [idsB.raw] }] })
       .expect(404);
     await b.owner.get(`/catalog/products/${ringA.id}`).expect(404);
+  });
+
+  it('publishes a product to customers, and makes one private to a customer of the workspace only', async () => {
+    const a = await freshTenant();
+    const b = await freshTenant();
+    const { categoryId } = await setup(a);
+    const customerOf = async (tenant: Tenant, name: string) =>
+      ((await tenant.owner.post('/customers', { name }).expect(201)).body as { id: string }).id;
+    const luna = await customerOf(a, 'Luna Jewels');
+    const foreign = await customerOf(b, 'Mira Studio');
+
+    const created = await a.owner
+      .post('/catalog/products', { ...customCastPart(categoryId), key: 'luna_signet', published: true, customer_id: luna })
+      .expect(201);
+    expectDocumented(productResponseSchema, created.body);
+    expect(created.body).toMatchObject({ published: true, customer_id: luna });
+    const id = (created.body as Product).id;
+
+    const shared = await a.owner.patch(`/catalog/products/${id}`, { published: false, customer_id: null }).expect(200);
+    expect(shared.body).toMatchObject({ published: false, customer_id: null });
+
+    // Another workspace's customer, or none at all, is not found.
+    await a.owner.post('/catalog/products', { ...customCastPart(categoryId), key: 'x', customer_id: foreign }).expect(404);
+    await a.owner.patch(`/catalog/products/${id}`, { customer_id: foreign }).expect(404);
+    await a.owner.patch(`/catalog/products/${id}`, { customer_id: newId() }).expect(404);
+    await a.owner.patch(`/catalog/products/${id}`, { published: 'yes' }).expect(400);
   });
 });

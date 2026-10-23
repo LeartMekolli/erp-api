@@ -37,12 +37,19 @@ export const createProductSchema = z.object({
   kind: z.enum(['custom', 'ready_made']),
   sizing: sizingSchema.default({ mode: 'none' }),
   material_id: z.uuid().optional(),
+  /** Customers see a product only once it is published. */
+  published: z.boolean().default(false),
+  /** Makes the product private to one customer of the workspace. */
+  customer_id: z.uuid().optional(),
 });
 export const updateProductSchema = z.object({
   category_id: z.uuid().optional(),
   name: nameSchema.optional(),
   sizing: sizingSchema.optional(),
   material_id: z.uuid().nullable().optional(),
+  published: z.boolean().optional(),
+  /** Null returns the product to the shared catalog. */
+  customer_id: z.uuid().nullable().optional(),
 });
 
 export const productOptionsInputSchema = z.object({
@@ -114,6 +121,8 @@ function toProduct(row: ProductRow): ProductResponse {
       default_value_id: group.defaultValueId,
       value_ids: row.optionValues.filter((offer) => offer.value.groupId === group.groupId).map((offer) => offer.valueId),
     })),
+    published: row.published,
+    customer_id: row.customerId,
   };
 }
 
@@ -154,6 +163,7 @@ export class ProductsService {
       return await this.prisma.inTenant(tenantId, async (tx) => {
         await this.findCategory(tx, input.category_id);
         await this.checkMaterial(tx, input.material_id);
+        await this.checkCustomer(tx, input.customer_id);
         const row = await tx.product.create({
           data: {
             categoryId: input.category_id,
@@ -162,6 +172,8 @@ export class ProductsService {
             kind: input.kind,
             sizing: input.sizing,
             materialId: input.material_id ?? null,
+            published: input.published,
+            customerId: input.customer_id ?? null,
           },
           include: productInclude,
         });
@@ -202,9 +214,17 @@ export class ProductsService {
         }
       }
       await this.checkMaterial(tx, patch.material_id ?? undefined);
+      await this.checkCustomer(tx, patch.customer_id ?? undefined);
       const row = await tx.product.update({
         where: { id },
-        data: { categoryId: patch.category_id, name: patch.name, sizing: patch.sizing, materialId: patch.material_id },
+        data: {
+          categoryId: patch.category_id,
+          name: patch.name,
+          sizing: patch.sizing,
+          materialId: patch.material_id,
+          published: patch.published,
+          customerId: patch.customer_id,
+        },
         include: productInclude,
       });
       return toProduct(row);
@@ -330,6 +350,13 @@ export class ProductsService {
   private async checkMaterial(tx: Prisma.TransactionClient, materialId: string | undefined): Promise<void> {
     if (materialId && !(await tx.material.findUnique({ where: { id: materialId } }))) {
       throw new NotFoundException('Material not found');
+    }
+  }
+
+  /** Row-level security hides other workspaces' customers, so a foreign id is not found. */
+  private async checkCustomer(tx: Prisma.TransactionClient, customerId: string | undefined): Promise<void> {
+    if (customerId && !(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
+      throw new NotFoundException('Customer not found');
     }
   }
 
