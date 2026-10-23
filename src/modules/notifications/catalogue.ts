@@ -22,7 +22,7 @@ export interface VariableSpec {
 export interface EventDefinition {
   audience: Audience;
   channels: readonly ('email' | 'feed')[];
-  subjectType: 'invitation' | 'user' | 'file_version' | 'material';
+  subjectType: 'invitation' | 'customer_invitation' | 'user' | 'file_version' | 'material';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -46,6 +46,24 @@ export const EVENTS = {
         subject: 'You are invited to {{ tenant_name }}',
         body:
           'Hello,\n\nYou have been invited to join {{ tenant_name }}. Choose a password to accept:\n\n{{ link }}\n\n' +
+          'The link works once and expires in 7 days. If you did not expect this invitation, you can ignore this email.',
+      },
+    },
+  },
+  'customer.invited': {
+    audience: { kind: 'invitee' },
+    channels: ['email'],
+    subjectType: 'customer_invitation',
+    variables: {
+      tenant_name: { sample: 'Acme Print' },
+      customer_name: { sample: 'Luna Jewels' },
+      link: { sample: 'https://shop.acme.example/accept-invitation#token=sample', secret: true, url: true, required: true },
+    },
+    defaults: {
+      en: {
+        subject: 'You are invited to order for {{ customer_name }} from {{ tenant_name }}',
+        body:
+          'Hello,\n\nYou have been invited to order for {{ customer_name }} from {{ tenant_name }}. Accept here:\n\n{{ link }}\n\n' +
           'The link works once and expires in 7 days. If you did not expect this invitation, you can ignore this email.',
       },
     },

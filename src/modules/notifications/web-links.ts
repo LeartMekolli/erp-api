@@ -12,3 +12,19 @@ export function webLink(
   const base = template.replace('{tenant}', slug).replace(/\/+$/, '');
   return `${base}${path}#token=${encodeURIComponent(token)}`;
 }
+
+/**
+ * The link in an identity email. Customer people go to the workspace's
+ * customer site when it has one (Customers spec, goal 13); staff, and
+ * customers of a workspace without a site, go to the staff app.
+ */
+export function identityLink(
+  target: { webTemplate: string; slug: string; customerSiteOrigin: string | null; forCustomer: boolean },
+  path: '/accept-invitation' | '/reset-password',
+  token: string,
+): string {
+  if (target.forCustomer && target.customerSiteOrigin) {
+    return `${target.customerSiteOrigin.replace(/\/+$/, '')}${path}#token=${encodeURIComponent(token)}`;
+  }
+  return webLink(target.webTemplate, target.slug, path, token);
+}

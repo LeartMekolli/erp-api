@@ -326,8 +326,9 @@ describe('files: completing, measuring and downloading', () => {
       ]);
 
       expect([first.status, second.status]).toEqual([200, 200]);
+      // The worker may claim the measuring job before the slower request answers.
       for (const response of [first, second]) {
-        expect(['completing', 'uploaded']).toContain((response.body as VersionBody).status);
+        expect(['completing', 'uploaded', 'measuring', 'measured']).toContain((response.body as VersionBody).status);
       }
       await untilMeasured(tenant.id, version.id);
       expect(copy.mock.calls.filter(([, to]) => to === finalKey)).toHaveLength(1);

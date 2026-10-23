@@ -21,6 +21,9 @@ model Tenant {
   defaultCurrency String   @map("default_currency") @db.Char(3)
   defaultLocale   String   @map("default_locale")
   timezone        String
+  // The workspace's customer site, such as https://shop.example: customer emails link there and
+  // it may call the API (Customers spec, goal 13). Platform-level, so CORS can read it per request.
+  customerSiteOrigin String? @map("customer_site_origin")
   createdAt       DateTime @default(now()) @map("created_at")
 
   settings        TenantSetting[]
@@ -55,6 +58,7 @@ model Tenant {
   minSizeSurcharges MinSizeSurcharge[]
   quotes          Quote[]
   customers       Customer[]
+  customerInvitations CustomerInvitation[]
 
   @@map("tenant")
 }
@@ -952,10 +956,35 @@ model Customer {
   customerGroupId String?  @map("customer_group_id") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at")
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customerGroup CustomerGroup? @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: NoAction)
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerGroup CustomerGroup?       @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: NoAction)
+  invitations   CustomerInvitation[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
   @@map("customer")
+}
+
+// An invitation to act for a customer with a role. Accepting creates the customer person, or adds a
+// membership when the email already belongs to one (Customers spec, goals 2–3).
+model CustomerInvitation {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId      String    @map("customer_id") @db.Uuid
+  // Lowercased.
+  email           String
+  // owner | admin | buyer | viewer
+  role            String
+  tokenHash       String    @unique @map("token_hash")
+  // A staff user or a customer person; null when seeded.
+  invitedByUserId String?   @map("invited_by_user_id") @db.Uuid
+  expiresAt       DateTime  @map("expires_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, customerId, email])
+  @@map("customer_invitation")
 }

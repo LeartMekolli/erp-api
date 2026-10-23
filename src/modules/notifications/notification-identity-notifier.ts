@@ -1,14 +1,26 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { IdentityNotifier, InvitationNotice, PasswordResetNotice } from '../identity/identity-notifier';
+import type {
+  CustomerInvitationNotice,
+  IdentityNotifier,
+  InvitationNotice,
+  PasswordResetNotice,
+} from '../identity/identity-notifier';
 import { NotificationsService } from './notifications.service';
-import { webLink } from './web-links';
+import { identityLink } from './web-links';
+
+interface TenantLinkInfo {
+  name: string;
+  slug: string;
+  customerSiteOrigin: string | null;
+}
 
 /**
  * Identity emails as notifications. The link is built here from the tenant's
- * slug and the configured web URL, never from anything a caller sent (D78),
- * and travels as a secret variable, sealed until sent (plan N2).
+ * slug, its customer site and the configured web URL, never from anything a
+ * caller sent (D78), and travels as a secret variable, sealed until sent
+ * (plan N2).
  */
 @Injectable()
 export class NotificationIdentityNotifier implements IdentityNotifier {
@@ -22,24 +34,54 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
     const tenant = await this.tenant(notice.tenantId);
     await this.notifications.raise(notice.tenantId, 'user.invited', { type: 'invitation', id: notice.invitationId }, {
       tenant_name: tenant.name,
-      link: webLink(this.config.get('WEB_URL_TEMPLATE'), tenant.slug, '/accept-invitation', notice.token),
+      link: this.link(tenant, false, '/accept-invitation', notice.token),
     });
   }
 
   async passwordResetRequested(notice: PasswordResetNotice): Promise<void> {
     const tenant = await this.tenant(notice.tenantId);
     const user = await this.prisma.inTenant(notice.tenantId, (tx) =>
-      tx.user.findUniqueOrThrow({ where: { id: notice.userId }, select: { name: true } }),
+      tx.user.findUniqueOrThrow({ where: { id: notice.userId }, select: { name: true, kind: true } }),
     );
     await this.notifications.raise(notice.tenantId, 'auth.password_reset_requested', { type: 'user', id: notice.userId }, {
       tenant_name: tenant.name,
       user_name: user.name,
-      link: webLink(this.config.get('WEB_URL_TEMPLATE'), tenant.slug, '/reset-password', notice.token),
+      link: this.link(tenant, user.kind === 'customer', '/reset-password', notice.token),
     });
   }
 
+  async customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void> {
+    const tenant = await this.tenant(notice.tenantId);
+    await this.notifications.raise(
+      notice.tenantId,
+      'customer.invited',
+      { type: 'customer_invitation', id: notice.invitationId },
+      {
+        tenant_name: tenant.name,
+        customer_name: notice.customerName,
+        link: this.link(tenant, true, '/accept-invitation', notice.token),
+      },
+    );
+  }
+
+  private link(
+    tenant: TenantLinkInfo,
+    forCustomer: boolean,
+    path: '/accept-invitation' | '/reset-password',
+    token: string,
+  ): string {
+    return identityLink(
+      { webTemplate: this.config.get('WEB_URL_TEMPLATE'), slug: tenant.slug, customerSiteOrigin: tenant.customerSiteOrigin, forCustomer },
+      path,
+      token,
+    );
+  }
+
   /** The tenant table is platform-owned, so no tenant scope is needed to read it. */
-  private tenant(id: string): Promise<{ name: string; slug: string }> {
-    return this.prisma.tenant.findUniqueOrThrow({ where: { id }, select: { name: true, slug: true } });
+  private tenant(id: string): Promise<TenantLinkInfo> {
+    return this.prisma.tenant.findUniqueOrThrow({
+      where: { id },
+      select: { name: true, slug: true, customerSiteOrigin: true },
+    });
   }
 }

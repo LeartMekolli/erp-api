@@ -54,7 +54,7 @@ docker compose --profile app up -d --build
 docker compose --profile app stop api worker
 ```
 
-Process settings for a deployment: `WORKER_IN_PROCESS=true` makes `node dist/main` also run the job consumers and scheduled jobs, for hosts with no background workers; otherwise run `node dist/worker` next to it. `TRUST_PROXY_HOPS` is the number of proxies in front of the API. `CORS_ORIGINS` lists the browser origins allowed to call it (none by default). `DATABASE_MIGRATE_URL` is read by the Prisma CLI only: a deployed service does not need it and should not hold it.
+Process settings for a deployment: `WORKER_IN_PROCESS=true` makes `node dist/main` also run the job consumers and scheduled jobs, for hosts with no background workers; otherwise run `node dist/worker` next to it. `TRUST_PROXY_HOPS` is the number of proxies in front of the API. `CORS_ORIGINS` lists the staff app origins allowed to call it from a browser (none by default); each workspace's customer site, set with `PUT /workspace/customer-site`, is allowed as well. `DATABASE_MIGRATE_URL` is read by the Prisma CLI only: a deployed service does not need it and should not hold it.
 
 ## Authentication
 

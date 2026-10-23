@@ -28,7 +28,11 @@ export async function resolveAudience(
 
   switch (audience.kind) {
     case 'invitee': {
-      const invitation = await tx.invitation.findFirst({ where: { id: notification.subjectId } });
+      const where = { where: { id: notification.subjectId } };
+      const invitation =
+        notification.subjectType === 'customer_invitation'
+          ? await tx.customerInvitation.findFirst(where)
+          : await tx.invitation.findFirst(where);
       if (invitation) {
         targets.push({ email: invitation.email, locale: tenant.defaultLocale });
       }

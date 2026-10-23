@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
 import { ApiDoc } from '../../docs/api-doc';
+import { CustomerInvitationsService } from '../customers/customer-invitations.service';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { passwordSchema } from '../identity/passwords';
@@ -29,6 +30,13 @@ const acceptInvitationSchema = z.object({
   password: passwordSchema,
 });
 
+// Name and password are needed only by someone who has no account in the workspace yet.
+const acceptCustomerInvitationSchema = z.object({
+  token: z.string().min(1).max(200),
+  name: z.string().trim().min(1).max(200).optional(),
+  password: passwordSchema.optional(),
+});
+
 // As with login, the email is not format-checked: every request looks alike.
 const resetRequestSchema = z.object({
   email: z.string().max(320),
@@ -45,6 +53,7 @@ export class AuthController {
   constructor(
     private readonly sessions: SessionService,
     private readonly invitations: InvitationAcceptService,
+    private readonly customerInvitations: CustomerInvitationsService,
     private readonly passwordResets: PasswordResetService,
     private readonly config: ConfigService,
   ) {}
@@ -111,6 +120,23 @@ export class AuthController {
     @Body(new ZodValidationPipe(acceptInvitationSchema)) body: z.infer<typeof acceptInvitationSchema>,
   ): Promise<void> {
     await this.invitations.accept(body.token, body.name, body.password);
+  }
+
+  @ApiDoc({
+    summary: 'Accept an invitation to act for a customer.',
+    description:
+      'The token is the one in the invitation email link. Someone new sets a name and password, which creates their account; ' +
+      'someone who already acts for another customer of the workspace sends only the token.',
+    body: acceptCustomerInvitationSchema,
+    errors: [400, 409],
+  })
+  @Public()
+  @Post('customer-invitations/accept')
+  @HttpCode(204)
+  async acceptCustomerInvitation(
+    @Body(new ZodValidationPipe(acceptCustomerInvitationSchema)) body: z.infer<typeof acceptCustomerInvitationSchema>,
+  ): Promise<void> {
+    await this.customerInvitations.accept(body.token, body.name, body.password);
   }
 
   /**

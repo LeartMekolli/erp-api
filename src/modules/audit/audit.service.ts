@@ -16,7 +16,9 @@ export type AuditAction =
   | 'material.price_overridden'
   | 'material.price_override_removed'
   | 'pricing.changed'
-  | 'customer.changed';
+  | 'customer.changed'
+  | 'customer.member_changed'
+  | 'workspace.customer_site_changed';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };

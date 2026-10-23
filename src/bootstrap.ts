@@ -7,6 +7,7 @@ import { PinoLoggerService } from './common/logging/pino-logger.service';
 import { requestIdMiddleware } from './common/request-context/request-id.middleware';
 import { ConfigService } from './config/config.service';
 import { buildOpenApiDocument } from './docs/openapi-document';
+import { CustomerSiteService } from './modules/customers/customer-site.service';
 
 /**
  * Everything that configures the HTTP application, applied identically by
@@ -21,10 +22,25 @@ export function configureApp(app: INestApplication): void {
   const config = app.get(ConfigService);
   (app as NestExpressApplication).set('trust proxy', config.get('TRUST_PROXY_HOPS'));
 
+  // The configured staff origins, plus every active workspace's customer site.
+  // An origin that is neither gets no CORS headers at all; so does every
+  // origin if the site lookup fails.
   const origins = config.get('CORS_ORIGINS');
-  if (origins.length > 0) {
-    app.enableCors({ origin: origins, credentials: false, maxAge: 600 });
-  }
+  const customerSites = app.get(CustomerSiteService);
+  app.enableCors({
+    origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
+      if (!origin || origins.includes(origin)) {
+        callback(null, Boolean(origin));
+        return;
+      }
+      void customerSites.isCustomerSite(origin).then(
+        (allowed) => callback(null, allowed),
+        () => callback(null, false),
+      );
+    },
+    credentials: false,
+    maxAge: 600,
+  });
 
   // Order matters: the request logger reads the context the first one creates.
   app.use(requestIdMiddleware);
