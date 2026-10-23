@@ -1,8 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { ProductsService } from '../catalog/products.service';
-import type { ProductForCheck } from '../catalog/products.service';
 import type { Sizing } from '../catalog/scaling';
 import { visibleTo } from '../catalog/visibility';
 import type { CustomerAuth } from '../identity/auth-context';
@@ -59,12 +58,11 @@ export class PortalCatalogService {
     return { data: rows.map(toPortalProduct) };
   }
 
-  /** A product the customer may quote, for the configuration check; any other is not found. */
-  async findVisible(tx: Prisma.TransactionClient, customerId: string, productId: string): Promise<ProductForCheck> {
-    const visible = await tx.product.findFirst({ where: { id: productId, ...visibleTo(customerId) }, select: { id: true } });
-    if (!visible) {
-      throw new NotFoundException('Product not found');
-    }
-    return this.products.loadForCheck(tx, productId);
+  /** Saves one of the customer's quotes as its own product, published to it at once. */
+  async saveQuote(customer: CustomerAuth, input: { quoteId: string; name: string }): Promise<PortalProduct> {
+    return this.prisma.inTenant(customer.tenantId, async (tx) => {
+      const id = await this.products.createPrivateFromQuote(tx, { customerId: customer.customerId, ...input });
+      return toPortalProduct(await tx.product.findUniqueOrThrow({ where: { id }, include: portalInclude }));
+    });
   }
 }

@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { toPage } from '../../common/pagination/page';
@@ -286,6 +287,76 @@ export class ProductsService {
       });
       return toProduct(row);
     });
+  }
+
+  /**
+   * Saves a customer's quote as its own product (Customers spec, goals 7 and 12): a ready-made
+   * product in the source's category with its sizing, option groups, offered values and defaults,
+   * the quote's design pinned, private to the customer and published to it. The source's own step
+   * chain and margin come along, so the product prices as the source did; it keeps no price of its
+   * own, so every new quote uses current prices. Returns the new product's id.
+   */
+  async createPrivateFromQuote(
+    tx: Prisma.TransactionClient,
+    input: { customerId: string; quoteId: string; name: string },
+  ): Promise<string> {
+    const quote = await tx.quote.findFirst({ where: { id: input.quoteId, customerId: input.customerId } });
+    if (!quote) {
+      throw new NotFoundException('Quote not found');
+    }
+    const source = await tx.product.findUniqueOrThrow({
+      where: { id: quote.productId },
+      include: { category: true, optionGroups: true, optionValues: true, chain: true, steps: true, margin: true },
+    });
+    const versionId = (quote.inputs as { file_version_id: string | null }).file_version_id;
+    if (source.kind !== 'custom' || source.customerId !== null || !versionId) {
+      throw new BadRequestException('Only a quote for a shared custom product, made with a design file, can be saved as a product');
+    }
+    await this.checkVersion(tx, versionId, source.category.requiredMeasures);
+
+    const product = await tx.product.create({
+      data: {
+        categoryId: source.categoryId,
+        key: await this.freeKey(tx, source.key),
+        name: input.name,
+        kind: 'ready_made',
+        sizing: source.sizing as Prisma.InputJsonValue,
+        materialId: source.materialId,
+        fileVersionId: versionId,
+        published: true,
+        customerId: input.customerId,
+      },
+    });
+    await tx.productOptionGroup.createMany({
+      data: source.optionGroups.map((group) => ({
+        productId: product.id,
+        groupId: group.groupId,
+        required: group.required,
+        defaultValueId: group.defaultValueId,
+        position: group.position,
+      })),
+    });
+    await tx.productOptionValue.createMany({
+      data: source.optionValues.map((offer) => ({ productId: product.id, valueId: offer.valueId })),
+    });
+    if (source.chain) {
+      await tx.productChain.create({ data: { productId: product.id } });
+      await tx.productStep.createMany({ data: source.steps.map((step) => ({ productId: product.id, stepTypeId: step.stepTypeId })) });
+    }
+    if (source.margin) {
+      await tx.marginOverride.create({ data: { productId: product.id, marginPercent: source.margin.marginPercent } });
+    }
+    return product.id;
+  }
+
+  /** The source's key and six random characters, as a key no product of the tenant has yet. */
+  private async freeKey(tx: Prisma.TransactionClient, sourceKey: string): Promise<string> {
+    for (;;) {
+      const key = `${sourceKey.slice(0, 57)}_${randomInt(36 ** 6).toString(36).padStart(6, '0')}`;
+      if (!(await tx.product.findFirst({ where: { key }, select: { id: true } }))) {
+        return key;
+      }
+    }
   }
 
   async loadForCheck(tx: Prisma.TransactionClient, id: string): Promise<ProductForCheck> {
