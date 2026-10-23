@@ -177,6 +177,14 @@ describe('pricing: saved quotes', () => {
         .body as { id: string }
     ).id;
     await tenant.owner.put(`/pricing/products/${setup.productId}/steps`, { step_type_ids: [setup.steps.casting, engraving] }).expect(200);
+
+    // The product's workflow has no engraving step, so the quote can't be made.
+    const notInWorkflow = await refused(silverPolished(setup));
+    expect(notInWorkflow.reasons).toEqual([
+      { code: 'workflow_step_missing', step: 'engraving', message: 'Workflow Cast rings has no engraving step' },
+    ]);
+    await setup.workflow.setSteps([{ key: 'engraving', name: 'Engraving', step_type_id: engraving }]);
+
     const unpriced = await refused(silverPolished(setup));
     expect(unpriced.reasons).toEqual([{ code: 'step_price_missing', step: 'engraving', message: expect.stringContaining('engraving') }]);
 
@@ -209,6 +217,43 @@ describe('pricing: saved quotes', () => {
     expect(noPrice.reasons).toEqual([{ code: 'price_missing', step: 'casting', message: expect.stringContaining('wax') }]);
 
     expect(await quoteCount(tenant.id)).toBe(0);
+  });
+
+  it('refuses a product with no workflow, and quotes it once its workflow has every step it prices', async () => {
+    const tenant = await freshTenant();
+    const setup = await walkthrough(tenant);
+    // Its own workflow, which has no steps yet, replaces the category's.
+    const empty = (
+      (await tenant.owner.post('/workflow/workflows', { key: 'empty', name: 'Empty' }).expect(201)).body as { id: string }
+    ).id;
+    await tenant.owner.put(`/workflow/products/${setup.productId}/workflow`, { workflow_id: empty }).expect(200);
+
+    const response = await tenant.owner.post('/pricing/quotes', silverPolished(setup)).expect(200);
+    expectDocumented(quoteResultResponseSchema, response.body);
+    expect((response.body as Refused).reasons).toEqual([
+      { code: 'workflow_missing', message: 'Product Custom cast part has no workflow' },
+    ]);
+
+    // Gold plating adds plating, which a workflow of only casting doesn't have.
+    await tenant.owner
+      .put(`/workflow/workflows/${empty}/steps`, {
+        steps: [
+          { key: 'print_pattern', name: 'Print pattern', step_type_id: setup.steps.printPattern },
+          { key: 'casting_tree', name: 'Casting tree', step_type_id: setup.steps.castingTree },
+          { key: 'casting', name: 'Casting', step_type_id: setup.steps.casting },
+          { key: 'polishing', name: 'Polishing', step_type_id: setup.steps.polishing },
+        ],
+      })
+      .expect(200);
+    const plated = await tenant.owner
+      .post('/pricing/quotes', silverPolished(setup, { options: { material: 'silver_925', finish: 'gold_plated' } }))
+      .expect(200);
+    expect((plated.body as Refused).reasons.map((reason) => [reason.code, reason.step])).toEqual([['workflow_step_missing', 'plating']]);
+    expect(await quoteCount(tenant.id)).toBe(0);
+
+    // A polished part needs none of plating, final QC or packing, so this workflow covers it.
+    await quote(tenant.owner, silverPolished(setup));
+    expect(await quoteCount(tenant.id)).toBe(1);
   });
 
   it('refuses a product whose chain has no steps, without saving', async () => {

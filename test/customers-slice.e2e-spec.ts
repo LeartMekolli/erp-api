@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { seedCatalog } from '../src/cli/seed-catalog';
 import { seedPricing } from '../src/cli/seed-pricing';
+import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
@@ -68,6 +69,7 @@ describe('customers: the walkthrough', () => {
     createdTenants.push(tenant.id);
     await seedCatalog(prisma, tenant.id);
     await seedPricing(prisma, tenant.id);
+    await seedWorkflows(prisma, tenant.id);
     const staffUser = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, staffUser.id)).accessToken);
     const trade = await prisma.inTenant(tenant.id, (tx) => tx.customerGroup.findFirstOrThrow({ where: { key: 'trade' } }));

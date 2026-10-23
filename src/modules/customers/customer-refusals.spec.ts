@@ -21,7 +21,16 @@ describe('customer refusals', () => {
     expect(CUSTOMER_REFUSAL_MESSAGES.file_required).toBe('Upload your design file.');
     expect(CUSTOMER_REFUSAL_MESSAGES.file_not_measured).toBe('Your file is still being processed.');
     expect(CUSTOMER_REFUSAL_MESSAGES.measure_missing).toBe("Your file couldn't be measured.");
-    for (const code of ['price_missing', 'no_steps', 'step_conflict', 'density_missing', 'unit_mismatch', 'price_too_large'] as const) {
+    for (const code of [
+      'price_missing',
+      'no_steps',
+      'step_conflict',
+      'density_missing',
+      'unit_mismatch',
+      'price_too_large',
+      'workflow_missing',
+      'workflow_step_missing',
+    ] as const) {
       expect(CUSTOMER_REFUSAL_MESSAGES[code]).toBe("We can't price this configuration yet. Please contact us.");
     }
   });

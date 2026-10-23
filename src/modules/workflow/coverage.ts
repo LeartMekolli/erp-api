@@ -15,6 +15,15 @@ export interface ResolvedWorkflow {
 }
 
 /**
+ * The chain's step types the workflow has no step of, in chain order (F13): a product can't be quoted,
+ * and so can't be ordered, while priced work could be skipped in production.
+ */
+export function missingStepTypes(steps: { stepTypeId: string }[], chainStepTypeIds: string[]): string[] {
+  const covered = new Set(steps.map((step) => step.stepTypeId));
+  return chainStepTypeIds.filter((id) => !covered.has(id));
+}
+
+/**
  * The product's own workflow, else its category's, at its latest version. A workflow without a
  * version yet counts as none; so does an unknown product.
  */

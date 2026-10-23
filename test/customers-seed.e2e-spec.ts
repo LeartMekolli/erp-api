@@ -6,6 +6,7 @@ import { configureApp } from '../src/bootstrap';
 import { seedCatalog } from '../src/cli/seed-catalog';
 import { seedCustomers } from '../src/cli/seed-customers';
 import { seedPricing } from '../src/cli/seed-pricing';
+import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
 import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, deleteTestTenants } from './factories';
@@ -37,6 +38,7 @@ describe('customers demo seed', () => {
     createdTenants.push(tenant.id);
     await seedCatalog(prisma, tenant.id);
     await seedPricing(prisma, tenant.id);
+    await seedWorkflows(prisma, tenant.id);
     return tenant;
   }
 

@@ -10,6 +10,7 @@ import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSch
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { castWorkflow } from './workflow-fixtures';
 
 interface Staff {
   unit_price: string;
@@ -147,6 +148,8 @@ describe('pricing: the done-when walkthrough', () => {
     // 2. The category's chain, and gold plating adds plating.
     await put(`/pricing/categories/${categoryId}/steps`, { step_type_ids: [printPattern, castingTree, casting, polishing] }).expect(200);
     await put(`/pricing/option-values/${v.gold}/step-effects`, { add: [plating], remove: [] }).expect(200);
+    // Quoting needs a workflow with every step the quote prices (Workflow/QC spec F13).
+    await castWorkflow({ post, put }, { steps: { printPattern, castingTree, casting, polishing, plating }, categoryId });
 
     const quote = async (extra: object = {}) => {
       const response = await post('/pricing/quotes', {

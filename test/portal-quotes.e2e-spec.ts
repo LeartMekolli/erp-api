@@ -204,11 +204,17 @@ describe('portal: customers request their own quotes', () => {
         .body as { id: string }
     ).id;
     await w.staff.put(`/pricing/products/${w.setup.productId}/steps`, { step_type_ids: [w.setup.steps.casting, engraving] }).expect(200);
+
+    // The workflow has no engraving step yet: the same plain message, nothing about the workflow.
+    const notInWorkflow = await refused(w.ben, w.luna, silverPolished(w));
+    expect(notInWorkflow.body).toEqual({ accepted: false, reasons: [{ code: 'workflow_step_missing', message: CONTACT_US }] });
+    await w.setup.workflow.setSteps([{ key: 'engraving', name: 'Engraving', step_type_id: engraving }]);
+
     const unpriced = await refused(w.ben, w.luna, silverPolished(w));
     expect(unpriced.body).toEqual({ accepted: false, reasons: [{ code: 'step_price_missing', message: CONTACT_US }] });
 
     // Review focus 4, on the raw body.
-    for (const response of [combined, unpriced]) {
+    for (const response of [combined, notInWorkflow, unpriced]) {
       expect(JSON.stringify(response.body)).not.toMatch(/casting|engraving|silver_925|gold_plated|rate|margin|minutes|rule_id|step"/);
     }
     expect(await quoteCount(w.tenantId)).toBe(0);

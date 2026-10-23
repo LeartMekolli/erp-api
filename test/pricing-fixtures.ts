@@ -1,6 +1,7 @@
 import type request from 'supertest';
 import type { PrismaService } from '../src/database/prisma.service';
 import { measuredDesign } from './catalog-fixtures';
+import { castWorkflow } from './workflow-fixtures';
 
 /** A staff client of the workspace being set up, with catalog and pricing write access. */
 export interface StaffClient {
@@ -12,7 +13,8 @@ export interface StaffClient {
  * The walkthrough's cast part, priced: silver (fallback 0.85/g) or brass, finish raw/polished/gold plated
  * ("gold plated requires silver"), the cast-metal chain print pattern → casting tree → casting → polishing,
  * gold plated adds plating and raw removes polishing; margin 40 %, overhead 2, tier 10+ 5 %, speeds
- * standard (default, 0 %) and rush (30 %), the trade group (−10 %). The design is the 10 mm cube.
+ * standard (default, 0 %) and rush (30 %), the trade group (−10 %), and the category's workflow
+ * (`castWorkflow`). The design is the 10 mm cube.
  *
  * `runMetal` is a feed metal of the test run's own: feed snapshots are platform-wide and outlive test
  * runs, and a metal with none leaves silver at its fallback.
@@ -114,7 +116,10 @@ export async function pricedCastPart(
   await staff.post('/pricing/delivery-speeds', { key: 'rush', name: 'Rush', surcharge_percent: '30' }).expect(201);
   const tradeGroupId = id(await staff.post('/pricing/customer-groups', { key: 'trade', name: 'Trade', percent: '-10' }).expect(201));
 
+  // Every product being quoted needs a workflow with each step it prices (Workflow/QC spec F13).
+  const workflow = await castWorkflow(staff, { steps, categoryId });
+
   const design = await measuredDesign(prisma, tenant.id, tenant.staffUserId);
-  return { silver, brass, resin, v, steps, categoryId, productId, tradeGroupId, versionId: design.versionId };
+  return { silver, brass, resin, v, steps, categoryId, productId, tradeGroupId, versionId: design.versionId, workflow };
 }
 export type PricedCastPart = Awaited<ReturnType<typeof pricedCastPart>>;

@@ -1079,7 +1079,8 @@ model WorkflowVersion {
   tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
   workflowId      String   @map("workflow_id") @db.Uuid
   number          Int
-  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  // Null when seeded.
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at")
 
   tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)

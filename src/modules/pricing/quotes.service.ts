@@ -15,6 +15,7 @@ import { UnitsService } from '../catalog/units';
 import type { UnitDef } from '../catalog/units';
 import { visibleTo } from '../catalog/visibility';
 import type { TenantAuth } from '../identity/auth-context';
+import { missingStepTypes, resolveWorkflow } from '../workflow/coverage';
 import { AdjustmentsService } from './adjustments.service';
 import type { Block } from './blocks';
 import { resolveChain } from './chain';
@@ -192,6 +193,25 @@ export class QuotesService {
         return {
           accepted: false,
           reasons: [{ code: 'step_conflict', step, message: `${adding} adds step ${step}, which ${removing} removes` }],
+        };
+      }
+
+      // 2b. Production must be able to do every step the quote prices (Workflow/QC spec F13).
+      const workflow = await resolveWorkflow(tx, product.id);
+      if (!workflow) {
+        return { accepted: false, reasons: [{ code: 'workflow_missing', message: `Product ${product.name} has no workflow` }] };
+      }
+      const missing = new Set(missingStepTypes(workflow.steps, chain.steps.map((step) => step.id)));
+      if (missing.size > 0) {
+        return {
+          accepted: false,
+          reasons: chain.steps
+            .filter((step) => missing.has(step.id))
+            .map((step) => ({
+              code: 'workflow_step_missing' as const,
+              step: step.key,
+              message: `Workflow ${workflow.name} has no ${step.key} step`,
+            })),
         };
       }
 

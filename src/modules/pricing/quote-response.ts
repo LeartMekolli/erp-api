@@ -16,6 +16,9 @@ export const QUOTE_REFUSAL_CODES = [
   'step_price_missing',
   'density_missing',
   'unit_mismatch',
+  // The product has no workflow, or its workflow lacks a step the quote prices (Workflow/QC spec F13).
+  'workflow_missing',
+  'workflow_step_missing',
 ] as const;
 export type QuoteRefusalCode = (typeof QUOTE_REFUSAL_CODES)[number];
 
@@ -24,7 +27,7 @@ export const quoteRefusalSchema = z.strictObject({
   message: z.string(),
   /** The option rule that refused, for `rule_excludes` and `rule_requires`. */
   rule_id: z.uuid().optional(),
-  /** The step that could not be priced, by key. */
+  /** The step that could not be priced, or that the product's workflow lacks, by key. */
   step: z.string().optional(),
 });
 export type QuoteRefusal = z.infer<typeof quoteRefusalSchema>;

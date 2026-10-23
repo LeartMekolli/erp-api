@@ -8,6 +8,7 @@ import { runCli } from './run-cli';
 import { seedCatalog } from './seed-catalog';
 import { seedCustomers } from './seed-customers';
 import { seedPricing } from './seed-pricing';
+import { seedWorkflows } from './seed-workflows';
 
 const SEED_ADMIN = { email: 'admin@example.test', name: 'Platform Admin' };
 
@@ -81,6 +82,11 @@ void runCli(async (app) => {
   process.stdout.write(
     `pricing for demo: created ${pricing.stepTypes} step types, ${pricing.stepPrices} step prices, ${pricing.chains} chains, ` +
       `${pricing.tiers} discount tiers, ${pricing.groups} customer groups, ${pricing.speeds} delivery speeds\n`,
+  );
+
+  const workflows = await seedWorkflows(prisma, demo.id);
+  process.stdout.write(
+    `workflows for demo: created ${workflows.defects} defects, ${workflows.stepTypes} step types, ${workflows.workflows} workflows\n`,
   );
 
   const customers = await seedCustomers(prisma, demo.id);

@@ -31,6 +31,8 @@ export const CUSTOMER_REFUSAL_MESSAGES: Record<QuoteRefusalCode, string> = {
   step_price_missing: CONTACT_US,
   density_missing: CONTACT_US,
   unit_mismatch: CONTACT_US,
+  workflow_missing: CONTACT_US,
+  workflow_step_missing: CONTACT_US,
 };
 
 /** The refusal as a customer sees it: the code and the plain message, nothing else. */

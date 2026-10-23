@@ -325,6 +325,8 @@ export class ProductsService {
         fileVersionId: versionId,
         published: true,
         customerId: input.customerId,
+        // Made the same way as its source, so it goes through the same workflow.
+        workflowId: source.workflowId,
       },
     });
     await tx.productOptionGroup.createMany({

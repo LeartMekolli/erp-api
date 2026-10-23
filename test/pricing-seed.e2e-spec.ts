@@ -5,6 +5,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { seedCatalog } from '../src/cli/seed-catalog';
 import { seedPricing } from '../src/cli/seed-pricing';
+import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { measuredDesign } from './catalog-fixtures';
@@ -42,6 +43,10 @@ describe('pricing demo seed', () => {
     // 9 step types, a default price for each plus casting's own for gold, 2 category chains.
     expect(await seedPricing(prisma, tenant.id)).toEqual({ stepTypes: 9, stepPrices: 10, chains: 2, tiers: 2, groups: 2, speeds: 3 });
     expect(await seedPricing(prisma, tenant.id)).toEqual({ stepTypes: 0, stepPrices: 0, chains: 0, tiers: 0, groups: 0, speeds: 0 });
+
+    // 3 defects, final QC and packing, and one workflow per demo category.
+    expect(await seedWorkflows(prisma, tenant.id)).toEqual({ defects: 3, stepTypes: 2, workflows: 2 });
+    expect(await seedWorkflows(prisma, tenant.id)).toEqual({ defects: 0, stepTypes: 0, workflows: 0 });
   });
 
   it('seeds pricing that quotes the demo products', async () => {
@@ -50,6 +55,7 @@ describe('pricing demo seed', () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     await seedCatalog(prisma, tenant.id);
     await seedPricing(prisma, tenant.id);
+    await seedWorkflows(prisma, tenant.id);
 
     const token = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     const http = () => request(app.getHttpServer());
