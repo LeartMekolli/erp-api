@@ -8,6 +8,7 @@ import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { passwordSchema } from '../identity/passwords';
 import { Authenticated, Public } from '../identity/route-markers';
+import { GoogleSignInService } from './google-sign-in.service';
 import { InvitationAcceptService } from './invitation-accept.service';
 import { PasswordResetService } from './password-reset.service';
 import { SessionService } from './session.service';
@@ -30,11 +31,22 @@ const acceptInvitationSchema = z.object({
   password: passwordSchema,
 });
 
-// Name and password are needed only by someone who has no account in the workspace yet.
-const acceptCustomerInvitationSchema = z.object({
-  token: z.string().min(1).max(200),
-  name: z.string().trim().min(1).max(200).optional(),
-  password: passwordSchema.optional(),
+// Someone with no account yet sets a password, or uses a Google account with the invitation's email instead.
+const acceptCustomerInvitationSchema = z
+  .object({
+    token: z.string().min(1).max(200),
+    name: z.string().trim().min(1).max(200).optional(),
+    password: passwordSchema.optional(),
+    google_id_token: z.string().min(1).max(4096).optional(),
+  })
+  .refine((body) => !(body.password && body.google_id_token), {
+    message: 'Send a password or a Google ID token, not both',
+    path: ['google_id_token'],
+  });
+
+const googleSignInSchema = z.object({
+  id_token: z.string().min(1).max(4096),
+  workspace: z.string().max(63).optional(),
 });
 
 // As with login, the email is not format-checked: every request looks alike.
@@ -55,6 +67,7 @@ export class AuthController {
     private readonly invitations: InvitationAcceptService,
     private readonly customerInvitations: CustomerInvitationsService,
     private readonly passwordResets: PasswordResetService,
+    private readonly google: GoogleSignInService,
     private readonly config: ConfigService,
   ) {}
 
@@ -76,6 +89,27 @@ export class AuthController {
   ): Promise<SessionTokens> {
     const slug = resolveTenantSlug(host, body.workspace, this.config.get('APP_BASE_DOMAIN'));
     return this.sessions.login(slug, body.email, body.password);
+  }
+
+  @ApiDoc({
+    summary: 'Sign in to a workspace with a Google ID token.',
+    description:
+      "The token comes from Google's sign-in on the workspace's own site, for one of the client ids in the `auth.google` setting. " +
+      'The first sign-in links the Google account to the user with its email, if Google has verified it; later ones use the link. ' +
+      'Answers the same tokens as login. A workspace without `auth.google` answers 404.',
+    body: googleSignInSchema,
+    response: sessionTokensSchema,
+    errors: [400, 401, 404],
+  })
+  @Public()
+  @Post('google')
+  @HttpCode(200)
+  signInWithGoogle(
+    @Body(new ZodValidationPipe(googleSignInSchema)) body: z.infer<typeof googleSignInSchema>,
+    @Headers('host') host: string | undefined,
+  ): Promise<SessionTokens> {
+    const slug = resolveTenantSlug(host, body.workspace, this.config.get('APP_BASE_DOMAIN'));
+    return this.google.signIn(slug, body.id_token);
   }
 
   @ApiDoc({
@@ -125,10 +159,11 @@ export class AuthController {
   @ApiDoc({
     summary: 'Accept an invitation to act for a customer.',
     description:
-      'The token is the one in the invitation email link. Someone new sets a name and password, which creates their account; ' +
-      'someone who already acts for another customer of the workspace sends only the token.',
+      'The token is the one in the invitation email link. Someone new sets a name and password, which creates their account, ' +
+      "or sends `google_id_token` from a Google account with the invitation's verified email instead of a password " +
+      '(the name then defaults to the Google name). Someone who already acts for another customer of the workspace sends only the token.',
     body: acceptCustomerInvitationSchema,
-    errors: [400, 409],
+    errors: [400, 401, 404, 409],
   })
   @Public()
   @Post('customer-invitations/accept')
@@ -136,7 +171,11 @@ export class AuthController {
   async acceptCustomerInvitation(
     @Body(new ZodValidationPipe(acceptCustomerInvitationSchema)) body: z.infer<typeof acceptCustomerInvitationSchema>,
   ): Promise<void> {
-    await this.customerInvitations.accept(body.token, body.name, body.password);
+    await this.customerInvitations.accept(body.token, {
+      name: body.name,
+      password: body.password,
+      googleIdToken: body.google_id_token,
+    });
   }
 
   /**

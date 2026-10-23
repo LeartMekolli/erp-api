@@ -12,6 +12,7 @@ First target industry: made-to-order 3D objects (printed and cast parts), decide
 - Industry specifics (materials, production steps, units) are configuration, not code.
 - Every new route gets `@ApiDoc` (`src/docs/api-doc.ts`): a one-sentence summary, `body` and `query` from the same Zod schemas the route validates with, and `errors`. Access, 401/403 and the idempotency note are derived; never write them by hand. A new response shape is a Zod schema next to the code that builds it, with `response:` and an `expectDocumented` check in an e2e test. `test/api-docs.e2e-spec.ts` fails for any undocumented route.
 - Agents never commit or push. Write the files and tell the user they are ready; the user commits. This overrides any skill step that says to commit.
+- Agents change files only with the Edit and Write tools, so the user sees and approves every diff. Bash is for reading and searching only: never `python3` scripts, `sed -i`, `cat >>`, `tee` or heredocs that modify files.
 - Agents never install packages and never run project tooling. This covers, at minimum: `pnpm`, `npm`, `yarn`, `npx`, `node`, `docker`, `docker compose`, `prisma`, `psql`, `redis-cli`, `jest`, `tsc`, `eslint`, `nest`, and any other package manager, build, migration, database, container or test command — in any form, including through a script alias. Write out the exact command, hand it to the user, stop, wait for their output, then continue. This applies inside plans and specs too: a step whose body is one of these commands is a step the user executes.
 
 ## Context

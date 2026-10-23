@@ -30,6 +30,10 @@ export const SETTING_KEYS = {
       message: 'endHour must be later than startHour',
       path: ['endHour'],
     }),
+  // The workspace's own Google OAuth client ids; Sign in with Google is off without it.
+  'auth.google': z.object({
+    clientIds: z.array(z.string().min(1).max(200)).min(1).max(5),
+  }),
 } as const;
 
 export type SettingKey = keyof typeof SETTING_KEYS;

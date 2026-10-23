@@ -103,6 +103,7 @@ model User {
   notifications  NotificationRecipient[]
   files          File[]
   fileVersions   FileVersion[]
+  externalIdentities ExternalIdentity[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -220,6 +221,24 @@ model OrganisationMembership {
 
   @@unique([userId, organisationType, organisationId])
   @@map("organisation_membership")
+}
+
+/// A sign-in account at an outside provider, linked to a user by the
+/// provider's stable subject id, never by email (Customers spec, goal 4).
+model ExternalIdentity {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // google
+  provider  String
+  subject   String
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, provider, subject])
+  @@index([tenantId, userId])
+  @@map("external_identity")
 }
 
 /// Modelled now; keys are issued with order intake (Q7).

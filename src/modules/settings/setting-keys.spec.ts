@@ -36,4 +36,13 @@ describe('setting keys', () => {
       parseSetting('business.calendar', { workingDays: [1, 2, 3], startHour: 17, endHour: 9 }),
     ).toThrow(ZodError);
   });
+
+  it('accepts one to five Google client ids, and nothing else', () => {
+    expect(parseSetting('auth.google', { clientIds: ['web.apps.example.test'] })).toEqual({
+      clientIds: ['web.apps.example.test'],
+    });
+    for (const clientIds of [[], ['a', 'b', 'c', 'd', 'e', 'f'], [''], 'web.apps.example.test']) {
+      expect(() => parseSetting('auth.google', { clientIds })).toThrow(ZodError);
+    }
+  });
 });

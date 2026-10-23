@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
+import { GoogleIdentityService } from '../auth/google-identity.service';
 import { IDENTITY_NOTIFIER } from '../identity/identity-notifier';
 import type { IdentityNotifier } from '../identity/identity-notifier';
 import { INVITATION_DAYS } from '../identity/invitations';
@@ -27,11 +29,19 @@ async function hasOwner(tx: Prisma.TransactionClient, customerId: string): Promi
   return owner !== null;
 }
 
-/** Inviting people to act for a customer, and accepting (Customers spec, goals 2–3). */
+/** What someone sends to accept: a password, or a Google ID token, or neither if they already have an account. */
+export interface AcceptCredentials {
+  name?: string;
+  password?: string;
+  googleIdToken?: string;
+}
+
+/** Inviting people to act for a customer, and accepting (Customers spec, goals 2–4). */
 @Injectable()
 export class CustomerInvitationsService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly google: GoogleIdentityService,
     @Inject(IDENTITY_NOTIFIER) private readonly notifier: IdentityNotifier,
   ) {}
 
@@ -98,20 +108,32 @@ export class CustomerInvitationsService {
   }
 
   /**
-   * A new email creates a customer person, which needs a name and password;
-   * an existing customer person only gains the membership, with no
-   * credentials asked. Unknown, expired, already accepted and other-tenant
-   * tokens are all the same 400. The invitation is claimed with a conditional
-   * update, and the one-owner rule is checked again under the customer row
-   * lock, so concurrent acceptances cannot break either.
+   * A new email creates a customer person, which needs a name and either a
+   * password or a Google account with the invitation's verified email (whose
+   * name is the default, and which is linked for Google sign-in). An existing
+   * customer person only gains the membership, with no credentials asked.
+   * Unknown, expired, already accepted and other-tenant tokens are all the
+   * same 400. The invitation is claimed with a conditional update, and the
+   * one-owner rule is checked again under the customer row lock, so
+   * concurrent acceptances cannot break either.
    */
-  async accept(token: string, name: string | undefined, password: string | undefined): Promise<void> {
+  async accept(token: string, credentials: AcceptCredentials): Promise<void> {
     const parsed = parseOpaqueToken(token);
     if (!parsed) {
       throw invalidInvitation();
     }
 
-    // Hashed before the transaction, which should not wait on argon2.
+    // Outside the transaction: verifying may fetch Google's keys.
+    const google =
+      credentials.googleIdToken === undefined
+        ? undefined
+        : await this.google.identity(parsed.tenantId, credentials.googleIdToken);
+    const name = credentials.name ?? google?.name ?? undefined;
+
+    // Hashed before the transaction, which should not wait on argon2. Someone
+    // who joins with Google gets a random password nobody knows; a password
+    // reset sets a real one.
+    const password = credentials.password ?? (google ? randomBytes(32).toString('base64url') : undefined);
     const passwordHash = password === undefined ? undefined : await hashPassword(password);
 
     try {
@@ -137,6 +159,9 @@ export class CustomerInvitationsService {
         if (claimed.count === 0) {
           throw invalidInvitation();
         }
+        if (google && (!google.emailVerified || google.email !== invitation.email)) {
+          throw new BadRequestException("The Google account's verified email must be the invitation's email");
+        }
 
         await lockCustomer(tx, invitation.customerId);
         if (invitation.role === 'owner' && (await hasOwner(tx, invitation.customerId))) {
@@ -152,7 +177,7 @@ export class CustomerInvitationsService {
         }
         if (!user) {
           if (!name || !passwordHash) {
-            throw new BadRequestException('A name and a password are needed to create your account');
+            throw new BadRequestException('A name and a password or Google account are needed to create your account');
           }
           user = await tx.user.create({
             data: { email: invitation.email, passwordHash, name, locale: tenant.defaultLocale, kind: 'customer' },
@@ -168,6 +193,19 @@ export class CustomerInvitationsService {
             role: invitation.role,
           },
         });
+
+        if (google) {
+          const linked = await tx.externalIdentity.findUnique({
+            where: { tenantId_provider_subject: { tenantId: parsed.tenantId, provider: 'google', subject: google.subject } },
+            select: { userId: true },
+          });
+          if (linked && linked.userId !== user.id) {
+            throw new ConflictException('This Google account already signs in as someone else');
+          }
+          if (!linked) {
+            await tx.externalIdentity.create({ data: { provider: 'google', subject: google.subject, userId: user.id } });
+          }
+        }
       });
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {

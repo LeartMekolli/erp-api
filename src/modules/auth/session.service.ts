@@ -163,6 +163,19 @@ export class SessionService {
     await this.tokens.deny(auth.jti, auth.expiresAt);
   }
 
+  /**
+   * A new session for a user another sign-in method has already checked
+   * (Google), in the caller's transaction; the access token is issued after.
+   */
+  async openSession(tx: Prisma.TransactionClient, tenantId: string, userId: string): Promise<string> {
+    return this.issueRefreshToken(tx, tenantId, userId, newId(), null);
+  }
+
+  /** The tokens for a refresh token from `openSession`, once its transaction has committed. */
+  tokensFor(tenantId: string, userId: string, refreshToken: string): Promise<SessionTokens> {
+    return this.sessionTokens(tenantId, userId, refreshToken);
+  }
+
   private async issueRefreshToken(
     tx: Prisma.TransactionClient,
     tenantId: string,

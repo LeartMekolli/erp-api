@@ -6,13 +6,23 @@ import { IdentityNotifierModule } from '../identity/identity-notifier';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { IdentityModule } from '../identity/identity.module';
 import { AuthController } from './auth.controller';
+import { GoogleSignInService } from './google-sign-in.service';
+import { GoogleModule } from './google.module';
 import { InvitationAcceptService } from './invitation-accept.service';
 import { PasswordResetService } from './password-reset.service';
 import { SessionService } from './session.service';
 
 @Module({
-  imports: [IdentityModule, IdentityNotifierModule, NotificationsModule, AuditModule, RateLimitModule, CustomersModule],
+  imports: [
+    IdentityModule,
+    IdentityNotifierModule,
+    NotificationsModule,
+    AuditModule,
+    RateLimitModule,
+    CustomersModule,
+    GoogleModule,
+  ],
   controllers: [AuthController],
-  providers: [SessionService, InvitationAcceptService, PasswordResetService],
+  providers: [SessionService, InvitationAcceptService, PasswordResetService, GoogleSignInService],
 })
 export class AuthModule {}
