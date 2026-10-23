@@ -961,13 +961,17 @@ model Quote {
   summary         Json
   expiresAt       DateTime @map("expires_at")
   createdByUserId String   @map("created_by_user_id") @db.Uuid
+  // The customer the quote is for, which sees it in the portal; null for an internal quote.
+  customerId      String?  @map("customer_id") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at")
 
-  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   // A quoted product is kept: a saved quote outlives changes to the catalog.
-  product Product @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+  product  Product   @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+  customer Customer? @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
 
   @@index([tenantId])
+  @@index([tenantId, customerId])
   @@map("quote")
 }
 
@@ -985,6 +989,7 @@ model Customer {
   customerGroup CustomerGroup?       @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: NoAction)
   invitations   CustomerInvitation[]
   products      Product[]
+  quotes        Quote[]
 
   @@unique([tenantId, id])
   @@index([tenantId])

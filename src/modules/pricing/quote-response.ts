@@ -123,6 +123,8 @@ export const quoteResponseSchema = z.strictObject({
   expires_at: z.string(),
   expired: z.boolean(),
   created_at: z.string(),
+  /** The customer the quote is for; null for an internal quote. */
+  customer_id: z.uuid().nullable(),
   inputs: quoteInputsSchema,
   /** The configuration's material and every material a step names, as priced at quote time. */
   materials: z.array(quoteMaterialSchema),

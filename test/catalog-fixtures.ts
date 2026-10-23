@@ -3,13 +3,14 @@ import type { PrismaService } from '../src/database/prisma.service';
 
 /**
  * A design file with one version, written straight to the database as the
- * measuring job would leave it: a 10 mm cube by default.
+ * measuring job would leave it: a 10 mm cube by default. `customerId` makes
+ * it that customer's own file.
  */
 export async function measuredDesign(
   prisma: PrismaService,
   tenantId: string,
   userId: string,
-  options: { status?: string; measures?: [string, string, string][] } = {},
+  options: { status?: string; measures?: [string, string, string][]; customerId?: string } = {},
 ): Promise<{ fileId: string; versionId: string }> {
   const measures = options.measures ?? [
     ['volume', '1000', 'mm3'],
@@ -20,7 +21,13 @@ export async function measuredDesign(
   ];
   return prisma.inTenant(tenantId, async (tx) => {
     const file = await tx.file.create({
-      data: { kind: 'design', name: 'part.stl', declaredUnit: 'mm', createdByUserId: userId },
+      data: {
+        kind: 'design',
+        name: 'part.stl',
+        declaredUnit: 'mm',
+        createdByUserId: userId,
+        ...(options.customerId ? { ownerType: 'customer', ownerId: options.customerId } : {}),
+      },
     });
     const version = await tx.fileVersion.create({
       data: {

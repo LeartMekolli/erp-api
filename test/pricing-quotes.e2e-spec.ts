@@ -8,9 +8,10 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
-import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { pricedCastPart } from './pricing-fixtures';
+import type { PricedCastPart } from './pricing-fixtures';
 
 interface Summary {
   id: string;
@@ -66,109 +67,9 @@ describe('pricing: saved quotes', () => {
   }
   type Tenant = Awaited<ReturnType<typeof freshTenant>>;
 
-  /**
-   * The walkthrough's cast part, priced: silver (fallback 0.85/g) or brass, finish raw/polished/gold plated
-   * ("gold plated requires silver"), the cast-metal chain print pattern → casting tree → casting → polishing,
-   * gold plated adds plating and raw removes polishing; margin 40 %, overhead 2, tier 10+ 5 %, speeds
-   * standard (default, 0 %) and rush (30 %), the trade group (−10 %). The design is the 10 mm cube.
-   */
-  async function walkthrough(tenant: Tenant) {
-    const id = (response: request.Response) => (response.body as { id: string }).id;
-    const material = async (body: object) => id(await tenant.owner.post('/catalog/materials', body).expect(201));
-    const silver = await material({
-      key: 'silver_925',
-      name: 'Silver 925',
-      priced_unit: 'g',
-      density_g_cm3: '10.36',
-      price_source: 'feed',
-      feed_metal: runMetal,
-      fallback_price: '0.85',
-    });
-    const brass = await material({ key: 'brass', name: 'Brass', priced_unit: 'g', density_g_cm3: '8.5', price_source: 'manual', manual_price: '0.012' });
-    const resin = await material({ key: 'pattern_resin', name: 'Pattern resin', priced_unit: 'ml', price_source: 'manual', manual_price: '0.12' });
-
-    const group = async (key: string) => id(await tenant.owner.post('/catalog/option-groups', { key, name: key }).expect(201));
-    const value = async (groupId: string, key: string, materialId?: string) =>
-      id(await tenant.owner.post(`/catalog/option-groups/${groupId}/values`, { key, name: key, material_id: materialId }).expect(201));
-    const materialGroup = await group('material');
-    const finish = await group('finish');
-    const v = {
-      silver: await value(materialGroup, 'silver_925', silver),
-      brass: await value(materialGroup, 'brass', brass),
-      raw: await value(finish, 'raw'),
-      polished: await value(finish, 'polished'),
-      gold: await value(finish, 'gold_plated'),
-    };
-    await tenant.owner.post('/catalog/option-rules', { kind: 'requires', value_id: v.gold, target_value_ids: [v.silver] }).expect(201);
-
-    const categoryId = id(
-      await tenant.owner.post('/catalog/categories', { key: 'cast_metal', name: 'Cast metal parts', required_measures: ['volume'] }).expect(201),
-    );
-    const productId = id(
-      await tenant.owner
-        .post('/catalog/products', {
-          category_id: categoryId,
-          key: 'custom_cast_part',
-          name: 'Custom cast part',
-          kind: 'custom',
-          sizing: { mode: 'range', min: '0.5', max: '2' },
-        })
-        .expect(201),
-    );
-    await tenant.owner
-      .put(`/catalog/products/${productId}/options`, {
-        groups: [
-          { group_id: materialGroup, required: true, value_ids: [v.silver, v.brass] },
-          { group_id: finish, required: true, default_value_id: v.raw, value_ids: [v.raw, v.polished, v.gold] },
-        ],
-      })
-      .expect(200);
-
-    const stepType = async (key: string, position: number, summary_group: string) =>
-      id(await tenant.owner.post('/pricing/step-types', { key, name: key, position, summary_group }).expect(201));
-    const steps = {
-      printPattern: await stepType('print_pattern', 10, 'making'),
-      castingTree: await stepType('casting_tree', 20, 'making'),
-      casting: await stepType('casting', 30, 'making'),
-      polishing: await stepType('polishing', 40, 'finishing'),
-      plating: await stepType('plating', 50, 'finishing'),
-    };
-    await tenant.owner
-      .put(`/pricing/categories/${categoryId}/steps`, {
-        step_type_ids: [steps.printPattern, steps.castingTree, steps.casting, steps.polishing],
-      })
-      .expect(200);
-    await tenant.owner.put(`/pricing/option-values/${v.gold}/step-effects`, { add: [steps.plating], remove: [] }).expect(200);
-    await tenant.owner.put(`/pricing/option-values/${v.raw}/step-effects`, { add: [], remove: [steps.polishing] }).expect(200);
-
-    const price = (stepId: string, blocks: object[]) =>
-      tenant.owner.put(`/pricing/step-types/${stepId}/prices`, { failure_percent: '0', blocks }).expect(200);
-    await price(steps.printPattern, [
-      { kind: 'material', source: { material_id: resin }, basis: 'volume', loss_percent: '0' },
-      { kind: 'machine_time', base_minutes: '30', hourly_rate: '6' },
-    ]);
-    await price(steps.castingTree, [
-      { kind: 'batch', size: 8, cost_per_batch: '40', material: { source: { configuration: true }, amount: '20', unit: 'g' } },
-    ]);
-    await price(steps.casting, [
-      { kind: 'material', source: { configuration: true }, basis: 'weight', loss_percent: '5' },
-      { kind: 'setup', amount: '15' },
-    ]);
-    await price(steps.polishing, [
-      { kind: 'labour', base_minutes: '5', per: { measure: 'surface_area', unit: 'cm2', minutes: '1' }, hourly_rate: '30' },
-    ]);
-    await price(steps.plating, [{ kind: 'per_measure', measure: 'surface_area', unit: 'cm2', rate: '0.4' }]);
-
-    await tenant.owner.put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '2', quote_valid_days: 7 }).expect(200);
-    await tenant.owner.put('/pricing/discount-tiers', { tiers: [{ min_quantity: 10, percent: '5' }] }).expect(200);
-    await tenant.owner.post('/pricing/delivery-speeds', { key: 'standard', name: 'Standard', surcharge_percent: '0', is_default: true }).expect(201);
-    await tenant.owner.post('/pricing/delivery-speeds', { key: 'rush', name: 'Rush', surcharge_percent: '30' }).expect(201);
-    await tenant.owner.post('/pricing/customer-groups', { key: 'trade', name: 'Trade', percent: '-10' }).expect(201);
-
-    const design = await measuredDesign(prisma, tenant.id, tenant.ownerId);
-    return { silver, brass, resin, v, steps, categoryId, productId, versionId: design.versionId };
-  }
-  type Setup = Awaited<ReturnType<typeof walkthrough>>;
+  const walkthrough = (tenant: Tenant) =>
+    pricedCastPart(tenant.owner, prisma, { id: tenant.id, staffUserId: tenant.ownerId, runMetal });
+  type Setup = PricedCastPart;
 
   const silverPolished = (setup: Setup, extra: object = {}) => ({
     product_id: setup.productId,
@@ -388,5 +289,22 @@ describe('pricing: saved quotes', () => {
     await tenant.member.get(`/pricing/quotes/${mine.id}/summary`).expect(200);
     await tenant.member.get(`/pricing/quotes/${mine.id}`).expect(403);
     await tenant.member.get('/pricing/quotes').expect(403);
+  });
+
+  it("quotes for a customer of the workspace only, with the customer's own group", async () => {
+    const a = await freshTenant();
+    const b = await freshTenant();
+    const setup = await walkthrough(a);
+    const foreign = ((await b.owner.post('/customers', { name: 'Mira Studio' }).expect(201)).body as { id: string }).id;
+    const luna = ((await a.owner.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+
+    const plain = await quote(a.owner, silverPolished(setup));
+    expect((await a.owner.get(`/pricing/quotes/${plain.id}`).expect(200)).body).toMatchObject({ customer_id: null });
+
+    await a.owner.post('/pricing/quotes', silverPolished(setup, { customer_id: foreign })).expect(404);
+    await a.owner.post('/pricing/quotes', silverPolished(setup, { customer_id: newId() })).expect(404);
+    // The customer's group applies; naming one as well is a contradiction.
+    await a.owner.post('/pricing/quotes', silverPolished(setup, { customer_id: luna, customer_group: 'trade' })).expect(400);
+    expect(await quoteCount(a.id)).toBe(1);
   });
 });

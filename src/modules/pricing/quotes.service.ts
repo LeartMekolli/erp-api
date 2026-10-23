@@ -13,6 +13,7 @@ import type { ResolvedPrice } from '../catalog/material-price';
 import { MaterialsService } from '../catalog/materials.service';
 import { UnitsService } from '../catalog/units';
 import type { UnitDef } from '../catalog/units';
+import { visibleTo } from '../catalog/visibility';
 import type { TenantAuth } from '../identity/auth-context';
 import { AdjustmentsService } from './adjustments.service';
 import type { Block } from './blocks';
@@ -35,16 +36,39 @@ import type { PricedMaterial } from './step-cost';
 import { PricingProfileService } from './step-types.service';
 import { customerSummary } from './summary';
 
-export const quoteRequestSchema = checkRequestSchema.extend({
+const quoteFields = {
+  ...checkRequestSchema.shape,
   product_id: z.uuid(),
   /** Pieces, a whole number from 1 to 1,000,000. */
   quantity: z.number().int().min(1).max(1_000_000),
-  /** A customer group key of the workspace; omitted: no group. */
-  customer_group: keySchema.optional(),
   /** A delivery speed key of the workspace; omitted: the default speed, if there is one. */
   delivery_speed: keySchema.optional(),
+};
+
+export const quoteRequestSchema = z.object({
+  ...quoteFields,
+  /** A customer group key of the workspace; omitted: no group. Not with `customer_id`. */
+  customer_group: keySchema.optional(),
+  /** Quotes for that customer: its group applies and its people see the quote. */
+  customer_id: z.uuid().optional(),
 });
 export type QuoteRequest = z.infer<typeof quoteRequestSchema>;
+
+/** What a customer may send: no customer group, which comes from the customer, and nothing unknown. */
+export const customerQuoteRequestSchema = z.strictObject(quoteFields);
+export type CustomerQuoteRequest = z.infer<typeof customerQuoteRequestSchema>;
+
+/**
+ * Who a quote is for. `customer` is the customer's own request: only products
+ * it may see and files it owns can be quoted.
+ */
+export interface QuoteContext {
+  customerId: string;
+  audience: 'customer' | 'staff';
+}
+
+/** Whoever asks for the quote: a staff user or a customer person. */
+type Requester = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
 const DAY_MS = 86_400_000;
 const exact = (value: Prisma.Decimal) => value.toDecimalPlaces(10, Prisma.Decimal.ROUND_HALF_UP).toFixed();
@@ -112,16 +136,41 @@ export class QuotesService {
     private readonly units: UnitsService,
   ) {}
 
-  /** A saved quote's customer view, or why it cannot be quoted (nothing is saved then). */
-  async create(auth: TenantAuth, body: QuoteRequest): Promise<QuoteResultResponse> {
+  /**
+   * A saved quote's customer view, or why it cannot be quoted (nothing is saved then). With a
+   * context, the quote is for that customer and gets the customer's own group; a customer's own
+   * request may only name products it may see and files it owns, anything else is not found.
+   */
+  async create(
+    auth: Requester,
+    body: CustomerQuoteRequest & { customer_group?: string },
+    context?: QuoteContext,
+  ): Promise<QuoteResultResponse> {
+    if (context && body.customer_group) {
+      throw new BadRequestException("customer_group: a customer's quote gets the customer's own group");
+    }
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const customer = context ? await this.findCustomer(tx, context.customerId) : null;
+      const onlyVisible = context?.audience === 'customer' ? visibleTo(context.customerId) : {};
       // Row-level security hides other tenants' products, so a foreign id is simply not found.
-      const product = await tx.product.findUnique({ where: { id: body.product_id }, select: { id: true, name: true, categoryId: true } });
+      const product = await tx.product.findFirst({
+        where: { id: body.product_id, ...onlyVisible },
+        select: { id: true, name: true, categoryId: true },
+      });
       if (!product) {
         throw new NotFoundException('Product not found');
       }
+      if (context?.audience === 'customer' && body.file_version_id) {
+        const owned = await tx.fileVersion.findFirst({
+          where: { id: body.file_version_id, file: { ownerType: 'customer', ownerId: context.customerId } },
+          select: { id: true },
+        });
+        if (!owned) {
+          throw new NotFoundException('File version not found');
+        }
+      }
       const adjustments = await this.adjustments.load(tx, { categoryId: product.categoryId, productId: product.id });
-      const groupKey = body.customer_group ?? null;
+      const groupKey = customer ? customer.groupKey : (body.customer_group ?? null);
       if (groupKey && !adjustments.groups.has(groupKey)) {
         throw new BadRequestException(`customer_group: ${groupKey} is not a customer group of this workspace`);
       }
@@ -197,9 +246,41 @@ export class QuotesService {
           summary: { lines: summary.lines.map((line) => ({ label: line.label, amount: line.amount.toFixed(2) })) },
           expiresAt: new Date(Date.now() + profile.quoteValidDays * DAY_MS),
           createdByUserId: auth.userId,
+          customerId: context?.customerId ?? null,
         },
       });
       return { accepted: true, quote: toSummary(row, product.name) };
+    });
+  }
+
+  /** A customer's quotes as it sees them, newest first. */
+  async customerList(
+    tenantId: string,
+    customerId: string,
+    query: { limit: number; cursor?: string },
+  ): Promise<Page<QuoteSummaryResponse>> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const rows = await tx.quote.findMany({
+        where: { customerId, ...(after ? { id: { lt: after.id } } : {}) },
+        orderBy: { id: 'desc' },
+        take: query.limit + 1,
+        include: { product: { select: { name: true } } },
+      });
+      const page = toPage(rows, query.limit, secret);
+      return { data: page.data.map((row) => toSummary(row, row.product.name)), next_cursor: page.next_cursor };
+    });
+  }
+
+  /** One of the customer's quotes as it sees it; another customer's, or an internal one, is not found. */
+  async customerSummary(tenantId: string, customerId: string, id: string): Promise<QuoteSummaryResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const row = await tx.quote.findFirst({ where: { id, customerId }, include: { product: { select: { name: true } } } });
+      if (!row) {
+        throw new NotFoundException('Quote not found');
+      }
+      return toSummary(row, row.product.name);
     });
   }
 
@@ -295,6 +376,15 @@ export class QuotesService {
     return new Map(rows.map((row) => [row.id, row.key]));
   }
 
+  /** Row-level security hides other workspaces' customers, so a foreign id is not found. */
+  private async findCustomer(tx: Prisma.TransactionClient, id: string): Promise<{ groupKey: string | null }> {
+    const customer = await tx.customer.findUnique({ where: { id }, select: { customerGroup: { select: { key: true } } } });
+    if (!customer) {
+      throw new NotFoundException('Customer not found');
+    }
+    return { groupKey: customer.customerGroup?.key ?? null };
+  }
+
   private async find(tx: Prisma.TransactionClient, id: string): Promise<Quote> {
     const row = await tx.quote.findUnique({ where: { id } });
     if (!row) {
@@ -331,6 +421,7 @@ function toStaffView(row: Quote): QuoteResponse {
     expires_at: row.expiresAt.toISOString(),
     expired: isExpired(row),
     created_at: row.createdAt.toISOString(),
+    customer_id: row.customerId,
     inputs: row.inputs as QuoteInputs,
     materials: row.materials as QuoteMaterial[],
     breakdown: row.breakdown as BreakdownJson,

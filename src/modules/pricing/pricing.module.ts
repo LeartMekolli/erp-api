@@ -17,5 +17,6 @@ import { PricingProfileService, StepTypesService } from './step-types.service';
   imports: [AuditModule, CatalogModule],
   controllers: [StepTypesController, ChainsController, StepPricesController, AdjustmentsController, QuotesController],
   providers: [StepTypesService, PricingProfileService, ChainsService, StepPricesService, AdjustmentsService, QuotesService],
+  exports: [QuotesService],
 })
 export class PricingModule {}

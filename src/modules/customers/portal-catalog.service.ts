@@ -4,16 +4,9 @@ import type { Prisma } from '../../generated/prisma/client';
 import { ProductsService } from '../catalog/products.service';
 import type { ProductForCheck } from '../catalog/products.service';
 import type { Sizing } from '../catalog/scaling';
+import { visibleTo } from '../catalog/visibility';
 import type { CustomerAuth } from '../identity/auth-context';
 import type { PortalProduct } from './customer-response';
-
-/**
- * The products a customer may see and quote (Customers spec, goals 7 and 11):
- * published shared products, and its own published private products.
- */
-export function visibleTo(customerId: string): Prisma.ProductWhereInput {
-  return { status: 'active', published: true, OR: [{ customerId: null }, { customerId }] };
-}
 
 const portalInclude = {
   fileVersion: { select: { id: true } },

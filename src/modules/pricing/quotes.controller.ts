@@ -27,7 +27,9 @@ export class QuotesController {
       'Runs the configuration check, works out the steps, prices them and applies overhead, margin, the quantity ' +
       'tier, the customer group and the delivery speed. A saved quote is a 201 with the customer summary; its ' +
       "price holds until `expires_at`. A configuration that cannot be priced is a 200 with `accepted: false` and " +
-      'every reason, and nothing is saved. An unknown `customer_group` or `delivery_speed` is a 400.',
+      'every reason, and nothing is saved. An unknown `customer_group` or `delivery_speed` is a 400. ' +
+      "With `customer_id`, the quote is for that customer: the customer's group applies (naming `customer_group` as " +
+      'well is a 400) and its people see the quote in the portal.',
     body: quoteRequestSchema,
     response: quoteResultResponseSchema,
     errors: [400, 404],
@@ -39,7 +41,8 @@ export class QuotesController {
     @Body(new ZodValidationPipe(quoteRequestSchema)) body: QuoteRequest,
     @Res({ passthrough: true }) res: Response,
   ): Promise<QuoteResultResponse> {
-    const result = await this.quotes.create(auth, body);
+    const context = body.customer_id ? { customerId: body.customer_id, audience: 'staff' as const } : undefined;
+    const result = await this.quotes.create(auth, body, context);
     res.status(result.accepted ? 201 : 200);
     return result;
   }

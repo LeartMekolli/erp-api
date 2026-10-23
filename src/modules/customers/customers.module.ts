@@ -4,6 +4,7 @@ import { GoogleModule } from '../auth/google.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { FilesModule } from '../files/files.module';
 import { IdentityNotifierModule } from '../identity/identity-notifier';
+import { PricingModule } from '../pricing/pricing.module';
 import { CustomerInvitationsService } from './customer-invitations.service';
 import { CustomerSiteController } from './customer-site.controller';
 import { CustomerSiteService } from './customer-site.service';
@@ -13,17 +14,19 @@ import { PortalCatalogController } from './portal-catalog.controller';
 import { PortalCatalogService } from './portal-catalog.service';
 import { PortalFilesController } from './portal-files.controller';
 import { PortalMembersService } from './portal-members.service';
+import { PortalQuotesController } from './portal-quotes.controller';
 import { PortalController } from './portal.controller';
 
 /** Customer organisations, their people, and the portal they act through (Customers spec). */
 @Module({
-  imports: [AuditModule, IdentityNotifierModule, GoogleModule, CatalogModule, FilesModule],
+  imports: [AuditModule, IdentityNotifierModule, GoogleModule, CatalogModule, FilesModule, PricingModule],
   controllers: [
     CustomersController,
     CustomerSiteController,
     PortalController,
     PortalCatalogController,
     PortalFilesController,
+    PortalQuotesController,
   ],
   providers: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalMembersService, PortalCatalogService],
   exports: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalCatalogService],
