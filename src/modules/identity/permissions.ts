@@ -27,6 +27,11 @@ export const TENANT_PERMISSIONS = [
   // Customer organisations and their people.
   'customer.read',
   'customer.write',
+  // Workflows, defects, and the QC history (Workflow/QC spec).
+  'workflow.read',
+  'workflow.write',
+  // Starting work orders and moving pieces through their steps.
+  'workflow.move',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */
@@ -58,6 +63,8 @@ export const SYSTEM_ROLES = {
     'catalog.read',
     'quote.create',
     'customer.read',
+    'workflow.read',
+    'workflow.move',
   ],
 } as const satisfies Record<string, readonly TenantPermission[]>;
 

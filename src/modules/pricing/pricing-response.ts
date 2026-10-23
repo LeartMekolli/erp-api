@@ -14,8 +14,10 @@ export const stepTypeResponseSchema = z.strictObject({
   name: z.string(),
   /** Orders the steps of a chain, lowest first. */
   position: z.number().int(),
-  /** Where the step's cost shows in the customer summary. */
-  summary_group: z.enum(SUMMARY_GROUPS),
+  /** Where the step's cost shows in the customer summary; null for a step nobody prices, such as final QC. */
+  summary_group: z.enum(SUMMARY_GROUPS).nullable(),
+  /** False for a not-priced step: it can't be in a chain or have a price, and runs in every workflow it is part of. */
+  priced: z.boolean(),
 });
 export type StepTypeResponse = z.infer<typeof stepTypeResponseSchema>;
 

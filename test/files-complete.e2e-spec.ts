@@ -383,7 +383,8 @@ describe('files: completing, measuring and downloading', () => {
     expect((waiting.body as VersionBody).status).toBe('completing');
     await downloadUrl(tenant.ownerToken, fileId, version.id).expect(409);
 
-    await worker.get(ClaimSweeper).sweep();
+    // Only this test's workspace: a full sweep would also take other suites' work into this worker.
+    await worker.get(ClaimSweeper).sweepTenant(tenant.id);
 
     const row = await versionRow(tenant.id, version.id);
     expect(row).toMatchObject({ status: 'pending', claimedAt: null });
@@ -445,7 +446,7 @@ describe('files: completing, measuring and downloading', () => {
       }),
     );
 
-    await worker.get(ClaimSweeper).sweep();
+    await worker.get(ClaimSweeper).sweepTenant(tenant.id);
 
     const measured = await untilMeasured(tenant.id, version.id);
     expect(measured.checksum).toMatch(/^[0-9a-f]{64}$/);

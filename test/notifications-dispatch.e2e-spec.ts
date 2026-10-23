@@ -279,7 +279,8 @@ describe('notification dispatch', () => {
     await prisma.inTenant(tenantId, (tx) =>
       tx.notification.update({ where: { id }, data: { createdAt: new Date(Date.now() - 2 * 60_000) } }),
     );
-    await worker.get(ClaimSweeper).sweep();
+    // Only this test's workspace: a full sweep would also take other suites' work into this worker.
+    await worker.get(ClaimSweeper).sweepTenant(tenantId);
 
     await untilDispatched(tenantId, id);
     expect((await waitForMessage(user.email)).subject).toBe('Your roles have changed');
@@ -320,7 +321,7 @@ describe('notification dispatch', () => {
       }),
     );
 
-    await worker.get(ClaimSweeper).sweep();
+    await worker.get(ClaimSweeper).sweepTenant(tenantId);
 
     await untilDispatched(tenantId, lost.id);
     expect((await waitForMessage(user.email)).subject).toBe('Your roles have changed');

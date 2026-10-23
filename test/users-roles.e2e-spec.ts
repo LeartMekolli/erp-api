@@ -187,6 +187,8 @@ describe('users and roles administration', () => {
         'settings.read',
         'template.read',
         'user.read',
+        'workflow.move',
+        'workflow.read',
       ]);
     });
 

@@ -10,7 +10,7 @@ describe('permissions', () => {
     expect([...SYSTEM_ROLES.owner].sort()).toEqual([...TENANT_PERMISSIONS].sort());
   });
 
-  it('keeps the member to reading, plus requesting quotes', () => {
+  it('keeps the member to reading, plus requesting quotes and moving pieces', () => {
     expect([...SYSTEM_ROLES.member].sort()).toEqual([
       'catalog.read',
       'customer.read',
@@ -20,6 +20,8 @@ describe('permissions', () => {
       'settings.read',
       'template.read',
       'user.read',
+      'workflow.move',
+      'workflow.read',
     ]);
   });
 

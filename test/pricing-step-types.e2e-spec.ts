@@ -69,6 +69,26 @@ describe('pricing: step types and the pricing profile', () => {
     expect(edited.body).toMatchObject({ key: 'casting', name: 'Lost-wax casting', position: 35 });
   });
 
+  it('keeps steps nobody prices, such as final QC, as not-priced step types', async () => {
+    const tenant = await freshTenant();
+
+    const priced = await tenant.owner.post('/pricing/step-types', casting).expect(201);
+    expect(priced.body).toMatchObject({ key: 'casting', priced: true });
+
+    const finalQc = await tenant.owner
+      .post('/pricing/step-types', { key: 'final_qc', name: 'Final QC', position: 90, summary_group: null })
+      .expect(201);
+    expectDocumented(stepTypeResponseSchema, finalQc.body);
+    expect(finalQc.body).toMatchObject({ key: 'final_qc', summary_group: null, priced: false });
+
+    // A step type nothing uses yet can change between priced and not priced.
+    const { id } = priced.body as { id: string };
+    const unpriced = await tenant.owner.patch(`/pricing/step-types/${id}`, { summary_group: null }).expect(200);
+    expect(unpriced.body).toMatchObject({ summary_group: null, priced: false });
+    const repriced = await tenant.owner.patch(`/pricing/step-types/${id}`, { summary_group: 'making' }).expect(200);
+    expect(repriced.body).toMatchObject({ summary_group: 'making', priced: true });
+  });
+
   it('refuses bad step types', async () => {
     const tenant = await freshTenant();
     await tenant.owner.post('/pricing/step-types', casting).expect(201);

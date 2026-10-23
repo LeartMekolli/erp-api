@@ -21,6 +21,7 @@ import { PricingModule } from './modules/pricing/pricing.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
+import { WorkflowModule } from './modules/workflow/workflow.module';
 import { PlatformApiModule } from './platform/platform-api.module';
 import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
@@ -48,6 +49,7 @@ import { StorageModule } from './storage/storage.module';
     CatalogModule,
     PricingModule,
     CustomersModule,
+    WorkflowModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [

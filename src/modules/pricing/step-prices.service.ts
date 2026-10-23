@@ -45,6 +45,10 @@ export class StepPricesService {
       await this.findStepType(tx, stepTypeId);
       // Serialises saves for the step: Postgres would let two null-material defaults in side by side.
       await tx.$queryRaw`SELECT id FROM step_type WHERE id = ${stepTypeId}::uuid FOR UPDATE`;
+      const stepType = await tx.stepType.findUniqueOrThrow({ where: { id: stepTypeId }, select: { key: true, summaryGroup: true } });
+      if (stepType.summaryGroup === null) {
+        throw new BadRequestException(`${stepType.key} is not priced, so it can't have a price`);
+      }
       const materialId = input.material_id ?? null;
       if (materialId) {
         await this.findMaterial(tx, materialId);

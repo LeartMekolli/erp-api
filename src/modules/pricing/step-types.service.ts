@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
@@ -12,16 +12,19 @@ import type { PricingProfileResponse, StepTypeResponse, SummaryGroup } from './p
 const nameSchema = z.string().trim().min(1).max(200);
 const positionSchema = z.number().int().min(0).max(10_000);
 
+/** Null: a step nobody prices, such as final QC or packing (Workflow/QC spec F12). */
+const summaryGroupSchema = z.enum(SUMMARY_GROUPS).nullable();
+
 export const createStepTypeSchema = z.object({
   key: keySchema,
   name: nameSchema,
   position: positionSchema,
-  summary_group: z.enum(SUMMARY_GROUPS),
+  summary_group: summaryGroupSchema,
 });
 export const updateStepTypeSchema = z.object({
   name: nameSchema.optional(),
   position: positionSchema.optional(),
-  summary_group: z.enum(SUMMARY_GROUPS).optional(),
+  summary_group: summaryGroupSchema.optional(),
 });
 
 export const pricingProfileSchema = z.object({
@@ -49,7 +52,8 @@ export function toStepType(row: StepType): StepTypeResponse {
     key: row.key,
     name: row.name,
     position: row.position,
-    summary_group: row.summaryGroup as SummaryGroup,
+    summary_group: row.summaryGroup as SummaryGroup | null,
+    priced: row.summaryGroup !== null,
   };
 }
 
@@ -99,6 +103,9 @@ export class StepTypesService {
       if (!current) {
         throw new NotFoundException('Step type not found');
       }
+      if (patch.summary_group === null && current.summaryGroup !== null && (await this.inUse(tx, id))) {
+        throw new ConflictException(`${current.key} is in a chain, an option effect or a step price, so it stays priced`);
+      }
       const row = await tx.stepType.update({
         where: { id },
         data: { name: patch.name, position: patch.position, summaryGroup: patch.summary_group },
@@ -118,6 +125,16 @@ export class StepTypesService {
   /** In chain order: position, then key. */
   async all(tx: Prisma.TransactionClient): Promise<StepType[]> {
     return tx.stepType.findMany({ orderBy: [{ position: 'asc' }, { key: 'asc' }] });
+  }
+
+  private async inUse(tx: Prisma.TransactionClient, stepTypeId: string): Promise<boolean> {
+    const counts = await Promise.all([
+      tx.categoryStep.count({ where: { stepTypeId } }),
+      tx.productStep.count({ where: { stepTypeId } }),
+      tx.optionStepEffect.count({ where: { stepTypeId } }),
+      tx.stepPrice.count({ where: { stepTypeId } }),
+    ]);
+    return counts.some((count) => count > 0);
   }
 }
 

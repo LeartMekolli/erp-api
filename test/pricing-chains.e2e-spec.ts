@@ -35,6 +35,7 @@ describe('pricing: step chains and option step effects', () => {
     const as = {
       post: (path: string, body: object) => http().post(path).set('Authorization', `Bearer ${token}`).send(body),
       put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
+      patch: (path: string, body: object) => http().patch(path).set('Authorization', `Bearer ${token}`).send(body),
       get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
       delete: (path: string) => http().delete(path).set('Authorization', `Bearer ${token}`),
     };
@@ -155,6 +156,38 @@ describe('pricing: step chains and option step effects', () => {
       expect({ path, body, status: response.status }).toEqual({ path, body, status: 400 });
     }
     await tenant.owner.put(`/pricing/categories/${categoryId}/steps`, { step_type_ids: [newId()] }).expect(404);
+  });
+
+  it('keeps not-priced step types out of chains, effects and prices', async () => {
+    const tenant = await freshTenant();
+    const { steps, categoryId, productId, gold } = await setup(tenant);
+    const finalQc = (
+      (await tenant.owner
+        .post('/pricing/step-types', { key: 'final_qc', name: 'Final QC', position: 90, summary_group: null })
+        .expect(201)).body as { id: string }
+    ).id;
+
+    for (const [path, body] of [
+      [`/pricing/categories/${categoryId}/steps`, { step_type_ids: [steps.casting, finalQc] }],
+      [`/pricing/products/${productId}/steps`, { step_type_ids: [finalQc] }],
+      [`/pricing/option-values/${gold}/step-effects`, { add: [finalQc], remove: [] }],
+      [`/pricing/step-types/${finalQc}/prices`, { failure_percent: '0', blocks: [{ kind: 'fixed', amount: '1' }] }],
+    ] as const) {
+      const response = await tenant.owner.put(path, body);
+      expect({ path, status: response.status }).toEqual({ path, status: 400 });
+    }
+
+    // A step type already in a chain, an effect or a price can't stop being priced.
+    await tenant.owner.put(`/pricing/categories/${categoryId}/steps`, { step_type_ids: [steps.casting] }).expect(200);
+    await tenant.owner.put(`/pricing/option-values/${gold}/step-effects`, { add: [steps.plating], remove: [] }).expect(200);
+    await tenant.owner
+      .put(`/pricing/step-types/${steps.printPattern}/prices`, { failure_percent: '0', blocks: [{ kind: 'fixed', amount: '1' }] })
+      .expect(200);
+    for (const id of [steps.casting, steps.plating, steps.printPattern]) {
+      const response = await tenant.owner.patch(`/pricing/step-types/${id}`, { summary_group: null });
+      expect({ id, status: response.status }).toEqual({ id, status: 409 });
+    }
+    await tenant.owner.patch(`/pricing/step-types/${steps.polishing}`, { summary_group: null }).expect(200);
   });
 
   it("keeps every reference inside the workspace", async () => {

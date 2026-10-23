@@ -50,32 +50,37 @@ export class ClaimSweeper {
     this.claimables.push(claimable);
   }
 
-  /** Returns how many rows were requeued. */
+  /** Every tenant in turn. Returns how many rows were requeued. */
   async sweep(): Promise<number> {
     const tenants = await this.prisma.tenant.findMany({ select: { id: true } });
     let requeued = 0;
-
     for (const { id: tenantId } of tenants) {
-      for (const claimable of this.claimables) {
-        if (claimable.recoverOnly) {
-          await this.prisma.inTenant(tenantId, (tx) => this.handBackStale(tx, claimable));
-          continue;
-        }
-        const ids = await this.prisma.inTenant(tenantId, (tx) => this.findWork(tx, claimable));
+      requeued += await this.sweepTenant(tenantId);
+    }
+    return requeued;
+  }
 
-        for (const id of ids) {
-          try {
-            await claimable.requeue(tenantId, id);
-            requeued += 1;
-          } catch (error) {
-            this.logger.error(
-              `Could not requeue ${claimable.table} ${id}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
+  /** One tenant's claimed and lost work. Returns how many rows were requeued. */
+  async sweepTenant(tenantId: string): Promise<number> {
+    let requeued = 0;
+    for (const claimable of this.claimables) {
+      if (claimable.recoverOnly) {
+        await this.prisma.inTenant(tenantId, (tx) => this.handBackStale(tx, claimable));
+        continue;
+      }
+      const ids = await this.prisma.inTenant(tenantId, (tx) => this.findWork(tx, claimable));
+
+      for (const id of ids) {
+        try {
+          await claimable.requeue(tenantId, id);
+          requeued += 1;
+        } catch (error) {
+          this.logger.error(
+            `Could not requeue ${claimable.table} ${id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
     }
-
     return requeued;
   }
 

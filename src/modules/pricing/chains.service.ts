@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma, StepType } from '../../generated/prisma/client';
@@ -39,7 +39,8 @@ const fromResponse = (step: StepTypeResponse): ChainStep => ({
   key: step.key,
   name: step.name,
   position: step.position,
-  summaryGroup: step.summary_group,
+  // Chains only ever hold priced step types.
+  summaryGroup: step.summary_group as SummaryGroup,
 });
 
 /** Category chains, a product's own chain, and the steps option values add or remove (Pricing spec R4). */
@@ -175,10 +176,18 @@ export class ChainsService {
     };
   }
 
-  /** Row-level security hides other workspaces' step types, so a foreign id is simply not found. */
+  /**
+   * Row-level security hides other workspaces' step types, so a foreign id is simply not found. A
+   * not-priced step type never takes part in pricing.
+   */
   private async checkSteps(tx: Prisma.TransactionClient, ids: string[]): Promise<void> {
-    if ((await tx.stepType.count({ where: { id: { in: ids } } })) !== new Set(ids).size) {
+    const rows = await tx.stepType.findMany({ where: { id: { in: ids } }, select: { key: true, summaryGroup: true } });
+    if (rows.length !== new Set(ids).size) {
       throw new NotFoundException('Step type not found');
+    }
+    const unpriced = rows.find((row) => row.summaryGroup === null);
+    if (unpriced) {
+      throw new BadRequestException(`step_type_ids: ${unpriced.key} is not priced, so it can't be part of a chain`);
     }
   }
 

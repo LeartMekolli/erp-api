@@ -29,6 +29,8 @@ export class StepTypesController {
     summary: 'Create a step type, a production operation the workspace prices.',
     description:
       '`position` orders the steps of a chain; `summary_group` places the step in the customer summary. ' +
+      '`summary_group: null` makes a step nobody prices, such as final QC: it is never in a chain or priced, ' +
+      'and runs in every workflow that has it. ' +
       'A key already in use is a 409.',
     body: createStepTypeSchema,
     response: stepTypeResponseSchema,
@@ -55,9 +57,10 @@ export class StepTypesController {
 
   @ApiDoc({
     summary: "Change a step type's name, position or summary group.",
+    description: 'A step type in a chain, an option effect or a step price stays priced: `summary_group: null` is then a 409.',
     body: updateStepTypeSchema,
     response: stepTypeResponseSchema,
-    errors: [400, 404],
+    errors: [400, 404, 409],
   })
   @RequirePermission('pricing.write')
   @Patch('step-types/:id')

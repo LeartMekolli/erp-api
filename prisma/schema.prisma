@@ -59,6 +59,7 @@ model Tenant {
   quotes          Quote[]
   customers       Customer[]
   customerInvitations CustomerInvitation[]
+  defects         Defect[]
 
   @@map("tenant")
 }
@@ -740,7 +741,8 @@ model StepType {
   name         String
   // Orders the steps of a chain.
   position     Int
-  summaryGroup String   @map("summary_group")
+  // material | making | finishing; null for a step nobody prices (final QC, packing), never in a chain or priced.
+  summaryGroup String?  @map("summary_group")
   createdAt    DateTime @default(now()) @map("created_at")
 
   tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1018,4 +1020,25 @@ model CustomerInvitation {
 
   @@index([tenantId, customerId, email])
   @@map("customer_invitation")
+}
+
+// ---------------------------------------------------------------------------
+// Workflow/QC (docs/superpowers/specs/2026-10-23-workflow-qc-design.md).
+// ---------------------------------------------------------------------------
+
+// A catalogued failure reason recorded on a transition (D38). Never deleted, since transitions
+// point at it; an inactive defect can't be added to a workflow step.
+model Defect {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key       String
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("defect")
 }
