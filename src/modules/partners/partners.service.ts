@@ -7,9 +7,13 @@ import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import type { Partner, Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
-import type { TenantAuth } from '../identity/auth-context';
+import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PARTNER_STATUSES } from './partner-response';
 import type { PartnerResponse, PartnerStatus } from './partner-response';
+
+/** Who made a change: staff, or a partner person acting for the partner. */
+type Actor = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
 const nameSchema = z.string().trim().min(1).max(200);
 
@@ -44,6 +48,7 @@ export class PartnersService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async create(auth: TenantAuth, input: z.infer<typeof createPartnerSchema>): Promise<PartnerResponse> {
@@ -104,6 +109,28 @@ export class PartnersService {
     });
   }
 
+  /**
+   * The partner's owner says its setup is ready for approval. Staff hear it once: submitting again
+   * while being set up changes nothing, and a partner never goes back to being set up.
+   */
+  async submit(auth: PartnerAuth): Promise<PartnerResponse> {
+    const submitted = { first: false };
+    const response = await this.change(auth, auth.partnerId, (row) => {
+      if (row.status !== 'setting_up') {
+        throw new ConflictException('Only a partner being set up can be submitted for approval');
+      }
+      submitted.first = row.submittedAt === null;
+      return submitted.first ? { submittedAt: new Date() } : {};
+    });
+    // After commit, as invitations do: the notification never reports a change that rolled back.
+    if (submitted.first) {
+      await this.notifications.raise(auth.tenantId, 'partner.submitted', { type: 'partner', id: auth.partnerId }, {
+        partner_name: response.display_name,
+      });
+    }
+    return response;
+  }
+
   /** No new offers; jobs already accepted carry on. */
   async suspend(auth: TenantAuth, id: string): Promise<PartnerResponse> {
     return this.change(auth, id, (row) => {
@@ -125,7 +152,7 @@ export class PartnersService {
 
   /** Locks the partner, applies `changes`, and audits the before and after. */
   private async change(
-    auth: TenantAuth,
+    auth: Actor,
     id: string,
     changes: (row: Partner, tx: Prisma.TransactionClient) => Prisma.PartnerUpdateInput | Promise<Prisma.PartnerUpdateInput>,
   ): Promise<PartnerResponse> {
@@ -153,13 +180,14 @@ export class PartnersService {
           ? { file_version_id: row.agreementFileVersionId, signed_on: row.agreementSignedOn.toISOString().slice(0, 10) }
           : null,
       member_count: memberCount,
+      submitted_at: row.submittedAt?.toISOString() ?? null,
       created_at: row.createdAt.toISOString(),
     };
   }
 
   private record(
     tx: Prisma.TransactionClient,
-    auth: TenantAuth,
+    auth: Actor,
     id: string,
     before: PartnerResponse | undefined,
     after: PartnerResponse,

@@ -11,6 +11,7 @@ describe('notification catalogue', () => {
       'file.measured',
       'material.price.stale',
       'partner.invited',
+      'partner.submitted',
       'user.invited',
       'user.joined',
       'user.roles_changed',

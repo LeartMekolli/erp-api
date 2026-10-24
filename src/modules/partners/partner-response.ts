@@ -19,9 +19,41 @@ export const partnerResponseSchema = z.strictObject({
   /** The signed agreement on file; approval needs it. */
   agreement: z.strictObject({ file_version_id: z.uuid(), signed_on: z.iso.date() }).nullable(),
   member_count: z.number().int(),
+  /** When the partner's owner said its setup is ready for approval; null until then. */
+  submitted_at: z.iso.datetime().nullable(),
   created_at: z.iso.datetime(),
 });
 export type PartnerResponse = z.infer<typeof partnerResponseSchema>;
+
+export const CAPACITY_PERIODS = ['day', 'week'] as const;
+
+/** What a partner can do, how much, when it is closed and which option values it offers. */
+export const partnerSetupResponseSchema = z.strictObject({
+  partner_id: z.uuid(),
+  /** Jobs offered or accepted at once; null for no limit. */
+  max_open_jobs: z.number().int().nullable(),
+  accepts_direct_orders: z.boolean(),
+  /** In step type order. */
+  capabilities: z.array(
+    z.strictObject({
+      step_type: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }),
+      /** Pieces per job. */
+      min_quantity: z.number().int(),
+      max_quantity: z.number().int().nullable(),
+      /** The largest side of a piece's bounding box, in millimetres. */
+      max_size_mm: z.string().nullable(),
+      /** Pieces per `capacity_period`. */
+      capacity: z.number().int(),
+      capacity_period: z.enum(CAPACITY_PERIODS),
+    }),
+  ),
+  /** Both dates included; earliest first. */
+  closed_periods: z.array(z.strictObject({ starts_on: z.iso.date(), ends_on: z.iso.date(), note: z.string().nullable() })),
+  offerings: z.array(
+    z.strictObject({ option_value_id: z.uuid(), group_key: z.string(), key: z.string(), name: z.string() }),
+  ),
+});
+export type PartnerSetupResponse = z.infer<typeof partnerSetupResponseSchema>;
 
 /** An invitation to act for a partner; the token goes only to the invitee's inbox. */
 export const partnerInvitationResponseSchema = z.strictObject({

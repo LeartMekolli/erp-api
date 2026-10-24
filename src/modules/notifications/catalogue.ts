@@ -22,7 +22,7 @@ export interface VariableSpec {
 export interface EventDefinition {
   audience: Audience;
   channels: readonly ('email' | 'feed')[];
-  subjectType: 'invitation' | 'customer_invitation' | 'partner_invitation' | 'user' | 'file_version' | 'material';
+  subjectType: 'invitation' | 'customer_invitation' | 'partner_invitation' | 'partner' | 'user' | 'file_version' | 'material';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -150,6 +150,23 @@ export const EVENTS = {
       en: {
         subject: '{{ file_name }} is ready',
         body: 'Your file {{ file_name }} has been checked and measured.\n\nMeasures: {{ measures }}',
+      },
+    },
+  },
+  // Raised once, when a partner's owner says its setup is done (Partners spec, goal 17).
+  'partner.submitted': {
+    audience: { kind: 'permission', permission: 'partner.write' },
+    channels: ['email', 'feed'],
+    subjectType: 'partner',
+    variables: {
+      partner_name: { sample: 'CastCo' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ partner_name }} is ready for approval',
+        body:
+          '{{ partner_name }} has finished setting up what it can do, how much it can take and which options it offers.\n\n' +
+          'Check its setup and signed agreement, then approve it so it can be offered jobs.',
       },
     },
   },

@@ -70,6 +70,9 @@ model Tenant {
   transitionPhotos TransitionPhoto[]
   partners        Partner[]
   partnerInvitations PartnerInvitation[]
+  partnerCapabilities PartnerCapability[]
+  partnerClosedPeriods PartnerClosedPeriod[]
+  partnerOfferings PartnerOffering[]
 
   @@map("tenant")
 }
@@ -610,6 +613,7 @@ model OptionValue {
   productDefaults ProductOptionGroup[]
   productOffers   ProductOptionValue[]
   stepEffects     OptionStepEffect[]
+  partnerOfferings PartnerOffering[]
 
   @@unique([groupId, key])
   @@unique([tenantId, id])
@@ -773,6 +777,7 @@ model StepType {
   optionEffects OptionStepEffect[]
   prices        StepPrice[]
   workflowSteps WorkflowStep[]
+  partnerCapabilities PartnerCapability[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1299,11 +1304,18 @@ model Partner {
   acceptsDirectOrders     Boolean   @default(false) @map("accepts_direct_orders")
   agreementFileVersionId  String?   @map("agreement_file_version_id") @db.Uuid
   agreementSignedOn       DateTime? @map("agreement_signed_on") @db.Date
+  // Jobs offered or accepted at once; null for no limit.
+  maxOpenJobs             Int?      @map("max_open_jobs")
+  // When the partner's owner said its setup is ready for approval (goal 17); set once.
+  submittedAt             DateTime? @map("submitted_at")
   createdAt               DateTime  @default(now()) @map("created_at")
 
-  tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agreementVersion FileVersion?        @relation(fields: [tenantId, agreementFileVersionId], references: [tenantId, id], onDelete: NoAction)
+  tenant           Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agreementVersion FileVersion?          @relation(fields: [tenantId, agreementFileVersionId], references: [tenantId, id], onDelete: NoAction)
   invitations      PartnerInvitation[]
+  capabilities     PartnerCapability[]
+  closedPeriods    PartnerClosedPeriod[]
+  offerings        PartnerOffering[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1332,4 +1344,63 @@ model PartnerInvitation {
 
   @@index([tenantId, partnerId, email])
   @@map("partner_invitation")
+}
+
+// A step type a partner can do, within limits, and how many pieces it can take per period (goals 4, 5).
+model PartnerCapability {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  partnerId      String   @map("partner_id") @db.Uuid
+  stepTypeId     String   @map("step_type_id") @db.Uuid
+  // Pieces per job.
+  minQuantity    Int      @default(1) @map("min_quantity")
+  maxQuantity    Int?     @map("max_quantity")
+  // The largest side of a piece's bounding box.
+  maxSizeMm      Decimal? @map("max_size_mm") @db.Decimal(18, 6)
+  // Pieces per capacity period.
+  capacity       Int
+  // day | week
+  capacityPeriod String   @map("capacity_period")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner  Partner  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+  stepType StepType @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([partnerId, stepTypeId])
+  @@index([tenantId, partnerId])
+  @@index([tenantId, stepTypeId])
+  @@map("partner_capability")
+}
+
+// Days a partner takes no work, both ends included (goal 5).
+model PartnerClosedPeriod {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  partnerId String   @map("partner_id") @db.Uuid
+  startsOn  DateTime @map("starts_on") @db.Date
+  endsOn    DateTime @map("ends_on") @db.Date
+  note      String?
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner Partner @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, partnerId])
+  @@map("partner_closed_period")
+}
+
+// An option value a partner works with: it is only offered jobs whose values it all offers (goal 6).
+model PartnerOffering {
+  id            String @id @default(uuid(7)) @db.Uuid
+  tenantId      String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  partnerId     String @map("partner_id") @db.Uuid
+  optionValueId String @map("option_value_id") @db.Uuid
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner     Partner     @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+  optionValue OptionValue @relation(fields: [tenantId, optionValueId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([partnerId, optionValueId])
+  @@index([tenantId, partnerId])
+  @@index([tenantId, optionValueId])
+  @@map("partner_offering")
 }
