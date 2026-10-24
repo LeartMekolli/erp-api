@@ -16,7 +16,9 @@ import type { UnitDef } from '../catalog/units';
 import { visibleTo } from '../catalog/visibility';
 import type { TenantAuth } from '../identity/auth-context';
 import { missingStepTypes, resolveWorkflow } from '../workflow/coverage';
+import { partnerStepTypeIds } from '../workflow/partner-steps';
 import { AdjustmentsService } from './adjustments.service';
+import type { Adjustments } from './adjustments.service';
 import type { Block } from './blocks';
 import { resolveChain } from './chain';
 import type { ChainStep } from './chain';
@@ -24,6 +26,8 @@ import { ChainsService } from './chains.service';
 import { keySchema } from './decimals';
 import { priceConfiguration, tierFor } from './engine';
 import type { Breakdown } from './engine';
+import { partnerCost, pricesFor } from './partner-cost';
+import type { PriceSource } from './partner-cost';
 import type {
   BreakdownJson,
   QuoteInputs,
@@ -111,6 +115,21 @@ function quoteMaterial(material: Material, price: ResolvedPrice): QuoteMaterial 
   };
 }
 
+/** A step price of either list: the workspace's, or a partner's. */
+type PriceRow = Pick<StepPrice, 'stepTypeId' | 'materialId' | 'failurePercent' | 'blocks'>;
+
+/** The most specific price of each chain step: for the configuration's material, else the step's default (Q2). */
+function mostSpecific(rows: PriceRow[], steps: ChainStep[], materialId: string): Map<string, PriceRow> {
+  const prices = new Map<string, PriceRow>();
+  for (const step of steps) {
+    const price =
+      rows.find((row) => row.stepTypeId === step.id && row.materialId === materialId) ??
+      rows.find((row) => row.stepTypeId === step.id && row.materialId === null);
+    if (price) prices.set(step.id, price);
+  }
+  return prices;
+}
+
 /** Every material a step price names on its blocks. */
 function namedMaterials(blocks: Block[]): string[] {
   const ids: string[] = [];
@@ -180,70 +199,11 @@ export class QuotesService {
         throw new BadRequestException(`delivery_speed: ${speedKey} is not a delivery speed of this workspace`);
       }
 
-      // 1. The Catalog check.
-      const evaluation = await this.check.evaluate(tx, auth.tenantId, product.id, body);
-      if (!evaluation.accepted) {
-        return { accepted: false, reasons: evaluation.reasons };
-      }
-
-      // 2. The step chain.
-      const chain = resolveChain({ ...(await this.chains.load(tx, product.id)), chosenValueIds: evaluation.valueIds });
-      if ('conflict' in chain) {
-        const { step, adding, removing } = chain.conflict;
-        return {
-          accepted: false,
-          reasons: [{ code: 'step_conflict', step, message: `${adding} adds step ${step}, which ${removing} removes` }],
-        };
-      }
-
-      // 2b. Production must be able to do every step the quote prices (Workflow/QC spec F13).
-      const workflow = await resolveWorkflow(tx, product.id);
-      if (!workflow) {
-        return { accepted: false, reasons: [{ code: 'workflow_missing', message: `Product ${product.name} has no workflow` }] };
-      }
-      const missing = new Set(missingStepTypes(workflow.steps, chain.steps.map((step) => step.id)));
-      if (missing.size > 0) {
-        return {
-          accepted: false,
-          reasons: chain.steps
-            .filter((step) => missing.has(step.id))
-            .map((step) => ({
-              code: 'workflow_step_missing' as const,
-              step: step.key,
-              message: `Workflow ${workflow.name} has no ${step.key} step`,
-            })),
-        };
-      }
-
-      // 3. Each step's price (the material's own, else the step's default) and every material it names.
-      const prices = await this.stepPrices(tx, chain.steps, evaluation.material.id);
-      const units = await this.units.all(tx);
-      const priced = await this.pricedMaterials(tx, auth.tenantId, evaluation, prices, units);
-      if ('reasons' in priced) {
-        return { accepted: false, reasons: priced.reasons };
-      }
-
-      // 4–7. The engine, then the customer's view of it.
-      const profile = await this.profile.get(tx);
-      const result = priceConfiguration({
-        quantity: body.quantity,
-        steps: chain.steps.map((step) => {
-          const price = prices.get(step.id);
-          return { step, price: price ? { failurePercent: price.failurePercent, blocks: price.blocks as Block[] } : null };
-        }),
-        measures: evaluation.measures,
-        units,
-        materials: priced.materials,
-        overheadPerPiece: profile.overheadPerPiece,
-        minSize: adjustments.minSize,
-        marginPercent: adjustments.marginPercent,
-        tier: tierFor(adjustments.tiers, body.quantity),
-        groupPercent: groupKey ? adjustments.groups.get(groupKey)! : null,
-        speedPercent: speedKey ? adjustments.speeds.get(speedKey)! : null,
-      });
+      const result = await this.run(tx, auth.tenantId, product, body, { adjustments, groupKey, speedKey });
       if (!result.accepted) {
         return { accepted: false, reasons: result.reasons };
       }
+      const { evaluation, profile } = result;
       const summary = customerSummary(result.breakdown);
 
       const inputs: QuoteInputs = {
@@ -261,7 +221,7 @@ export class QuotesService {
           unitPrice: result.breakdown.unitPrice,
           total: result.breakdown.total,
           inputs,
-          materials: priced.list,
+          materials: result.materials,
           breakdown: breakdownJson(result.breakdown, evaluation),
           summary: { lines: summary.lines.map((line) => ({ label: line.label, amount: line.amount.toFixed(2) })) },
           expiresAt: new Date(Date.now() + profile.quoteValidDays * DAY_MS),
@@ -330,19 +290,159 @@ export class QuotesService {
     });
   }
 
-  /** The most specific price of each chain step: for the configuration's material, else the step's default (Q2). */
-  private async stepPrices(tx: Prisma.TransactionClient, steps: ChainStep[], materialId: string): Promise<Map<string, StepPrice>> {
-    const rows = await tx.stepPrice.findMany({
-      where: { stepTypeId: { in: steps.map((step) => step.id) }, OR: [{ materialId: null }, { materialId }] },
+  /**
+   * What a saved quote's job costs with a partner (Partners spec, goal 8 and B1): its inputs priced
+   * again at today's prices, with the partner's prices on the partner's steps, summing only those
+   * steps. A step the partner hasn't priced, or anything else that can't be priced, is a refusal.
+   */
+  async costFor(
+    tx: Prisma.TransactionClient,
+    quoteId: string,
+    partnerId: string,
+  ): Promise<{ cost: Prisma.Decimal; refusals: [] } | { cost: null; refusals: QuoteRefusal[] }> {
+    const quote = await this.find(tx, quoteId);
+    const product = await tx.product.findUniqueOrThrow({
+      where: { id: quote.productId },
+      select: { id: true, name: true, categoryId: true },
     });
-    const prices = new Map<string, StepPrice>();
-    for (const step of steps) {
-      const price =
-        rows.find((row) => row.stepTypeId === step.id && row.materialId === materialId) ??
-        rows.find((row) => row.stepTypeId === step.id && row.materialId === null);
+    const inputs = quote.inputs as QuoteInputs;
+    const adjustments = await this.adjustments.load(tx, { categoryId: product.categoryId, productId: product.id });
+    const request = {
+      options: inputs.options,
+      size: inputs.size ?? undefined,
+      file_version_id: inputs.file_version_id ?? undefined,
+      quantity: quote.quantity,
+    };
+    const result = await this.run(tx, quote.tenantId, product, request, {
+      adjustments,
+      groupKey: inputs.customer_group,
+      speedKey: inputs.delivery_speed,
+      partnerId,
+    });
+    if (!result.accepted) {
+      return { cost: null, refusals: result.reasons };
+    }
+    return { cost: partnerCost(result.breakdown.steps, result.partnerStepKeys, quote.quantity), refusals: [] };
+  }
+
+  /**
+   * Prices a configuration (Pricing spec, "Order of calculation"): the Catalog check, the step chain,
+   * the workflow's coverage of it, each step's price and the materials they name, then the engine.
+   * With `partnerId`, the partner's prices replace the workspace's on the partner's steps.
+   */
+  private async run(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    product: { id: string; name: string },
+    request: z.infer<typeof checkRequestSchema> & { quantity: number },
+    pricing: { adjustments: Adjustments; groupKey: string | null; speedKey: string | null; partnerId?: string },
+  ): Promise<
+    | { accepted: false; reasons: QuoteRefusal[] }
+    | {
+        accepted: true;
+        evaluation: Extract<Evaluation, { accepted: true }>;
+        breakdown: Breakdown;
+        materials: QuoteMaterial[];
+        profile: Awaited<ReturnType<PricingProfileService['get']>>;
+        /** The keys of the chain's steps that are the partner's; empty without a partner. */
+        partnerStepKeys: Set<string>;
+      }
+  > {
+    // 1. The Catalog check.
+    const evaluation = await this.check.evaluate(tx, tenantId, product.id, request);
+    if (!evaluation.accepted) {
+      return { accepted: false, reasons: evaluation.reasons };
+    }
+
+    // 2. The step chain.
+    const chain = resolveChain({ ...(await this.chains.load(tx, product.id)), chosenValueIds: evaluation.valueIds });
+    if ('conflict' in chain) {
+      const { step, adding, removing } = chain.conflict;
+      return {
+        accepted: false,
+        reasons: [{ code: 'step_conflict', step, message: `${adding} adds step ${step}, which ${removing} removes` }],
+      };
+    }
+
+    // 2b. Production must be able to do every step the quote prices (Workflow/QC spec F13).
+    const workflow = await resolveWorkflow(tx, product.id);
+    if (!workflow) {
+      return { accepted: false, reasons: [{ code: 'workflow_missing', message: `Product ${product.name} has no workflow` }] };
+    }
+    const missing = new Set(missingStepTypes(workflow.steps, chain.steps.map((step) => step.id)));
+    if (missing.size > 0) {
+      return {
+        accepted: false,
+        reasons: chain.steps
+          .filter((step) => missing.has(step.id))
+          .map((step) => ({
+            code: 'workflow_step_missing' as const,
+            step: step.key,
+            message: `Workflow ${workflow.name} has no ${step.key} step`,
+          })),
+      };
+    }
+
+    // 3. Each step's price (the material's own, else the step's default; the partner's on its steps)
+    // and every material it names.
+    const materialId = evaluation.material.id;
+    const where = { stepTypeId: { in: chain.steps.map((step) => step.id) }, OR: [{ materialId: null }, { materialId }] };
+    const partnerStepTypes = pricing.partnerId ? partnerStepTypeIds(workflow.steps) : new Set<string>();
+    const source: PriceSource<PriceRow> = {
+      workspace: mostSpecific(await tx.stepPrice.findMany({ where }), chain.steps, materialId),
+      partner: pricing.partnerId
+        ? {
+            partnerStepTypeIds: partnerStepTypes,
+            prices: mostSpecific(
+              await tx.partnerStepPrice.findMany({ where: { ...where, partnerId: pricing.partnerId } }),
+              chain.steps,
+              materialId,
+            ),
+          }
+        : undefined,
+    };
+    const prices = new Map<string, PriceRow>();
+    for (const step of chain.steps) {
+      const price = pricesFor(source, step.id);
       if (price) prices.set(step.id, price);
     }
-    return prices;
+    const units = await this.units.all(tx);
+    const priced = await this.pricedMaterials(tx, tenantId, evaluation, prices, units);
+    if ('reasons' in priced) {
+      return { accepted: false, reasons: priced.reasons };
+    }
+
+    // 4–7. The engine.
+    const { adjustments, groupKey, speedKey } = pricing;
+    const profile = await this.profile.get(tx);
+    const result = priceConfiguration({
+      quantity: request.quantity,
+      steps: chain.steps.map((step) => {
+        const price = prices.get(step.id);
+        return { step, price: price ? { failurePercent: price.failurePercent, blocks: price.blocks as Block[] } : null };
+      }),
+      measures: evaluation.measures,
+      units,
+      materials: priced.materials,
+      overheadPerPiece: profile.overheadPerPiece,
+      minSize: adjustments.minSize,
+      marginPercent: adjustments.marginPercent,
+      tier: tierFor(adjustments.tiers, request.quantity),
+      // A saved quote's group or speed may since have been removed; it then no longer applies.
+      groupPercent: groupKey ? (adjustments.groups.get(groupKey) ?? null) : null,
+      speedPercent: speedKey ? (adjustments.speeds.get(speedKey) ?? null) : null,
+    });
+    if (!result.accepted) {
+      return { accepted: false, reasons: result.reasons };
+    }
+    return {
+      accepted: true,
+      evaluation,
+      breakdown: result.breakdown,
+      materials: priced.list,
+      profile,
+      partnerStepKeys: new Set(chain.steps.filter((step) => partnerStepTypes.has(step.id)).map((step) => step.key)),
+    };
   }
 
   /**
@@ -353,7 +453,7 @@ export class QuotesService {
     tx: Prisma.TransactionClient,
     tenantId: string,
     evaluation: Extract<Evaluation, { accepted: true }>,
-    prices: Map<string, StepPrice>,
+    prices: Map<string, PriceRow>,
     units: UnitDef[],
   ): Promise<{ materials: Map<string, PricedMaterial>; list: QuoteMaterial[] } | { reasons: QuoteRefusal[] }> {
     const unit = (key: string) => units.find((candidate) => candidate.key === key)!;

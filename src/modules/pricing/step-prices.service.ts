@@ -45,15 +45,8 @@ export class StepPricesService {
       await this.findStepType(tx, stepTypeId);
       // Serialises saves for the step: Postgres would let two null-material defaults in side by side.
       await tx.$queryRaw`SELECT id FROM step_type WHERE id = ${stepTypeId}::uuid FOR UPDATE`;
-      const stepType = await tx.stepType.findUniqueOrThrow({ where: { id: stepTypeId }, select: { key: true, summaryGroup: true } });
-      if (stepType.summaryGroup === null) {
-        throw new BadRequestException(`${stepType.key} is not priced, so it can't have a price`);
-      }
+      await this.checkPrice(tx, stepTypeId, input);
       const materialId = input.material_id ?? null;
-      if (materialId) {
-        await this.findMaterial(tx, materialId);
-      }
-      await this.checkBlocks(tx, input.blocks);
 
       const current = await tx.stepPrice.findFirst({ where: { stepTypeId, materialId } });
       const data = { failurePercent: input.failure_percent, blocks: input.blocks as Prisma.InputJsonValue };
@@ -85,6 +78,25 @@ export class StepPricesService {
       await tx.stepPrice.delete({ where: { id } });
       await this.record(tx, auth, id, toResponse(row), undefined);
     });
+  }
+
+  /**
+   * Everything a step price must meet beyond its schema, for the workspace's prices and partners'
+   * alike: the step type exists and is priced (400 for one nobody prices), the material exists, and
+   * the blocks fit (`checkBlocks`).
+   */
+  async checkPrice(tx: Prisma.TransactionClient, stepTypeId: string, input: z.infer<typeof stepPriceSchema>): Promise<void> {
+    const stepType = await tx.stepType.findUnique({ where: { id: stepTypeId }, select: { key: true, summaryGroup: true } });
+    if (!stepType) {
+      throw new NotFoundException('Step type not found');
+    }
+    if (stepType.summaryGroup === null) {
+      throw new BadRequestException(`${stepType.key} is not priced, so it can't have a price`);
+    }
+    if (input.material_id) {
+      await this.findMaterial(tx, input.material_id);
+    }
+    await this.checkBlocks(tx, input.blocks);
   }
 
   /**

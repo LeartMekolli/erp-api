@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { PARTNER_ROLES } from './partner-roles';
 
 // What clients receive for partners; checked against real responses in the e2e tests.
@@ -54,6 +55,10 @@ export const partnerSetupResponseSchema = z.strictObject({
   ),
 });
 export type PartnerSetupResponse = z.infer<typeof partnerSetupResponseSchema>;
+
+/** A partner's price list: the same step prices as the workspace's, in step type order, each step's default first. */
+export const partnerPricesResponseSchema = z.strictObject({ data: z.array(stepPriceResponseSchema) });
+export type PartnerPricesResponse = z.infer<typeof partnerPricesResponseSchema>;
 
 /** An invitation to act for a partner; the token goes only to the invitee's inbox. */
 export const partnerInvitationResponseSchema = z.strictObject({

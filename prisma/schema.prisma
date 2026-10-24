@@ -73,6 +73,7 @@ model Tenant {
   partnerCapabilities PartnerCapability[]
   partnerClosedPeriods PartnerClosedPeriod[]
   partnerOfferings PartnerOffering[]
+  partnerStepPrices PartnerStepPrice[]
 
   @@map("tenant")
 }
@@ -558,6 +559,7 @@ model Material {
   optionValues OptionValue[]
   products     Product[]
   stepPrices   StepPrice[]
+  partnerPrices PartnerStepPrice[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -778,6 +780,7 @@ model StepType {
   prices        StepPrice[]
   workflowSteps WorkflowStep[]
   partnerCapabilities PartnerCapability[]
+  partnerPrices PartnerStepPrice[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1316,6 +1319,7 @@ model Partner {
   capabilities     PartnerCapability[]
   closedPeriods    PartnerClosedPeriod[]
   offerings        PartnerOffering[]
+  stepPrices       PartnerStepPrice[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1403,4 +1407,29 @@ model PartnerOffering {
   @@index([tenantId, partnerId])
   @@index([tenantId, optionValueId])
   @@map("partner_offering")
+}
+
+// A partner's price for a step, as a workspace step price: for one material or as the step's default
+// (goal 8). Saves lock the partner row, so two defaults for a step can't be written side by side.
+model PartnerStepPrice {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  partnerId      String   @map("partner_id") @db.Uuid
+  stepTypeId     String   @map("step_type_id") @db.Uuid
+  materialId     String?  @map("material_id") @db.Uuid
+  failurePercent Decimal  @map("failure_percent") @db.Decimal(9, 4)
+  // Validated by blocksSchema (src/modules/pricing/blocks.ts) on every save.
+  blocks         Json
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner  Partner   @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+  stepType StepType  @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+  material Material? @relation(fields: [tenantId, materialId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([partnerId, stepTypeId, materialId])
+  @@index([tenantId, partnerId])
+  @@index([tenantId, stepTypeId])
+  @@index([tenantId, materialId])
+  @@map("partner_step_price")
 }
