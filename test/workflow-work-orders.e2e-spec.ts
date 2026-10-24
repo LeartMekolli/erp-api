@@ -114,12 +114,12 @@ describe('workflow: starting work orders from a quote', () => {
     });
     // Polished silver isn't plated, so plating is not on its path; final QC and packing always are.
     expect(group.steps).toEqual([
-      { key: 'print_pattern', name: 'Print pattern', count: 10 },
-      { key: 'casting_tree', name: 'Casting tree', count: 0 },
-      { key: 'casting', name: 'Casting', count: 0 },
-      { key: 'polishing', name: 'Polishing', count: 0 },
-      { key: 'final_qc', name: 'Final QC', count: 0 },
-      { key: 'packing', name: 'Packing', count: 0 },
+      { key: 'print_pattern', name: 'Print pattern', count: 10, in_rework: 0 },
+      { key: 'casting_tree', name: 'Casting tree', count: 0, in_rework: 0 },
+      { key: 'casting', name: 'Casting', count: 0, in_rework: 0 },
+      { key: 'polishing', name: 'Polishing', count: 0, in_rework: 0 },
+      { key: 'final_qc', name: 'Final QC', count: 0, in_rework: 0 },
+      { key: 'packing', name: 'Packing', count: 0, in_rework: 0 },
     ]);
 
     const listed = await tenant.owner.get(`/workflow/work-orders?group_id=${group.id}&limit=20`).expect(200);

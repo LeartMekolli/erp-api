@@ -12,9 +12,11 @@ import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
+import { groupProgress } from './progress';
 import { WORK_ORDER_STATUSES } from './work-order-response';
 import type {
   GroupResponse,
+  TransitionListItem,
   TransitionResponse,
   WorkOrderDetailResponse,
   WorkOrderResponse,
@@ -34,6 +36,24 @@ export const workOrderQuerySchema = z.object({
   status: z.enum(WORK_ORDER_STATUSES).optional(),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
+
+export const transitionQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
+  work_order_id: z.uuid().optional(),
+  group_id: z.uuid().optional(),
+  /** The step the move was made at. */
+  step_key: keySchema.optional(),
+  defect_key: keySchema.optional(),
+  /** The design file the piece's group was started with (D21). */
+  file_version_id: z.uuid().optional(),
+  actor_user_id: z.uuid().optional(),
+  /** From this moment on, inclusive. */
+  from: z.iso.datetime({ offset: true }).optional(),
+  /** Before this moment. */
+  to: z.iso.datetime({ offset: true }).optional(),
+});
+export type TransitionQuery = z.infer<typeof transitionQuerySchema>;
 
 /** What a group of pieces starts from: a quote now, an order line once Orders exists. */
 export interface StartInput {
@@ -173,6 +193,43 @@ export class WorkOrdersService {
     });
   }
 
+  /** The QC history (ADR 0003 §7): every move, newest first, filtered. */
+  async transitions(tenantId: string, query: TransitionQuery): Promise<Page<TransitionListItem>> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const group = {
+      ...(query.group_id ? { id: query.group_id } : {}),
+      ...(query.file_version_id ? { fileVersionId: query.file_version_id } : {}),
+    };
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const rows = await tx.transition.findMany({
+        where: {
+          ...(after ? { id: { lt: after.id } } : {}),
+          ...(query.work_order_id ? { workOrderId: query.work_order_id } : {}),
+          ...(Object.keys(group).length > 0 ? { workOrder: { group } } : {}),
+          ...(query.step_key ? { fromStep: { key: query.step_key } } : {}),
+          ...(query.defect_key ? { defect: { key: query.defect_key } } : {}),
+          ...(query.actor_user_id ? { actorUserId: query.actor_user_id } : {}),
+          ...(query.from || query.to
+            ? { createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lt: new Date(query.to) } : {}) } }
+            : {}),
+        },
+        orderBy: { id: 'desc' },
+        take: query.limit + 1,
+        include: { ...transitionInclude, workOrder: { select: { id: true, number: true, group: { select: { quantity: true } } } } },
+      });
+      const data = rows.slice(0, query.limit);
+      const last = data.at(-1);
+      return {
+        data: data.map((row) => ({
+          ...toTransition(row),
+          work_order: { id: row.workOrder.id, label: `${row.workOrder.number}/${row.workOrder.group.quantity}` },
+        })),
+        next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
+      };
+    });
+  }
+
   async get(tenantId: string, id: string): Promise<WorkOrderDetailResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       const row = await tx.workOrder.findUnique({ where: { id }, include: { ...pieceInclude, group: true } });
@@ -206,9 +263,26 @@ export class WorkOrdersService {
     }
     const steps = await this.versionSteps(tx, group.workflowVersionId);
     const path = pathFor(stepsForPath(steps), chainOf(group));
-    const pieces = await tx.workOrder.findMany({ where: { groupId: id }, select: { status: true, currentStepId: true } });
-    const count = (status: WorkOrderStatus) => pieces.filter((piece) => piece.status === status).length;
+    const pieces = await tx.workOrder.findMany({ where: { groupId: id }, select: { id: true, status: true, currentStepId: true } });
+    const transitions = await tx.transition.findMany({
+      where: { workOrder: { groupId: id } },
+      select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const histories = new Map<string, typeof transitions>();
+    for (const row of transitions) {
+      const history = histories.get(row.workOrderId);
+      if (history) {
+        history.push(row);
+      } else {
+        histories.set(row.workOrderId, [row]);
+      }
+    }
     const byId = new Map(steps.map((step) => [step.id, step]));
+    const progress = groupProgress(
+      path.map((stepId) => byId.get(stepId)!),
+      pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
+    );
     return {
       id: group.id,
       workflow: { id: group.workflowVersion.workflow.id, name: group.workflowVersion.workflow.name, version: group.workflowVersion.number },
@@ -216,12 +290,7 @@ export class WorkOrdersService {
       product_id: group.productId,
       customer_id: group.customerId,
       quantity: group.quantity,
-      pieces: { active: count('active'), finished: count('finished'), scrapped: count('scrapped') },
-      steps: path.map((stepId) => ({
-        key: byId.get(stepId)!.key,
-        name: byId.get(stepId)!.name,
-        count: pieces.filter((piece) => piece.status === 'active' && piece.currentStepId === stepId).length,
-      })),
+      ...progress,
     };
   }
 

@@ -12,12 +12,19 @@ import type { MoveBody } from './moves.service';
 import {
   groupResponseSchema,
   moveResponseSchema,
+  transitionListItemSchema,
   workOrderDetailResponseSchema,
   workOrderResponseSchema,
 } from './work-order-response';
-import type { GroupResponse, MoveResponse, WorkOrderDetailResponse, WorkOrderResponse } from './work-order-response';
-import { MAX_PIECES, WorkOrdersService, startGroupSchema, workOrderQuerySchema } from './work-orders.service';
-import type { WorkOrderQuery } from './work-orders.service';
+import type {
+  GroupResponse,
+  MoveResponse,
+  TransitionListItem,
+  WorkOrderDetailResponse,
+  WorkOrderResponse,
+} from './work-order-response';
+import { MAX_PIECES, WorkOrdersService, startGroupSchema, transitionQuerySchema, workOrderQuerySchema } from './work-orders.service';
+import type { TransitionQuery, WorkOrderQuery } from './work-orders.service';
 
 const idSchema = z.uuid();
 
@@ -93,6 +100,22 @@ export class WorkOrdersController {
   @HttpCode(200)
   move(@CurrentUser() auth: TenantAuth, @Body(new ZodValidationPipe(moveSchema)) body: MoveBody): Promise<MoveResponse> {
     return this.moves.move(auth, body);
+  }
+
+  @ApiDoc({
+    summary: 'The QC history: every move of every piece, newest first, filtered by piece, group, step, defect, design file, actor or time.',
+    description: '`step_key` matches the step the move was made at. `from` is inclusive and `to` exclusive.',
+    query: transitionQuerySchema,
+    response: pageSchema(transitionListItemSchema),
+    errors: [400],
+  })
+  @RequirePermission('workflow.read')
+  @Get('transitions')
+  transitions(
+    @CurrentTenant() tenantId: string,
+    @Query(new ZodValidationPipe(transitionQuerySchema)) query: TransitionQuery,
+  ): Promise<Page<TransitionListItem>> {
+    return this.workOrders.transitions(tenantId, query);
   }
 
   @ApiDoc({

@@ -81,6 +81,12 @@ interface Landing {
   status: WorkOrderStatus;
 }
 
+interface ReplacementRow {
+  id: string;
+  replacesId: string | null;
+  currentStepId: string | null;
+}
+
 /** The move command (Workflow/QC spec, goals 5 and 6): the only writer of transitions. */
 @Injectable()
 export class MovesService {
@@ -100,16 +106,21 @@ export class MovesService {
       const pieces = ids.map((id) => byId.get(id)!);
       const label = (piece: (typeof pieces)[number]) => `${piece.number}/${piece.group.quantity}`;
 
+      const replacements = body.kind === 'correction' ? await this.untouchedReplacements(tx, pieces) : new Map<string, ReplacementRow>();
+
       // Every piece moves the same way, so all must stand where the move expects (Review Focus 2).
       const versionId = pieces[0].group.workflowVersionId;
       const blocker = (piece: (typeof pieces)[number]): string | null => {
         if (piece.group.workflowVersionId !== versionId) {
           return `runs on another version of the workflow than ${label(pieces[0])}`;
         }
-        // A correction may reopen a finished piece; scrapped pieces come back through their own rule.
-        const movable = body.kind === 'correction' ? ['active', 'finished'] : ['active'];
+        // A correction may reopen a finished piece, or restore a scrapped one while its replacement is untouched (B3).
+        const movable = body.kind === 'correction' ? ['active', 'finished', 'scrapped'] : ['active'];
         if (!movable.includes(piece.status)) {
           return `is ${piece.status}`;
+        }
+        if (piece.status === 'scrapped' && !replacements.has(piece.id)) {
+          return 'is scrapped, and its replacement has already moved';
         }
         if (body.kind !== 'correction' && piece.currentStep?.key !== body.at_step) {
           return `is at ${piece.currentStep!.key}, not ${body.at_step!}`;
@@ -163,10 +174,68 @@ export class MovesService {
 
       await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[]);
 
+      // A scrapped piece is replaced at once, under its number, at the first step of the same path.
+      const scrapped = pieces.filter((_, index) => (landings[index] as Landing).status === 'scrapped');
+      if (scrapped.length > 0) {
+        await tx.workOrder.createMany({
+          data: scrapped.map((piece) => ({
+            id: newId(),
+            groupId: piece.groupId,
+            number: piece.number,
+            replacesId: piece.id,
+            currentStepId: pathOf(piece)[0],
+          })),
+        });
+      }
+      // A restored piece's replacement is cancelled, and the log says so.
+      const cancelled = pieces.filter((piece) => piece.status === 'scrapped').map((piece) => replacements.get(piece.id)!);
+      if (cancelled.length > 0) {
+        await tx.transition.createMany({
+          data: cancelled.map((replacement) => ({
+            id: newId(),
+            workOrderId: replacement.id,
+            kind: 'correction',
+            fromStepId: replacement.currentStepId,
+            toStepId: null,
+            fromStatus: 'active',
+            toStatus: 'cancelled',
+            comment: body.comment ? body.comment : null,
+            actorUserId: auth.userId,
+          })),
+        });
+        await tx.workOrder.updateMany({
+          where: { id: { in: cancelled.map((replacement) => replacement.id) } },
+          data: { status: 'cancelled', currentStepId: null },
+        });
+      }
+
       const moved = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: pieceInclude });
       const movedById = new Map(moved.map((row) => [row.id, row]));
       return { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) };
     });
+  }
+
+  /**
+   * The active replacements of the scrapped pieces among `pieces` that have not moved yet, by the piece they
+   * replace. They are locked, so a move of the replacement can't slip in before the restore.
+   */
+  private async untouchedReplacements(
+    tx: Prisma.TransactionClient,
+    pieces: { id: string; status: string }[],
+  ): Promise<Map<string, ReplacementRow>> {
+    const scrapped = pieces.filter((piece) => piece.status === 'scrapped').map((piece) => piece.id);
+    if (scrapped.length === 0) {
+      return new Map();
+    }
+    await tx.$queryRaw`
+      SELECT id FROM work_order
+      WHERE replaces_id IN (${Prisma.join(scrapped.map((id) => Prisma.sql`${id}::uuid`))}) AND status = 'active'
+      ORDER BY id FOR UPDATE`;
+    const rows = await tx.workOrder.findMany({
+      where: { replacesId: { in: scrapped }, status: 'active', transitions: { none: {} } },
+      select: { id: true, replacesId: true, currentStepId: true },
+    });
+    return new Map(rows.map((row) => [row.replacesId!, row]));
   }
 
   /** What a fail does: the defect's default outcome and target, or an override with a reason (D38). */

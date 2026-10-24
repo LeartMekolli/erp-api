@@ -43,6 +43,12 @@ export const transitionResponseSchema = z.strictObject({
 });
 export type TransitionResponse = z.infer<typeof transitionResponseSchema>;
 
+/** A row of the QC history, with the piece it moved. */
+export const transitionListItemSchema = transitionResponseSchema.extend({
+  work_order: z.strictObject({ id: z.uuid(), label: z.string() }),
+});
+export type TransitionListItem = z.infer<typeof transitionListItemSchema>;
+
 export const workOrderDetailResponseSchema = workOrderResponseSchema.extend({
   /** Every step the piece goes through, in order. */
   path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
@@ -66,7 +72,7 @@ export const groupResponseSchema = z.strictObject({
   /** How many good pieces the group delivers. */
   quantity: z.number().int(),
   pieces: z.strictObject({ active: z.number().int(), finished: z.number().int(), scrapped: z.number().int() }),
-  /** The path, with how many active pieces are at each step. */
-  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int() })),
+  /** The path, with how many active pieces are at each step, and how many of those are being redone. */
+  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int(), in_rework: z.number().int() })),
 });
 export type GroupResponse = z.infer<typeof groupResponseSchema>;
