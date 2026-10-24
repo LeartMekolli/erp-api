@@ -6,6 +6,8 @@ import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { conflictOnDuplicate, keySchema } from '../pricing/decimals';
 import type { WorkflowStepRow } from './coverage';
+import { payoutStepId } from './partner-steps';
+import type { DoneBy } from './partner-steps';
 import type { StepConfig, WorkflowStepsInput } from './workflow-config';
 import type {
   CategoryWorkflowResponse,
@@ -116,12 +118,21 @@ export class WorkflowsService {
             name: step.name,
             stepTypeId: step.step_type_id,
             priced: priced.has(step.step_type_id),
+            doneBy: step.done_by,
             config: config as Prisma.InputJsonValue,
             sopFileVersionId: step.sop_file_version_id,
             expectedMinutes: step.expected_minutes,
           };
         }),
       });
+      if (input.payout_step !== undefined) {
+        // The schema has checked it names a partner step of these steps.
+        const payout = await tx.workflowStep.findUniqueOrThrow({
+          where: { versionId_key: { versionId: version.id, key: input.payout_step } },
+          select: { id: true },
+        });
+        await tx.workflowVersion.update({ where: { id: version.id }, data: { payoutStepId: payout.id } });
+      }
 
       const created = await this.toVersion(
         tx,
@@ -210,11 +221,13 @@ export class WorkflowsService {
     const configs = version.steps.map((step) => step.config as StepConfig);
     const defectIds = [...new Set(configs.flatMap((config) => config.defects.map((defect) => defect.defect_id)))];
     const defects = new Map((await tx.defect.findMany({ where: { id: { in: defectIds } } })).map((row) => [row.id, row]));
+    const payoutId = payoutStepId(version.steps, version.payoutStepId);
     return {
       workflow_id: version.workflowId,
       number: version.number,
       created_at: version.createdAt.toISOString(),
       steps: version.steps.map((step, index) => toStep(step, configs[index], defects)),
+      payout_step: version.steps.find((step) => step.id === payoutId)?.key ?? null,
     };
   }
 
@@ -274,5 +287,6 @@ function toStep(
     sop_file_version_id: step.sopFileVersionId,
     expected_minutes: step.expectedMinutes?.toFixed() ?? null,
     customer: config.customer,
+    done_by: step.doneBy as DoneBy,
   };
 }

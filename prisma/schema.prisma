@@ -1095,12 +1095,16 @@ model WorkflowVersion {
   number          Int
   // Null when seeded.
   createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  // The partner step whose pass makes the partner owed; null means the last partner step
+  // (src/modules/workflow/partner-steps.ts).
+  payoutStepId    String?  @map("payout_step_id") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at")
 
-  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  workflow Workflow       @relation(fields: [tenantId, workflowId], references: [tenantId, id], onDelete: Cascade)
-  steps    WorkflowStep[]
-  groups   WorkOrderGroup[]
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workflow   Workflow       @relation(fields: [tenantId, workflowId], references: [tenantId, id], onDelete: Cascade)
+  steps      WorkflowStep[] @relation("VersionSteps")
+  payoutStep WorkflowStep?  @relation("VersionPayoutStep", fields: [tenantId, payoutStepId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  groups     WorkOrderGroup[]
 
   @@unique([tenantId, workflowId, number])
   @@unique([tenantId, id])
@@ -1121,12 +1125,15 @@ model WorkflowStep {
   // Whether the step type was priced when this version was made. Paths read this, never the step type,
   // so changing a step type later can't reroute pieces already running on the version.
   priced           Boolean
+  // partner | workspace: a partner's step, or one the workspace does in-house (Partners spec, goal 7)
+  doneBy           String   @default("partner") @map("done_by")
   config           Json
   sopFileVersionId String?  @map("sop_file_version_id") @db.Uuid
   expectedMinutes  Decimal? @map("expected_minutes") @db.Decimal(9, 2)
 
   tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  version        WorkflowVersion @relation(fields: [tenantId, versionId], references: [tenantId, id], onDelete: Cascade)
+  version        WorkflowVersion @relation("VersionSteps", fields: [tenantId, versionId], references: [tenantId, id], onDelete: Cascade)
+  payoutOf       WorkflowVersion[] @relation("VersionPayoutStep")
   stepType       StepType        @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: NoAction)
   sopFileVersion FileVersion?    @relation(fields: [tenantId, sopFileVersionId], references: [tenantId, id], onDelete: NoAction)
   workOrders     WorkOrder[]

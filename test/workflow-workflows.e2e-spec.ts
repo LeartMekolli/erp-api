@@ -248,6 +248,43 @@ describe('workflow: workflows, versions and assignment', () => {
     await tenant.owner.post('/workflow/workflows', { key: 'Cast Rings', name: 'Bad key' }).expect(400);
   });
 
+  it('says which steps a partner does, and at which step the partner is owed', async () => {
+    const tenant = await freshTenant();
+    const ids = await setup(tenant);
+    const path = `/workflow/workflows/${ids.workflowId}/steps`;
+    const doneBy = (version: unknown) =>
+      (version as { steps: { key: string; done_by: string }[] }).steps.map((step) => [step.key, step.done_by]);
+
+    // Without `done_by`, as every workflow made before partners: every step is the partner's,
+    // and the partner is owed at the last one.
+    const plain = await tenant.owner.put(path, castSteps(ids)).expect(200);
+    expectDocumented(workflowVersionResponseSchema, plain.body);
+    expect(doneBy(plain.body).every(([, by]) => by === 'partner')).toBe(true);
+    expect(plain.body).toMatchObject({ payout_step: 'packing' });
+
+    // Packing done in-house: the partner is owed at final QC.
+    const steps = castSteps(ids).steps;
+    const inHouse = { steps: steps.map((step) => (step.key === 'packing' ? { ...step, done_by: 'workspace' } : step)) };
+    const second = await tenant.owner.put(path, inHouse).expect(200);
+    expectDocumented(workflowVersionResponseSchema, second.body);
+    expect(doneBy(second.body).at(-1)).toEqual(['packing', 'workspace']);
+    expect(second.body).toMatchObject({ number: 2, payout_step: 'final_qc' });
+
+    // A payout step the workflow names is kept, also on the version read back.
+    const third = await tenant.owner.put(path, { ...inHouse, payout_step: 'polishing' }).expect(200);
+    expect(third.body).toMatchObject({ number: 3, payout_step: 'polishing' });
+    const read = await tenant.owner.get(`/workflow/workflows/${ids.workflowId}/versions/3`).expect(200);
+    expectDocumented(workflowVersionResponseSchema, read.body);
+    expect(read.body).toMatchObject({ payout_step: 'polishing' });
+    expect((await tenant.owner.get(`/workflow/workflows/${ids.workflowId}/versions/1`).expect(200)).body).toMatchObject({
+      payout_step: 'packing',
+    });
+
+    // Never a step the workspace does, nor one the workflow doesn't have.
+    await tenant.owner.put(path, { ...inHouse, payout_step: 'packing' }).expect(400);
+    await tenant.owner.put(path, { ...inHouse, payout_step: 'engraving' }).expect(400);
+  });
+
   it("assigns a workflow to a category, and lets a product use its own", async () => {
     const tenant = await freshTenant();
     const other = await freshTenant();

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DONE_BY } from './partner-steps';
 import { OUTCOMES, checklistItemSchema } from './workflow-config';
 
 // What clients receive for workflow configuration; checked against real responses in the e2e tests.
@@ -41,6 +42,8 @@ export const workflowStepResponseSchema = z.strictObject({
     z.strictObject({ visible: z.literal(false) }),
     z.strictObject({ visible: z.literal(true), name: z.string() }),
   ]),
+  /** A partner's step, or one the workspace does in-house. */
+  done_by: z.enum(DONE_BY),
 });
 export type WorkflowStepResponse = z.infer<typeof workflowStepResponseSchema>;
 
@@ -49,6 +52,8 @@ export const workflowVersionResponseSchema = z.strictObject({
   number: z.number().int(),
   created_at: z.iso.datetime(),
   steps: z.array(workflowStepResponseSchema),
+  /** The key of the step whose pass makes the partner owed: the one named, else the last partner step; null when there is none. */
+  payout_step: z.string().nullable(),
 });
 export type WorkflowVersionResponse = z.infer<typeof workflowVersionResponseSchema>;
 

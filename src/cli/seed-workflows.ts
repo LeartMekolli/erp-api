@@ -165,6 +165,7 @@ export async function seedWorkflows(prisma: PrismaService, tenantId: string): Pr
             name: step.name,
             stepTypeId: step.step_type_id,
             priced: priced.has(step.step_type_id),
+            doneBy: step.done_by,
             config: config as Prisma.InputJsonValue,
             expectedMinutes: step.expected_minutes,
           };

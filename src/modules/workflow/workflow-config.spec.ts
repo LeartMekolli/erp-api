@@ -44,7 +44,9 @@ describe('workflow step configuration', () => {
       sop_file_version_id: null,
       expected_minutes: null,
       customer: { visible: false },
+      done_by: 'partner',
     });
+    expect(parsed.payout_step).toBeUndefined();
     expect(parsed.steps[1]).toMatchObject({ customer: { visible: true, name: 'Finishing' }, rework_targets: ['casting'] });
   });
 
@@ -91,6 +93,20 @@ describe('workflow step configuration', () => {
     expect(workflowStepsSchema.safeParse({ steps: [step('polishing', { checklist: [twice, twice] })] }).success).toBe(false);
     expect(workflowStepsSchema.safeParse({ steps: [step('casting'), step('casting')] }).success).toBe(false);
     expect(workflowStepsSchema.safeParse({ steps: [] }).success).toBe(false);
+  });
+
+  it('says who does each step, and pays out only at a partner step', () => {
+    const steps = [step('casting'), step('final_qc'), step('packing', { done_by: 'workspace' })];
+
+    const named = workflowStepsSchema.parse({ steps, payout_step: 'casting' });
+    expect(named.payout_step).toBe('casting');
+    expect(named.steps.map((one) => one.done_by)).toEqual(['partner', 'partner', 'workspace']);
+
+    for (const payout_step of ['packing', 'nowhere', 'Casting']) {
+      const result = workflowStepsSchema.safeParse({ steps, payout_step });
+      expect({ payout_step, success: result.success }).toEqual({ payout_step, success: false });
+    }
+    expect(workflowStepsSchema.safeParse({ steps: [step('casting', { done_by: 'customer' })] }).success).toBe(false);
   });
 
   it('refuses a customer-visible step without a customer name', () => {

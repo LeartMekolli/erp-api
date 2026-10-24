@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { Prisma } from '../../generated/prisma/client';
 import { amountSchema, keySchema } from '../pricing/decimals';
+import { DONE_BY } from './partner-steps';
 
 // What a workflow step is set up with (Workflow/QC spec, goal 3). Stored as the step's `config`,
-// except the step type, SOP document and expected duration, which are columns.
+// except the step type, SOP document, expected duration and who does it, which are columns.
 
 const labelSchema = z.string().trim().min(1).max(200);
 
@@ -90,12 +91,21 @@ export const workflowStepInputSchema = z.strictObject({
   /** Per piece, in minutes. Stored for delivery estimates and capacity later. */
   expected_minutes: amountSchema.nullable().default(null),
   customer: customerSchema,
+  /** A partner's step, or one the workspace does in-house. */
+  done_by: z.enum(DONE_BY).default('partner'),
 });
 export type WorkflowStepInput = z.infer<typeof workflowStepInputSchema>;
 
 export const workflowStepsSchema = z
-  .object({ steps: z.array(workflowStepInputSchema).min(1).max(100) })
-  .superRefine(({ steps }, context) => {
+  .object({
+    steps: z.array(workflowStepInputSchema).min(1).max(100),
+    /** The partner step whose pass makes the partner owed; by default the last partner step. */
+    payout_step: keySchema.optional(),
+  })
+  .superRefine(({ steps, payout_step }, context) => {
+    if (payout_step !== undefined && !steps.some((step) => step.key === payout_step && step.done_by === 'partner')) {
+      context.addIssue({ code: 'custom', path: ['payout_step'], message: `${payout_step} is not a partner step of the workflow` });
+    }
     const seen = new Map<string, number>();
     steps.forEach((step, index) => {
       if (seen.has(step.key)) {
