@@ -63,6 +63,8 @@ model Tenant {
   workflows       Workflow[]
   workflowVersions WorkflowVersion[]
   workflowSteps   WorkflowStep[]
+  workOrderGroups WorkOrderGroup[]
+  workOrders      WorkOrder[]
 
   @@map("tenant")
 }
@@ -473,6 +475,7 @@ model FileVersion {
   measures   Measure[]
   products   Product[]
   sopForSteps WorkflowStep[]
+  workOrderGroups WorkOrderGroup[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -697,6 +700,7 @@ model Product {
   optionValues ProductOptionValue[]
   chain        ProductChain?
   quotes       Quote[]
+  workOrderGroups WorkOrderGroup[]
   steps        ProductStep[]
   margin       MarginOverride?
 
@@ -1003,6 +1007,7 @@ model Customer {
   invitations   CustomerInvitation[]
   products      Product[]
   quotes        Quote[]
+  workOrderGroups WorkOrderGroup[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -1086,6 +1091,7 @@ model WorkflowVersion {
   tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   workflow Workflow       @relation(fields: [tenantId, workflowId], references: [tenantId, id], onDelete: Cascade)
   steps    WorkflowStep[]
+  groups   WorkOrderGroup[]
 
   @@unique([tenantId, workflowId, number])
   @@unique([tenantId, id])
@@ -1111,9 +1117,69 @@ model WorkflowStep {
   version        WorkflowVersion @relation(fields: [tenantId, versionId], references: [tenantId, id], onDelete: Cascade)
   stepType       StepType        @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: NoAction)
   sopFileVersion FileVersion?    @relation(fields: [tenantId, sopFileVersionId], references: [tenantId, id], onDelete: NoAction)
+  workOrders     WorkOrder[]
 
   @@unique([versionId, key])
   @@unique([versionId, position])
   @@unique([tenantId, id])
   @@map("workflow_step")
+}
+
+// The pieces started together from one source (a quote now, an order line later), all on one
+// workflow version (D34). Its progress is derived from its work orders, never stored (D39).
+model WorkOrderGroup {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  workflowVersionId String   @map("workflow_version_id") @db.Uuid
+  // quote | order_line
+  sourceType        String   @map("source_type")
+  sourceId          String   @map("source_id") @db.Uuid
+  productId         String?  @map("product_id") @db.Uuid
+  fileVersionId     String?  @map("file_version_id") @db.Uuid
+  customerId        String?  @map("customer_id") @db.Uuid
+  // How many good pieces the group must deliver.
+  quantity          Int
+  // The step types the source priced, which decide the priced steps on the path; null: every step runs.
+  chainStepTypeIds  Json?    @map("chain_step_type_ids")
+  createdByUserId   String   @map("created_by_user_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workflowVersion WorkflowVersion @relation(fields: [tenantId, workflowVersionId], references: [tenantId, id], onDelete: NoAction)
+  product         Product?        @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+  fileVersion     FileVersion?    @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
+  customer        Customer?       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  workOrders      WorkOrder[]
+
+  @@unique([tenantId, sourceType, sourceId])
+  @@unique([tenantId, id])
+  @@map("work_order_group")
+}
+
+// One piece (serial tracking, F3). `currentStepId` is set exactly while the piece is active.
+model WorkOrder {
+  // Given in number order when a group starts, so a list by id lists pieces 1, 2, 3...
+  id            String   @id @default(uuid(7)) @db.Uuid
+  tenantId      String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  groupId       String   @map("group_id") @db.Uuid
+  // 1..quantity; a replacement keeps the number of the piece it replaces.
+  number        Int
+  // active | finished | scrapped | cancelled
+  status        String   @default("active")
+  currentStepId String?  @map("current_step_id") @db.Uuid
+  replacesId    String?  @map("replaces_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group       WorkOrderGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  currentStep WorkflowStep?  @relation(fields: [tenantId, currentStepId], references: [tenantId, id], onDelete: NoAction)
+  replaces    WorkOrder?     @relation("Replacement", fields: [tenantId, replacesId], references: [tenantId, id], onDelete: NoAction)
+  // Several only when a restored piece is scrapped again; at most one is ever active.
+  replacements WorkOrder[]   @relation("Replacement")
+
+  @@unique([tenantId, id])
+  @@index([tenantId, replacesId])
+  @@index([tenantId, currentStepId])
+  @@index([groupId, number])
+  @@map("work_order")
 }
