@@ -30,6 +30,20 @@ export const SETTING_KEYS = {
       message: 'endHour must be later than startHour',
       path: ['endHour'],
     }),
+  // How jobs reach partners (Partners spec, goals 10 and P4): how long an offer stays open, and
+  // whether the lines of one order may go to different partners (enforced by Orders).
+  'partners.routing': z.object({
+    offerHours: z.number().int().min(1).max(720),
+    splitOrderLines: z.boolean(),
+  }),
+  // How much each part counts towards a partner's overall score (Partners spec, goal 15).
+  'partners.scoreWeights': z.object({
+    quality: z.number().int().min(0).max(10),
+    scrap: z.number().int().min(0).max(10),
+    reliability: z.number().int().min(0).max(10),
+    onTime: z.number().int().min(0).max(10),
+    rating: z.number().int().min(0).max(10),
+  }),
   // The workspace's own Google OAuth client ids; Sign in with Google is off without it.
   'auth.google': z.object({
     clientIds: z.array(z.string().min(1).max(200)).min(1).max(5),

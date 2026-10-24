@@ -37,6 +37,23 @@ describe('setting keys', () => {
     ).toThrow(ZodError);
   });
 
+  it('accepts partner routing with an offer deadline of 1 to 720 hours', () => {
+    expect(parseSetting('partners.routing', { offerHours: 24, splitOrderLines: false })).toEqual({
+      offerHours: 24,
+      splitOrderLines: false,
+    });
+    for (const offerHours of [0, 721, 1.5]) {
+      expect(() => parseSetting('partners.routing', { offerHours, splitOrderLines: true })).toThrow(ZodError);
+    }
+  });
+
+  it('accepts partner score weights of 0 to 10 each', () => {
+    const weights = { quality: 3, scrap: 2, reliability: 2, onTime: 1, rating: 3 };
+    expect(parseSetting('partners.scoreWeights', weights)).toEqual(weights);
+    expect(() => parseSetting('partners.scoreWeights', { ...weights, rating: 11 })).toThrow(ZodError);
+    expect(() => parseSetting('partners.scoreWeights', { ...weights, scrap: -1 })).toThrow(ZodError);
+  });
+
   it('accepts one to five Google client ids, and nothing else', () => {
     expect(parseSetting('auth.google', { clientIds: ['web.apps.example.test'] })).toEqual({
       clientIds: ['web.apps.example.test'],

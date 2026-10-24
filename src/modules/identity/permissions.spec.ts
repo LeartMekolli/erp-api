@@ -15,6 +15,7 @@ describe('permissions', () => {
       'catalog.read',
       'customer.read',
       'file.read',
+      'partner.read',
       'quote.create',
       'role.read',
       'settings.read',

@@ -68,6 +68,7 @@ model Tenant {
   transitions     Transition[]
   transitionAnswers TransitionAnswer[]
   transitionPhotos TransitionPhoto[]
+  partners        Partner[]
 
   @@map("tenant")
 }
@@ -481,6 +482,7 @@ model FileVersion {
   sopForSteps WorkflowStep[]
   workOrderGroups WorkOrderGroup[]
   transitionPhotos TransitionPhoto[]
+  partnerAgreements Partner[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -1270,4 +1272,31 @@ model TransitionPhoto {
   @@index([tenantId, transitionId])
   @@index([tenantId, fileVersionId])
   @@map("transition_photo")
+}
+
+// ---------------------------------------------------------------------------
+// Partners (Partners spec): outside workshops that make the pieces.
+
+// A partner workshop. Its people are users with partner memberships (organisation_membership,
+// organisation_type = 'partner'), as customers' people are.
+model Partner {
+  id                      String    @id @default(uuid(7)) @db.Uuid
+  tenantId                String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name                    String
+  // What customers see when they may pick a workshop.
+  displayName             String    @map("display_name")
+  // setting_up | approved | suspended: only approved partners are offered jobs
+  status                  String    @default("setting_up")
+  // Takes any job a customer sends it directly, without an offer (goal 11).
+  acceptsDirectOrders     Boolean   @default(false) @map("accepts_direct_orders")
+  agreementFileVersionId  String?   @map("agreement_file_version_id") @db.Uuid
+  agreementSignedOn       DateTime? @map("agreement_signed_on") @db.Date
+  createdAt               DateTime  @default(now()) @map("created_at")
+
+  tenant           Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agreementVersion FileVersion? @relation(fields: [tenantId, agreementFileVersionId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("partner")
 }

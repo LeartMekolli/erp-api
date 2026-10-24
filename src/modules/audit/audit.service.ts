@@ -19,7 +19,9 @@ export type AuditAction =
   | 'customer.changed'
   | 'customer.member_changed'
   | 'workspace.customer_site_changed'
-  | 'workflow.changed';
+  | 'workflow.changed'
+  | 'partner.changed'
+  | 'partner.job';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };
