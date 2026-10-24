@@ -111,7 +111,7 @@ export class PartnerJobsService {
       offered_at: row.createdAt.toISOString(),
       expires_at: row.expiresAt?.toISOString() ?? null,
       product: group.product ? { name: group.product.name } : null,
-      options: await this.options(tx, group.sourceType === 'quote' ? group.sourceId : null),
+      options: await this.options(tx, group.sourceType === 'quote' ? group.sourceId : null, group.productId),
       quantity: group.quantity,
       design_file_version_id: group.fileVersionId,
       steps: partnerSteps.map((step) => ({ key: step.key, name: step.name, sop_file_version_id: step.sopFileVersionId })),
@@ -120,19 +120,26 @@ export class PartnerJobsService {
     };
   }
 
-  /** The chosen options by name, from the quote's inputs (keys never change). */
-  private async options(tx: Tx, quoteId: string | null): Promise<PartnerJobResponse['options']> {
+  /**
+   * The chosen options by name, from the quote's inputs (keys never change), in the product's option
+   * order: stored JSON keeps no key order.
+   */
+  private async options(tx: Tx, quoteId: string | null, productId: string | null): Promise<PartnerJobResponse['options']> {
     if (!quoteId) return [];
     const quote = await tx.quote.findUniqueOrThrow({ where: { id: quoteId }, select: { inputs: true } });
     const chosen = Object.entries((quote.inputs as { options: Record<string, string> }).options);
     if (chosen.length === 0) return [];
     const values = await tx.optionValue.findMany({
       where: { OR: chosen.map(([groupKey, key]) => ({ key, group: { key: groupKey } })) },
-      include: { group: { select: { key: true, name: true } } },
+      include: { group: { select: { id: true, key: true, name: true } } },
     });
-    return chosen.flatMap(([groupKey, key]) => {
-      const value = values.find((one) => one.group.key === groupKey && one.key === key);
-      return value ? [{ group: value.group.name, value: value.name }] : [];
-    });
+    const positions = productId
+      ? await tx.productOptionGroup.findMany({ where: { productId }, select: { groupId: true, position: true } })
+      : [];
+    const positionOf = (groupId: string) => positions.find((one) => one.groupId === groupId)?.position ?? Number.MAX_SAFE_INTEGER;
+    return chosen
+      .flatMap(([groupKey, key]) => values.filter((one) => one.group.key === groupKey && one.key === key))
+      .sort((a, b) => positionOf(a.group.id) - positionOf(b.group.id) || a.group.key.localeCompare(b.group.key))
+      .map((value) => ({ group: value.group.name, value: value.name }));
   }
 }
