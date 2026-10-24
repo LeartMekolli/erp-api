@@ -107,10 +107,13 @@ export class WorkOrdersService {
         // The steps the quote priced, by key: step type keys never change.
         const keys = (quote.breakdown as { steps: { key: string }[] }).steps.map((step) => step.key);
         const types = await tx.stepType.findMany({ where: { key: { in: keys } }, select: { id: true, key: true } });
-        const chain = keys.map((key) => types.find((type) => type.key === key)?.id ?? key);
+        const idOf = new Map(types.map((type) => [type.key, type.id]));
+        const keyOf = new Map(types.map((type) => [type.id, type.key]));
+        // Step types are never deleted, so every key the quote priced still names one.
+        const chain = keys.map((key) => idOf.get(key)!);
         const missing = missingStepTypes(workflow.steps, chain);
         if (missing.length > 0) {
-          const names = missing.map((id) => types.find((type) => type.id === id)?.key ?? id);
+          const names = missing.map((id) => keyOf.get(id)!);
           throw new ConflictException(`Workflow ${workflow.name} has no ${names.join(', ')} step`);
         }
 
@@ -267,7 +270,7 @@ export class WorkOrdersService {
       const history = await tx.transition.findMany({
         where: { workOrderId: id },
         include: transitionInclude,
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        orderBy: { id: 'asc' },
       });
       return {
         ...toWorkOrder(row),
@@ -305,7 +308,11 @@ export class WorkOrdersService {
     };
   }
 
-  /** A group's pieces, and each piece's transitions oldest first, read in two queries. */
+  /**
+   * A group's pieces, and each piece's transitions in move order, read in two queries. Move order is id
+   * order: ids are made while the move holds the piece's lock, whereas `created_at` is when the move's
+   * transaction began, which can be before an earlier move that held the lock first.
+   */
   private async piecesWithHistory(tx: Prisma.TransactionClient, groupId: string) {
     const pieces = await tx.workOrder.findMany({
       where: { groupId },
@@ -314,7 +321,7 @@ export class WorkOrdersService {
     const transitions = await tx.transition.findMany({
       where: { workOrder: { groupId } },
       select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      orderBy: { id: 'asc' },
     });
     const histories = new Map<string, TransitionFacts[]>();
     for (const row of transitions) {
@@ -372,7 +379,7 @@ export function stepsForPath(steps: WorkflowStepRow[]) {
   return steps.map((step) => ({
     id: step.id,
     stepTypeId: step.stepTypeId,
-    priced: step.stepType.summaryGroup !== null,
+    priced: step.priced,
     position: step.position,
   }));
 }

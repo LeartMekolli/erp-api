@@ -20,6 +20,7 @@ export const workflowStepResponseSchema = z.strictObject({
   position: z.number().int(),
   key: z.string(),
   name: z.string(),
+  /** `priced` is as it was when this version was made: it decides the paths of pieces on this version. */
   step_type: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string(), priced: z.boolean() }),
   checklist: z.array(checklistItemSchema),
   defects: z.array(

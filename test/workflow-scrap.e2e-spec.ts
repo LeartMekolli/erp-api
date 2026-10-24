@@ -134,6 +134,16 @@ describe('workflow: scrap, replacement and rework', () => {
     await scrap(tenant, pieces[3].id).expect(200);
     const [replacement] = (await list(tenant, 'status=active')).filter((one) => one.replaces_id === pieces[3].id);
 
+    // Restoring a piece cancels its replacement, so one correction can't also move that replacement.
+    const both = await move(tenant, {
+      work_order_ids: [pieces[3].id, replacement.id],
+      kind: 'correction',
+      to_step: 'casting',
+      comment: 'The crack was a mould mark',
+    }).expect(409);
+    expect(((both.body as { errors: { path: string }[] }).errors ?? []).map((error) => error.path)).toEqual(['work_order_ids.1']);
+    expect(await piece(tenant, replacement.id)).toMatchObject({ status: 'active', step: { key: 'print_pattern' } });
+
     await restore(tenant, pieces[3].id).expect(200);
     expect(await piece(tenant, pieces[3].id)).toMatchObject({ status: 'active', step: { key: 'casting' } });
     expect((await piece(tenant, pieces[3].id)).history.at(-1)).toMatchObject({

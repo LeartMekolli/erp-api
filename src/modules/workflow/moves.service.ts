@@ -107,6 +107,7 @@ export class MovesService {
       const label = (piece: (typeof pieces)[number]) => `${piece.number}/${piece.group.quantity}`;
 
       const replacements = body.kind === 'correction' ? await this.untouchedReplacements(tx, pieces) : new Map<string, ReplacementRow>();
+      const cancelling = new Set([...replacements.values()].map((replacement) => replacement.id));
 
       // Every piece moves the same way, so all must stand where the move expects (Review Focus 2).
       const versionId = pieces[0].group.workflowVersionId;
@@ -121,6 +122,9 @@ export class MovesService {
         }
         if (piece.status === 'scrapped' && !replacements.has(piece.id)) {
           return 'is scrapped, and its replacement has already moved';
+        }
+        if (cancelling.has(piece.id)) {
+          return 'replaces a piece this correction restores, so it is cancelled instead';
         }
         if (body.kind !== 'correction' && piece.currentStep?.key !== body.at_step) {
           return `is at ${piece.currentStep!.key}, not ${body.at_step!}`;
@@ -287,7 +291,10 @@ export class MovesService {
         : { path: field, message: `${key} is not on the path of the piece at work_order_ids.${index}` };
     };
     if (body.kind === 'correction') {
-      return onPath(body.to_step!, 'to_step');
+      const landing = onPath(body.to_step!, 'to_step');
+      return 'stepId' in landing && landing.stepId === currentStepId
+        ? { path: `work_order_ids.${index}`, message: `The piece is already at ${body.to_step!}` }
+        : landing;
     }
     if (fail?.outcome === 'scrap') {
       return { stepId: null, status: 'scrapped' };
@@ -296,7 +303,12 @@ export class MovesService {
       return onPath(fail.reworkTo!, 'rework_to');
     }
     // A pass, or a fail that continues: the next step on the path, or done after the last.
-    const next = path[path.indexOf(currentStepId!) + 1];
+    const at = path.indexOf(currentStepId!);
+    if (at === -1) {
+      // Paths are fixed per version, so this means stored data disagrees; refuse rather than guess.
+      throw new ConflictException(`The piece at work_order_ids.${index} is at a step that is not on its path`);
+    }
+    const next = path[at + 1];
     return next ? { stepId: next, status: 'active' } : { stepId: null, status: 'finished' };
   }
 

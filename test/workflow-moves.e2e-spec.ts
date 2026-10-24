@@ -58,6 +58,7 @@ describe('workflow: moving pieces through their steps', () => {
     const as = (token: string) => ({
       post: (path: string, body: object) => http().post(path).set('Authorization', `Bearer ${token}`).send(body),
       put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
+      patch: (path: string, body: object) => http().patch(path).set('Authorization', `Bearer ${token}`).send(body),
       get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
     });
     const ownerClient = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
@@ -300,6 +301,8 @@ describe('workflow: moving pieces through their steps', () => {
     // Plating isn't on a polished piece's path.
     await correct({ to_step: 'plating', comment: 'Wrong tray' }).expect(400);
     await correct({ to_step: 'nowhere', comment: 'Wrong tray' }).expect(400);
+    // Where it already is: nothing to correct.
+    expect(errorPaths(await correct({ to_step: 'polishing', comment: 'Wrong tray' }).expect(400))).toEqual(['work_order_ids.0']);
     expect(await stepOf(tenant, piece)).toBe('polishing');
 
     await correct({ to_step: 'casting_tree', comment: 'Passed the wrong tray' }).expect(200);
@@ -356,6 +359,59 @@ describe('workflow: moving pieces through their steps', () => {
     expect((await tenant.owner.get(`/workflow/work-orders/${newer.id}`).expect(200)).body).toMatchObject({
       path: ['print_pattern', 'casting_tree', 'casting', 'polishing', 'inspection', 'final_qc', 'packing'].map((key) => ({ key })),
     });
+  });
+
+  it("keeps running pieces on their version's path when a step type starts or stops being priced", async () => {
+    const tenant = await freshTenant();
+    const [piece] = await started(tenant, 1);
+    const { workflowId, notPriced } = tenant.setup.workflow;
+
+    // Final QC becomes priced; nothing prices it for this piece, yet its version still runs it.
+    await tenant.owner.patch(`/pricing/step-types/${notPriced.finalQc}`, { summary_group: 'finishing' }).expect(200);
+    expect((await tenant.owner.get(`/workflow/work-orders/${piece.id}`).expect(200)).body).toMatchObject({
+      path: ['print_pattern', 'casting_tree', 'casting', 'polishing', 'final_qc', 'packing'].map((key) => ({ key })),
+    });
+    const version = (await tenant.owner.get(`/workflow/workflows/${workflowId}/versions/1`).expect(200)).body as {
+      steps: { key: string; step_type: { priced: boolean } }[];
+    };
+    expect(version.steps.find((step) => step.key === 'final_qc')?.step_type.priced).toBe(false);
+
+    await toPolishing(tenant, [piece]);
+    await pass(tenant, [piece], 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).expect(200);
+    expect(await stepOf(tenant, piece)).toBe('final_qc');
+    await pass(tenant, [piece], 'final_qc', { answers: [{ item: 'weight', value: '5.0' }], photo_file_version_ids: [await photo(tenant)] }).expect(
+      200,
+    );
+    expect(await stepOf(tenant, piece)).toBe('packing');
+  });
+
+  it("orders a piece's history by move, not by when its transaction began", async () => {
+    const tenant = await freshTenant();
+    const [piece] = await started(tenant, 1);
+    await pass(tenant, [piece], 'print_pattern').expect(200);
+    const steps = await prisma.inTenant(tenant.id, (tx) =>
+      tx.workflowStep.findMany({ where: { key: { in: ['print_pattern', 'casting_tree'] } }, select: { id: true, key: true } }),
+    );
+    const stepId = (key: string) => steps.find((step) => step.key === key)!.id;
+
+    // A move whose transaction began before the pass but waited for the piece's lock: written later, stamped earlier.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.transition.create({
+        data: {
+          id: newId(),
+          workOrderId: piece.id,
+          kind: 'correction',
+          fromStepId: stepId('casting_tree'),
+          toStepId: stepId('print_pattern'),
+          fromStatus: 'active',
+          toStatus: 'active',
+          comment: 'Waited for the lock',
+          actorUserId: tenant.ownerId,
+          createdAt: new Date(Date.now() - 60 * 60_000),
+        },
+      }),
+    );
+    expect((await detail(tenant, piece)).history.map((row) => row.kind)).toEqual(['pass', 'correction']);
   });
 
   it('leaves transitions as they were written, even for the application', async () => {

@@ -89,6 +89,11 @@ export class WorkflowsService {
         throw new NotFoundException('Workflow not found');
       }
       await this.checkReferences(tx, input);
+      const stepTypes = await tx.stepType.findMany({
+        where: { id: { in: input.steps.map((step) => step.step_type_id) } },
+        select: { id: true, summaryGroup: true },
+      });
+      const priced = new Set(stepTypes.filter((type) => type.summaryGroup !== null).map((type) => type.id));
 
       const latest = await tx.workflowVersion.findFirst({ where: { workflowId: id }, orderBy: { number: 'desc' } });
       const version = await tx.workflowVersion.create({
@@ -110,6 +115,7 @@ export class WorkflowsService {
             key: step.key,
             name: step.name,
             stepTypeId: step.step_type_id,
+            priced: priced.has(step.step_type_id),
             config: config as Prisma.InputJsonValue,
             sopFileVersionId: step.sop_file_version_id,
             expectedMinutes: step.expected_minutes,
@@ -253,7 +259,7 @@ function toStep(
     position: step.position,
     key: step.key,
     name: step.name,
-    step_type: { id: step.stepType.id, key: step.stepType.key, name: step.stepType.name, priced: step.stepType.summaryGroup !== null },
+    step_type: { id: step.stepType.id, key: step.stepType.key, name: step.stepType.name, priced: step.priced },
     checklist: config.checklist,
     defects: config.defects.map((defect) => ({
       defect_id: defect.defect_id,

@@ -127,7 +127,9 @@ export async function seedWorkflows(prisma: PrismaService, tenantId: string): Pr
       await tx.stepType.create({ data: { key: step.key, name: step.name, position: step.position, summaryGroup: null } });
       created.stepTypes++;
     }
-    const stepTypeIds = new Map((await tx.stepType.findMany({ select: { id: true, key: true } })).map((row) => [row.key, row.id]));
+    const stepTypes = await tx.stepType.findMany({ select: { id: true, key: true, summaryGroup: true } });
+    const stepTypeIds = new Map(stepTypes.map((row) => [row.key, row.id]));
+    const priced = new Set(stepTypes.filter((row) => row.summaryGroup !== null).map((row) => row.id));
 
     for (const [categoryKey, workflow] of Object.entries(WORKFLOWS)) {
       const category = await tx.category.findFirst({ where: { key: categoryKey } });
@@ -162,6 +164,7 @@ export async function seedWorkflows(prisma: PrismaService, tenantId: string): Pr
             key: step.key,
             name: step.name,
             stepTypeId: step.step_type_id,
+            priced: priced.has(step.step_type_id),
             config: config as Prisma.InputJsonValue,
             expectedMinutes: step.expected_minutes,
           };

@@ -1115,6 +1115,9 @@ model WorkflowStep {
   key              String
   name             String
   stepTypeId       String   @map("step_type_id") @db.Uuid
+  // Whether the step type was priced when this version was made. Paths read this, never the step type,
+  // so changing a step type later can't reroute pieces already running on the version.
+  priced           Boolean
   config           Json
   sopFileVersionId String?  @map("sop_file_version_id") @db.Uuid
   expectedMinutes  Decimal? @map("expected_minutes") @db.Decimal(9, 2)
