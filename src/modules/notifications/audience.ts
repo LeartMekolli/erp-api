@@ -32,7 +32,9 @@ export async function resolveAudience(
       const invitation =
         notification.subjectType === 'customer_invitation'
           ? await tx.customerInvitation.findFirst(where)
-          : await tx.invitation.findFirst(where);
+          : notification.subjectType === 'partner_invitation'
+            ? await tx.partnerInvitation.findFirst(where)
+            : await tx.invitation.findFirst(where);
       if (invitation) {
         targets.push({ email: invitation.email, locale: tenant.defaultLocale });
       }

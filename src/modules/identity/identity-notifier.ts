@@ -24,6 +24,14 @@ export interface CustomerInvitationNotice {
   token: string;
 }
 
+export interface PartnerInvitationNotice {
+  tenantId: string;
+  invitationId: string;
+  email: string;
+  partnerName: string;
+  token: string;
+}
+
 /**
  * How identity emails leave the system (plan 2, P8). Callers say what
  * happened; they never choose a recipient address, template or link (D68,
@@ -35,6 +43,7 @@ export interface IdentityNotifier {
   invitationCreated(notice: InvitationNotice): Promise<void>;
   passwordResetRequested(notice: PasswordResetNotice): Promise<void>;
   customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void>;
+  partnerInvitationCreated(notice: PartnerInvitationNotice): Promise<void>;
 }
 
 export const IDENTITY_NOTIFIER = Symbol('IDENTITY_NOTIFIER');

@@ -69,6 +69,7 @@ model Tenant {
   transitionAnswers TransitionAnswer[]
   transitionPhotos TransitionPhoto[]
   partners        Partner[]
+  partnerInvitations PartnerInvitation[]
 
   @@map("tenant")
 }
@@ -101,7 +102,7 @@ model User {
   name         String
   status       String   @default("active")
   locale       String
-  // staff | customer: a customer person holds customer memberships, never workspace roles
+  // staff | customer | partner: customer and partner people hold memberships of their own kind, never workspace roles
   kind         String   @default("staff")
   createdAt    DateTime @default(now()) @map("created_at")
 
@@ -1293,10 +1294,35 @@ model Partner {
   agreementSignedOn       DateTime? @map("agreement_signed_on") @db.Date
   createdAt               DateTime  @default(now()) @map("created_at")
 
-  tenant           Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agreementVersion FileVersion? @relation(fields: [tenantId, agreementFileVersionId], references: [tenantId, id], onDelete: NoAction)
+  tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agreementVersion FileVersion?        @relation(fields: [tenantId, agreementFileVersionId], references: [tenantId, id], onDelete: NoAction)
+  invitations      PartnerInvitation[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
   @@map("partner")
+}
+
+// An invitation to act for a partner with a role. Accepting creates the partner person, or adds a
+// membership when the email already belongs to one (Partners spec, goal 1).
+model PartnerInvitation {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  partnerId       String    @map("partner_id") @db.Uuid
+  // Lowercased.
+  email           String
+  // owner | admin | member
+  role            String
+  tokenHash       String    @unique @map("token_hash")
+  // A staff user or a partner person.
+  invitedByUserId String?   @map("invited_by_user_id") @db.Uuid
+  expiresAt       DateTime  @map("expires_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner Partner @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, partnerId, email])
+  @@map("partner_invitation")
 }

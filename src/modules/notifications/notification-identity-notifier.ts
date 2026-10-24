@@ -5,6 +5,7 @@ import type {
   CustomerInvitationNotice,
   IdentityNotifier,
   InvitationNotice,
+  PartnerInvitationNotice,
   PasswordResetNotice,
 } from '../identity/identity-notifier';
 import { NotificationsService } from './notifications.service';
@@ -60,6 +61,21 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
         tenant_name: tenant.name,
         customer_name: notice.customerName,
         link: this.link(tenant, true, '/accept-invitation', notice.token),
+      },
+    );
+  }
+
+  /** Partner people work in the web app, as staff do, until a partner site exists. */
+  async partnerInvitationCreated(notice: PartnerInvitationNotice): Promise<void> {
+    const tenant = await this.tenant(notice.tenantId);
+    await this.notifications.raise(
+      notice.tenantId,
+      'partner.invited',
+      { type: 'partner_invitation', id: notice.invitationId },
+      {
+        tenant_name: tenant.name,
+        partner_name: notice.partnerName,
+        link: this.link(tenant, false, '/accept-invitation', notice.token),
       },
     );
   }

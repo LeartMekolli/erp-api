@@ -103,6 +103,10 @@ function accessLine(marker: RouteMarker | undefined): string {
       return `Access: permission \`${marker.permission}\`.`;
     case 'customer':
       return `Access: a person acting for the customer, at least \`${marker.role}\`.`;
+    case 'partner':
+      return `Access: a person acting for the partner, at least \`${marker.role}\`; a suspended partner only reads.`;
+    case 'partner_person':
+      return 'Access: any partner person.';
     default:
       return 'Access: refused (the route has no access marker).';
   }
@@ -115,6 +119,8 @@ function isTenantPost(route: DocumentedRoute): boolean {
   return (
     marker?.kind === 'authenticated' ||
     marker?.kind === 'customer' ||
+    marker?.kind === 'partner' ||
+    marker?.kind === 'partner_person' ||
     (marker?.kind === 'permission' && !marker.permission.startsWith('platform.'))
   );
 }

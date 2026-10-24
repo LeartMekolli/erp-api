@@ -7,8 +7,14 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { partnerResponseSchema } from './partner-response';
-import type { PartnerResponse } from './partner-response';
+import { PartnerInvitationsService, invitePartnerPersonSchema } from './partner-invitations.service';
+import { PartnerMembersService } from './partner-members.service';
+import {
+  partnerInvitationResponseSchema,
+  partnerMembersResponseSchema,
+  partnerResponseSchema,
+} from './partner-response';
+import type { PartnerInvitationResponse, PartnerMemberResponse, PartnerResponse } from './partner-response';
 import {
   PartnersService,
   agreementSchema,
@@ -23,7 +29,11 @@ const idParam = new ZodValidationPipe(z.uuid());
 /** Partner workshops, managed by staff (Partners spec, goals 2 and 3). */
 @Controller('partners')
 export class PartnersController {
-  constructor(private readonly partners: PartnersService) {}
+  constructor(
+    private readonly partners: PartnersService,
+    private readonly invitations: PartnerInvitationsService,
+    private readonly members: PartnerMembersService,
+  ) {}
 
   @ApiDoc({
     summary: 'Add a partner workshop; it starts being set up and is offered no jobs until approved.',
@@ -118,5 +128,35 @@ export class PartnersController {
   @HttpCode(200)
   suspend(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<PartnerResponse> {
     return this.partners.suspend(auth, id);
+  }
+
+  @ApiDoc({
+    summary: 'Invite someone by email to act for the partner, with the role they get on accepting.',
+    description:
+      "The token goes only to the invitee's inbox. Someone who already acts for another partner of the workspace accepts without a new password. " +
+      'Refused with 409 for a staff or customer email, someone already acting for the partner, or a second owner.',
+    body: invitePartnerPersonSchema,
+    response: partnerInvitationResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('partner.write')
+  @Post(':id/invitations')
+  invite(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(invitePartnerPersonSchema)) body: z.infer<typeof invitePartnerPersonSchema>,
+  ): Promise<PartnerInvitationResponse> {
+    return this.invitations.invite(auth.tenantId, id, { email: body.email, role: body.role, invitedByUserId: auth.userId });
+  }
+
+  @ApiDoc({
+    summary: "The partner's people and their roles, in the order they joined.",
+    response: partnerMembersResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('partner.read')
+  @Get(':id/members')
+  listMembers(@CurrentTenant() tenantId: string, @Param('id', idParam) id: string): Promise<{ data: PartnerMemberResponse[] }> {
+    return this.members.list(tenantId, id);
   }
 }

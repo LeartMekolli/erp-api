@@ -21,6 +21,7 @@ export type AuditAction =
   | 'workspace.customer_site_changed'
   | 'workflow.changed'
   | 'partner.changed'
+  | 'partner.member_changed'
   | 'partner.job';
 
 export interface AuditInput {

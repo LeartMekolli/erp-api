@@ -16,8 +16,8 @@ function invalidInvitation(): BadRequestException {
   return new BadRequestException('Invitation is invalid or expired');
 }
 
-function staffEmail(): ConflictException {
-  return new ConflictException('This email belongs to a staff user');
+function otherKindEmail(): ConflictException {
+  return new ConflictException('This email belongs to a staff user or a partner person');
 }
 
 /** Whether the customer already has an owner; call with the customer row locked. */
@@ -46,8 +46,8 @@ export class CustomerInvitationsService {
   ) {}
 
   /**
-   * Refuses an email that belongs to staff (a user is staff or a customer
-   * person, never both), someone already acting for the customer, and a second
+   * Refuses an email that belongs to staff or a partner person (a user is
+   * one kind, never two), someone already acting for the customer, and a second
    * owner. Earlier pending invitations for the same email and customer are
    * expired, so only the newest link works. The token goes to the notifier,
    * after commit, never into the response (D78).
@@ -61,8 +61,8 @@ export class CustomerInvitationsService {
       const customer = await lockCustomer(tx, customerId);
 
       const existing = await tx.user.findFirst({ where: { email: input.email }, select: { id: true, kind: true } });
-      if (existing?.kind === 'staff') {
-        throw staffEmail();
+      if (existing && existing.kind !== 'customer') {
+        throw otherKindEmail();
       }
       if (existing && (await this.isMember(tx, existing.id, customerId))) {
         throw new ConflictException('This person already acts for the customer');
@@ -169,8 +169,8 @@ export class CustomerInvitationsService {
         }
 
         let user = await tx.user.findFirst({ where: { email: invitation.email }, select: { id: true, kind: true } });
-        if (user?.kind === 'staff') {
-          throw staffEmail();
+        if (user && user.kind !== 'customer') {
+          throw otherKindEmail();
         }
         if (user && (await this.isMember(tx, user.id, invitation.customerId))) {
           throw new ConflictException('This person already acts for the customer');

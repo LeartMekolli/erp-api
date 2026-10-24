@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import type { IncomingMessage } from 'node:http';
 import type { CustomerRole } from '../customers/customer-roles';
+import type { PartnerRole } from '../partners/partner-roles';
 import type { PlatformPermission, TenantPermission } from './permissions';
 
 export interface TenantAuth {
@@ -35,6 +36,14 @@ export interface CustomerAuth {
   role: CustomerRole;
 }
 
+/** A partner person acting for one partner, set by the guard on `PartnerAccess` routes. */
+export interface PartnerAuth {
+  tenantId: string;
+  userId: string;
+  partnerId: string;
+  role: PartnerRole;
+}
+
 /** Set by the guard, read by the decorators below. */
 const authByRequest = new WeakMap<IncomingMessage, AuthContext>();
 
@@ -46,6 +55,12 @@ const customerAuthByRequest = new WeakMap<IncomingMessage, CustomerAuth>();
 
 export function setCustomerAuth(request: IncomingMessage, auth: CustomerAuth): void {
   customerAuthByRequest.set(request, auth);
+}
+
+const partnerAuthByRequest = new WeakMap<IncomingMessage, PartnerAuth>();
+
+export function setPartnerAuth(request: IncomingMessage, auth: PartnerAuth): void {
+  partnerAuthByRequest.set(request, auth);
 }
 
 /** The verified caller, if the guard authenticated this request. */
@@ -102,6 +117,16 @@ export const CurrentCustomer = createParamDecorator((_data: unknown, context: Ex
   if (!auth) {
     // Only reachable on a route without the CustomerAccess marker.
     throw new ForbiddenException('This route acts for a customer');
+  }
+  return auth;
+});
+
+/** The partner the caller acts for, on a `PartnerAccess` route only. */
+export const CurrentPartner = createParamDecorator((_data: unknown, context: ExecutionContext) => {
+  const auth = partnerAuthByRequest.get(context.switchToHttp().getRequest<IncomingMessage>());
+  if (!auth) {
+    // Only reachable on a route without the PartnerAccess marker.
+    throw new ForbiddenException('This route acts for a partner');
   }
   return auth;
 });

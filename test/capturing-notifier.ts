@@ -2,6 +2,7 @@ import type {
   CustomerInvitationNotice,
   IdentityNotifier,
   InvitationNotice,
+  PartnerInvitationNotice,
   PasswordResetNotice,
 } from '../src/modules/identity/identity-notifier';
 
@@ -10,6 +11,7 @@ export class CapturingIdentityNotifier implements IdentityNotifier {
   readonly invitations: InvitationNotice[] = [];
   readonly passwordResets: PasswordResetNotice[] = [];
   readonly customerInvitations: CustomerInvitationNotice[] = [];
+  readonly partnerInvitations: PartnerInvitationNotice[] = [];
 
   invitationCreated(notice: InvitationNotice): Promise<void> {
     this.invitations.push(notice);
@@ -24,6 +26,15 @@ export class CapturingIdentityNotifier implements IdentityNotifier {
   customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void> {
     this.customerInvitations.push(notice);
     return Promise.resolve();
+  }
+
+  partnerInvitationCreated(notice: PartnerInvitationNotice): Promise<void> {
+    this.partnerInvitations.push(notice);
+    return Promise.resolve();
+  }
+
+  lastPartnerInvitationFor(email: string): PartnerInvitationNotice | undefined {
+    return this.partnerInvitations.filter((notice) => notice.email === email).at(-1);
   }
 
   lastCustomerInvitationFor(email: string): CustomerInvitationNotice | undefined {

@@ -5,7 +5,7 @@ import { GOOGLE_TOKEN_VERIFIER, GoogleTokenVerifier } from './google-token-verif
 
 /**
  * Google ID token checks, shared by sign-in (Auth) and accepting a customer
- * invitation (Customers), which Auth already imports.
+ * or partner invitation (Customers, Partners), which Auth already imports.
  */
 @Module({
   imports: [SettingsModule],

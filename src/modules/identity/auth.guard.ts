@@ -15,7 +15,9 @@ import { PrismaService } from '../../database/prisma.service';
 import { AccessClaims, AccessTokenService } from './access-token.service';
 import { CUSTOMER_ROLES, atLeast } from '../customers/customer-roles';
 import type { CustomerRole } from '../customers/customer-roles';
-import { AuthContext, PlatformAuth, TenantAuth, setAuth, setCustomerAuth } from './auth-context';
+import { PARTNER_ROLES, atLeast as atLeastPartner } from '../partners/partner-roles';
+import type { PartnerRole } from '../partners/partner-roles';
+import { AuthContext, PlatformAuth, TenantAuth, setAuth, setCustomerAuth, setPartnerAuth } from './auth-context';
 import { PLATFORM_PERMISSIONS, TenantPermission, isTenantPermission } from './permissions';
 import { ROUTE_MARKER, RouteMarker } from './route-markers';
 
@@ -74,8 +76,63 @@ export class AuthGuard implements CanActivate {
     if (marker.kind === 'customer') {
       await this.customerAuth(request, auth, marker.role);
     }
+    if (marker.kind === 'partner_person') {
+      await this.requirePartnerPerson(auth);
+    }
+    if (marker.kind === 'partner') {
+      await this.partnerAuth(request, auth, marker.role);
+    }
 
     return true;
+  }
+
+  /** Staff, customer people and platform admins are all refused. */
+  private async requirePartnerPerson(auth: AuthContext): Promise<TenantAuth> {
+    if (auth.scope !== 'tenant') {
+      throw new ForbiddenException('This route is for partner people');
+    }
+    const user = await this.prisma.inTenant(auth.tenantId, (tx) =>
+      tx.user.findUnique({ where: { id: auth.userId }, select: { kind: true } }),
+    );
+    if (user?.kind !== 'partner') {
+      throw new ForbiddenException('This route is for partner people');
+    }
+    return auth;
+  }
+
+  /**
+   * As `customerAuth`, for a partner person acting for the route's partner.
+   * Another partner's id and a removed membership look the same: not found.
+   * A suspended partner reads only (GET and HEAD); anything else is refused.
+   */
+  private async partnerAuth(request: Request, auth: AuthContext, required: PartnerRole): Promise<void> {
+    const { tenantId, userId } = await this.requirePartnerPerson(auth);
+    const partnerId = z.uuid().safeParse(request.params.partnerId);
+    if (!partnerId.success) {
+      throw new BadRequestException('partnerId must be a UUID');
+    }
+
+    const found = await this.prisma.inTenant(tenantId, async (tx) => {
+      const membership = await tx.organisationMembership.findFirst({
+        where: { userId, organisationType: 'partner', organisationId: partnerId.data },
+        select: { role: true },
+      });
+      const partner = await tx.partner.findUnique({ where: { id: partnerId.data }, select: { status: true } });
+      return { role: membership?.role, status: partner?.status };
+    });
+
+    const role = PARTNER_ROLES.find((known) => known === found.role);
+    if (!role || !found.status) {
+      throw new NotFoundException('Partner not found');
+    }
+    if (!atLeastPartner(role, required)) {
+      throw new ForbiddenException();
+    }
+    if (found.status === 'suspended' && !['GET', 'HEAD'].includes(request.method)) {
+      throw new ForbiddenException('The partner is suspended: it can read, but not change anything');
+    }
+
+    setPartnerAuth(request, { tenantId, userId, partnerId: partnerId.data, role });
   }
 
   /**
@@ -138,7 +195,7 @@ export class AuthGuard implements CanActivate {
     }
 
     const permissions = new Set<TenantPermission>();
-    // A customer person holds no workspace permissions, whatever roles a row may claim.
+    // Customer and partner people hold no workspace permissions, whatever roles a row may claim.
     for (const { role } of user.kind === 'staff' ? user.roles : []) {
       for (const { permission } of role.permissions) {
         // A key removed from the code constant stops granting anything.

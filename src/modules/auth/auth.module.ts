@@ -4,6 +4,7 @@ import { AuditModule } from '../audit/audit.module';
 import { CustomersModule } from '../customers/customers.module';
 import { IdentityNotifierModule } from '../identity/identity-notifier';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PartnersModule } from '../partners/partners.module';
 import { IdentityModule } from '../identity/identity.module';
 import { AuthController } from './auth.controller';
 import { GoogleSignInService } from './google-sign-in.service';
@@ -20,6 +21,7 @@ import { SessionService } from './session.service';
     AuditModule,
     RateLimitModule,
     CustomersModule,
+    PartnersModule,
     GoogleModule,
   ],
   controllers: [AuthController],
