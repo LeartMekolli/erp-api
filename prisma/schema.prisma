@@ -65,6 +65,9 @@ model Tenant {
   workflowSteps   WorkflowStep[]
   workOrderGroups WorkOrderGroup[]
   workOrders      WorkOrder[]
+  transitions     Transition[]
+  transitionAnswers TransitionAnswer[]
+  transitionPhotos TransitionPhoto[]
 
   @@map("tenant")
 }
@@ -110,6 +113,7 @@ model User {
   files          File[]
   fileVersions   FileVersion[]
   externalIdentities ExternalIdentity[]
+  transitions    Transition[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -476,6 +480,7 @@ model FileVersion {
   products   Product[]
   sopForSteps WorkflowStep[]
   workOrderGroups WorkOrderGroup[]
+  transitionPhotos TransitionPhoto[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -1052,7 +1057,8 @@ model Defect {
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transitions Transition[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1118,6 +1124,8 @@ model WorkflowStep {
   stepType       StepType        @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: NoAction)
   sopFileVersion FileVersion?    @relation(fields: [tenantId, sopFileVersionId], references: [tenantId, id], onDelete: NoAction)
   workOrders     WorkOrder[]
+  transitionsFrom Transition[] @relation("TransitionFrom")
+  transitionsTo   Transition[] @relation("TransitionTo")
 
   @@unique([versionId, key])
   @@unique([versionId, position])
@@ -1176,10 +1184,87 @@ model WorkOrder {
   replaces    WorkOrder?     @relation("Replacement", fields: [tenantId, replacesId], references: [tenantId, id], onDelete: NoAction)
   // Several only when a restored piece is scrapped again; at most one is ever active.
   replacements WorkOrder[]   @relation("Replacement")
+  transitions  Transition[]
 
   @@unique([tenantId, id])
   @@index([tenantId, replacesId])
   @@index([tenantId, currentStepId])
   @@index([groupId, number])
   @@map("work_order")
+}
+
+// One move of one piece (D37, ADR 0003): append-only, written only by the move command. The from-step
+// and from-status are read from the piece, never sent by the client (D35). A correction is a new row.
+model Transition {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  workOrderId    String   @map("work_order_id") @db.Uuid
+  // pass | fail | correction
+  kind           String
+  // rework | scrap | continue on a fail; null otherwise
+  outcome        String?
+  // Null when the piece wasn't at a step (finished, scrapped) or didn't land on one.
+  fromStepId     String?  @map("from_step_id") @db.Uuid
+  toStepId       String?  @map("to_step_id") @db.Uuid
+  fromStatus     String   @map("from_status")
+  toStatus       String   @map("to_status")
+  defectId       String?  @map("defect_id") @db.Uuid
+  // Why the defect's default outcome or rework target was not followed (D38).
+  overrideReason String?  @map("override_reason")
+  comment        String?
+  actorUserId    String   @map("actor_user_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // NoAction: a piece with history can't be deleted; only deleting the workspace removes both.
+  workOrder WorkOrder        @relation(fields: [tenantId, workOrderId], references: [tenantId, id], onDelete: NoAction)
+  fromStep  WorkflowStep?    @relation("TransitionFrom", fields: [tenantId, fromStepId], references: [tenantId, id], onDelete: NoAction)
+  toStep    WorkflowStep?    @relation("TransitionTo", fields: [tenantId, toStepId], references: [tenantId, id], onDelete: NoAction)
+  defect    Defect?          @relation(fields: [tenantId, defectId], references: [tenantId, id], onDelete: NoAction)
+  actor     User             @relation(fields: [tenantId, actorUserId], references: [tenantId, id], onDelete: NoAction)
+  answers   TransitionAnswer[]
+  photos    TransitionPhoto[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, workOrderId, id])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, fromStepId])
+  @@index([tenantId, toStepId])
+  @@index([tenantId, defectId])
+  @@index([tenantId, actorUserId])
+  @@map("transition")
+}
+
+// A checklist answer given with a move, as it was given: one row per item and transition.
+model TransitionAnswer {
+  id           String  @id @default(uuid(7)) @db.Uuid
+  tenantId     String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  transitionId String  @map("transition_id") @db.Uuid
+  itemKey      String  @map("item_key")
+  // A choice's option key, a decimal, text, or true/false for a yes/no question.
+  value        String
+  note         String?
+  // Whether the answer met the item's check when it was given.
+  passing      Boolean
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transition Transition @relation(fields: [tenantId, transitionId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, transitionId])
+  @@map("transition_answer")
+}
+
+model TransitionPhoto {
+  id            String @id @default(uuid(7)) @db.Uuid
+  tenantId      String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  transitionId  String @map("transition_id") @db.Uuid
+  fileVersionId String @map("file_version_id") @db.Uuid
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  transition  Transition  @relation(fields: [tenantId, transitionId], references: [tenantId, id], onDelete: Cascade)
+  fileVersion FileVersion @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
+
+  @@index([tenantId, transitionId])
+  @@index([tenantId, fileVersionId])
+  @@map("transition_photo")
 }

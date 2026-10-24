@@ -74,6 +74,15 @@ describe('append-only tables', () => {
     expect(rows).toEqual([{ note: 'first' }]);
   });
 
+  it('protects the workflow transition tables, even from the owner', async () => {
+    for (const table of ['transition', 'transition_answer', 'transition_photo']) {
+      await expect(owner.$executeRawUnsafe(`UPDATE ${table} SET id = id`)).rejects.toThrow(/append-only/i);
+      await expect(owner.$executeRawUnsafe(`DELETE FROM ${table}`)).rejects.toThrow(/append-only/i);
+      // Postgres refuses to truncate `transition` before the trigger runs: its answers and photos point at it.
+      await expect(owner.$executeRawUnsafe(`TRUNCATE ${table}`)).rejects.toThrow(/append-only|referenced in a foreign key/i);
+    }
+  });
+
   it('can be applied twice without failing', async () => {
     await expect(
       owner.$executeRawUnsafe(`SELECT make_append_only('append_only_fixture')`),

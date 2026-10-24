@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { pageSchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
@@ -7,8 +7,15 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { groupResponseSchema, workOrderDetailResponseSchema, workOrderResponseSchema } from './work-order-response';
-import type { GroupResponse, WorkOrderDetailResponse, WorkOrderResponse } from './work-order-response';
+import { MAX_PHOTOS_PER_MOVE, MAX_PIECES_PER_MOVE, MovesService, moveSchema } from './moves.service';
+import type { MoveBody } from './moves.service';
+import {
+  groupResponseSchema,
+  moveResponseSchema,
+  workOrderDetailResponseSchema,
+  workOrderResponseSchema,
+} from './work-order-response';
+import type { GroupResponse, MoveResponse, WorkOrderDetailResponse, WorkOrderResponse } from './work-order-response';
 import { MAX_PIECES, WorkOrdersService, startGroupSchema, workOrderQuerySchema } from './work-orders.service';
 import type { WorkOrderQuery } from './work-orders.service';
 
@@ -17,7 +24,10 @@ const idSchema = z.uuid();
 /** Starting pieces and reading where they are (Workflow/QC spec, goals 4 and 9). */
 @Controller('workflow')
 export class WorkOrdersController {
-  constructor(private readonly workOrders: WorkOrdersService) {}
+  constructor(
+    private readonly workOrders: WorkOrdersService,
+    private readonly moves: MovesService,
+  ) {}
 
   @ApiDoc({
     summary: "Start production for a saved quote: one work order per piece, at the first step of its product's workflow.",
@@ -65,7 +75,28 @@ export class WorkOrdersController {
   }
 
   @ApiDoc({
-    summary: 'One piece, its path, and the instructions for its current step.',
+    summary: 'Pass, fail or correct pieces at once, each writing a permanent transition with the same answers and photos.',
+    description:
+      `Pass and fail name \`at_step\`, the step every piece must be at; a piece elsewhere, finished, on another ` +
+      `workflow version or already moved by someone else is a 409 naming it, and nothing moves. A pass needs every ` +
+      `required answer passing plus the step's pass photos and comment; a fail needs a defect the step records and ` +
+      `its fail evidence, and follows the defect's outcome unless \`outcome\` or \`rework_to\` overrides it with ` +
+      `\`override_reason\`. A correction puts the pieces at \`to_step\` of their path, reopening finished ones, and ` +
+      `needs a comment. Gate problems are a 400 listing each one. At most ${MAX_PIECES_PER_MOVE} pieces and ` +
+      `${MAX_PHOTOS_PER_MOVE} photos per move.`,
+    body: moveSchema,
+    response: moveResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('workflow.move')
+  @Post('moves')
+  @HttpCode(200)
+  move(@CurrentUser() auth: TenantAuth, @Body(new ZodValidationPipe(moveSchema)) body: MoveBody): Promise<MoveResponse> {
+    return this.moves.move(auth, body);
+  }
+
+  @ApiDoc({
+    summary: 'One piece, its path, the instructions for its current step, and every move it has made.',
     response: workOrderDetailResponseSchema,
     errors: [400, 404],
   })

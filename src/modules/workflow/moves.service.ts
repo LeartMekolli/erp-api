@@ -1,0 +1,290 @@
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { z } from 'zod';
+import { newId } from '../../common/ids/uuid';
+import { PrismaService } from '../../database/prisma.service';
+import { Prisma } from '../../generated/prisma/client';
+import type { TenantAuth } from '../identity/auth-context';
+import { keySchema } from '../pricing/decimals';
+import type { WorkflowStepRow } from './coverage';
+import { pathFor } from './path';
+import { MAX_TEXT, MOVE_KINDS, checkMove, judge } from './qc-gate';
+import type { GateStep, MoveProblem } from './qc-gate';
+import type { MoveResponse, WorkOrderStatus } from './work-order-response';
+import { OUTCOMES } from './workflow-config';
+import type { Outcome, StepConfig } from './workflow-config';
+import { chainOf, pieceInclude, stepsForPath, toWorkOrder } from './work-orders.service';
+
+/** Limits per move (Workflow/QC plan). */
+export const MAX_PIECES_PER_MOVE = 1_000;
+export const MAX_PHOTOS_PER_MOVE = 20;
+
+/** Photos a move may attach: uploaded, whether or not measuring has finished. */
+const ATTACHABLE = ['uploaded', 'measuring', 'measured'];
+
+const unique = (values: string[]) => new Set(values).size === values.length;
+const text = z.string().trim().max(MAX_TEXT);
+
+export const moveSchema = z
+  .strictObject({
+    work_order_ids: z.array(z.uuid()).min(1).max(MAX_PIECES_PER_MOVE).refine(unique, 'a piece must not repeat'),
+    kind: z.enum(MOVE_KINDS),
+    /** Pass and fail: the step the pieces are at. A piece that has moved on since is a 409. */
+    at_step: keySchema.optional(),
+    /** Correction: the step of the piece's path to put it at. */
+    to_step: keySchema.optional(),
+    answers: z
+      .array(z.strictObject({ item: keySchema, value: z.union([z.string().max(MAX_TEXT), z.boolean()]), note: text.min(1).optional() }))
+      .max(50)
+      .optional(),
+    defect_id: z.uuid().optional(),
+    /** Fail: overrides the defect's default outcome, with `override_reason`. */
+    outcome: z.enum(OUTCOMES).optional(),
+    /** Fail with rework: overrides the defect's default target, with `override_reason`. */
+    rework_to: keySchema.optional(),
+    override_reason: text.min(1).optional(),
+    comment: text.optional(),
+    photo_file_version_ids: z.array(z.uuid()).max(MAX_PHOTOS_PER_MOVE).refine(unique, 'a photo must not repeat').optional(),
+  })
+  .superRefine((move, context) => {
+    const refuse = (path: string, message: string) => context.addIssue({ code: 'custom', path: [path], message });
+    const correction = move.kind === 'correction';
+    if (correction && move.to_step === undefined) {
+      refuse('to_step', 'a correction names the step to put the pieces at');
+    }
+    if (correction && move.at_step !== undefined) {
+      refuse('at_step', 'a correction names to_step instead');
+    }
+    if (!correction && move.at_step === undefined) {
+      refuse('at_step', 'a pass or fail names the step the pieces are at');
+    }
+    if (!correction && move.to_step !== undefined) {
+      refuse('to_step', 'only a correction names to_step');
+    }
+    for (const field of ['defect_id', 'outcome', 'rework_to', 'override_reason'] as const) {
+      if (move.kind !== 'fail' && move[field] !== undefined) {
+        refuse(field, 'only a fail takes this');
+      }
+    }
+  });
+export type MoveBody = z.infer<typeof moveSchema>;
+
+/** A correction checks only its comment, so it is gated against a step with no checks. */
+const NO_CHECKS: GateStep = {
+  checklist: [],
+  defects: [],
+  pass: { min_photos: 0, comment_required: false },
+  fail: { min_photos: 0, comment_required: false },
+};
+
+interface Landing {
+  stepId: string | null;
+  status: WorkOrderStatus;
+}
+
+/** The move command (Workflow/QC spec, goals 5 and 6): the only writer of transitions. */
+@Injectable()
+export class MovesService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async move(auth: TenantAuth, body: MoveBody): Promise<MoveResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const ids = body.work_order_ids;
+      // In id order, so two moves sharing pieces can't deadlock; the second sees where the first left them.
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM work_order WHERE id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR UPDATE`;
+      if (locked.length !== ids.length) {
+        throw new NotFoundException('Work order not found');
+      }
+      const rows = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: { ...pieceInclude, group: true } });
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const pieces = ids.map((id) => byId.get(id)!);
+      const label = (piece: (typeof pieces)[number]) => `${piece.number}/${piece.group.quantity}`;
+
+      // Every piece moves the same way, so all must stand where the move expects (Review Focus 2).
+      const versionId = pieces[0].group.workflowVersionId;
+      const blocker = (piece: (typeof pieces)[number]): string | null => {
+        if (piece.group.workflowVersionId !== versionId) {
+          return `runs on another version of the workflow than ${label(pieces[0])}`;
+        }
+        // A correction may reopen a finished piece; scrapped pieces come back through their own rule.
+        const movable = body.kind === 'correction' ? ['active', 'finished'] : ['active'];
+        if (!movable.includes(piece.status)) {
+          return `is ${piece.status}`;
+        }
+        if (body.kind !== 'correction' && piece.currentStep?.key !== body.at_step) {
+          return `is at ${piece.currentStep!.key}, not ${body.at_step!}`;
+        }
+        return null;
+      };
+      const mismatched: MoveProblem[] = [];
+      pieces.forEach((piece, index) => {
+        const reason = blocker(piece);
+        if (reason) {
+          mismatched.push({ path: `work_order_ids.${index}`, message: `${label(piece)} ${reason}` });
+        }
+      });
+      if (mismatched.length > 0) {
+        throw new ConflictException({ message: 'Some pieces cannot make this move', errors: mismatched });
+      }
+
+      const steps = await tx.workflowStep.findMany({ where: { versionId }, include: { stepType: true }, orderBy: { position: 'asc' } });
+      const stepByKey = new Map(steps.map((step) => [step.key, step]));
+      const here = body.kind === 'correction' ? undefined : stepByKey.get(body.at_step!)!;
+      const config = here ? (here.config as StepConfig) : undefined;
+
+      const problems = checkMove(config ?? NO_CHECKS, body);
+      if (problems.length > 0) {
+        throw new BadRequestException({ message: 'The move does not pass the QC gate', errors: problems });
+      }
+
+      const photoIds = body.photo_file_version_ids ?? [];
+      if (photoIds.length > 0) {
+        const found = await tx.fileVersion.count({ where: { id: { in: photoIds }, status: { in: ATTACHABLE } } });
+        if (found !== photoIds.length) {
+          throw new NotFoundException('Photo not found');
+        }
+      }
+
+      const fail = body.kind === 'fail' ? this.failRoute(config!, body) : undefined;
+
+      // Each group's path, from the steps the version shares.
+      const paths = new Map<string, string[]>();
+      const pathOf = (piece: (typeof pieces)[number]) => {
+        if (!paths.has(piece.groupId)) {
+          paths.set(piece.groupId, pathFor(stepsForPath(steps), chainOf(piece.group)));
+        }
+        return paths.get(piece.groupId)!;
+      };
+      const landings = pieces.map((piece, index) => this.landing(body, fail, steps, pathOf(piece), piece.currentStepId, index));
+      const refusals = landings.filter((landing): landing is MoveProblem => 'path' in landing);
+      if (refusals.length > 0) {
+        throw new BadRequestException({ message: 'Some pieces cannot go there', errors: refusals });
+      }
+
+      await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[]);
+
+      const moved = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: pieceInclude });
+      const movedById = new Map(moved.map((row) => [row.id, row]));
+      return { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) };
+    });
+  }
+
+  /** What a fail does: the defect's default outcome and target, or an override with a reason (D38). */
+  private failRoute(config: StepConfig, body: MoveBody): { outcome: Outcome; reworkTo: string | null } {
+    const defect = config.defects.find((candidate) => candidate.defect_id === body.defect_id)!;
+    const outcome = body.outcome ?? defect.outcome;
+    if (outcome !== 'rework' && body.rework_to !== undefined) {
+      throw new BadRequestException({ message: 'Only a rework goes back to a step', errors: [{ path: 'rework_to', message: 'only a rework takes this' }] });
+    }
+    const reworkTo = outcome === 'rework' ? (body.rework_to ?? defect.rework_to ?? null) : null;
+    if (outcome === 'rework' && reworkTo === null) {
+      throw new BadRequestException({ message: 'A rework names the step to go back to', errors: [{ path: 'rework_to', message: 'required for a rework' }] });
+    }
+    if (reworkTo !== null && !config.rework_targets.includes(reworkTo)) {
+      throw new BadRequestException({
+        message: `${reworkTo} is not a step this one sends pieces back to`,
+        errors: [{ path: 'rework_to', message: `not one of ${config.rework_targets.join(', ') || 'no steps'}` }],
+      });
+    }
+    const overridden = outcome !== defect.outcome || (outcome === 'rework' && reworkTo !== defect.rework_to);
+    if (overridden && body.override_reason === undefined) {
+      throw new BadRequestException({
+        message: "Not following the defect's default needs a reason",
+        errors: [{ path: 'override_reason', message: 'required when the outcome or rework target is overridden' }],
+      });
+    }
+    if (!overridden && body.override_reason !== undefined) {
+      throw new BadRequestException({
+        message: "The move follows the defect's default, so there is nothing to give a reason for",
+        errors: [{ path: 'override_reason', message: 'only with an overridden outcome or rework target' }],
+      });
+    }
+    return { outcome, reworkTo };
+  }
+
+  /** Where one piece lands, or why it can't: its next step, its rework target, or the corrected step. */
+  private landing(
+    body: MoveBody,
+    fail: { outcome: Outcome; reworkTo: string | null } | undefined,
+    steps: WorkflowStepRow[],
+    path: string[],
+    currentStepId: string | null,
+    index: number,
+  ): Landing | MoveProblem {
+    const onPath = (key: string, field: string): Landing | MoveProblem => {
+      const step = steps.find((candidate) => candidate.key === key);
+      return step && path.includes(step.id)
+        ? { stepId: step.id, status: 'active' }
+        : { path: field, message: `${key} is not on the path of the piece at work_order_ids.${index}` };
+    };
+    if (body.kind === 'correction') {
+      return onPath(body.to_step!, 'to_step');
+    }
+    if (fail?.outcome === 'scrap') {
+      return { stepId: null, status: 'scrapped' };
+    }
+    if (fail?.outcome === 'rework') {
+      return onPath(fail.reworkTo!, 'rework_to');
+    }
+    // A pass, or a fail that continues: the next step on the path, or done after the last.
+    const next = path[path.indexOf(currentStepId!) + 1];
+    return next ? { stepId: next, status: 'active' } : { stepId: null, status: 'finished' };
+  }
+
+  /** One transition per piece, each with the same answers and photos, and the pieces where they landed. */
+  private async write(
+    tx: Prisma.TransactionClient,
+    actorUserId: string,
+    body: MoveBody,
+    fail: { outcome: Outcome } | undefined,
+    config: StepConfig | undefined,
+    pieces: { id: string; status: string; currentStepId: string | null }[],
+    landings: Landing[],
+  ): Promise<void> {
+    const comment = body.comment && body.comment.length > 0 ? body.comment : null;
+    const transitions = pieces.map((piece, index) => ({
+      id: newId(),
+      workOrderId: piece.id,
+      kind: body.kind,
+      outcome: fail?.outcome ?? null,
+      fromStepId: piece.currentStepId,
+      toStepId: landings[index].stepId,
+      fromStatus: piece.status,
+      toStatus: landings[index].status,
+      defectId: body.defect_id ?? null,
+      overrideReason: body.override_reason ?? null,
+      comment,
+      actorUserId,
+    }));
+    await tx.transition.createMany({ data: transitions });
+
+    const answers = (body.answers ?? []).map((answer) => {
+      const item = config!.checklist.find((candidate) => candidate.key === answer.item)!;
+      return { itemKey: answer.item, value: String(answer.value), note: answer.note ?? null, passing: judge(item, answer.value) === true };
+    });
+    if (answers.length > 0) {
+      await tx.transitionAnswer.createMany({
+        data: transitions.flatMap((transition) => answers.map((answer) => ({ id: newId(), transitionId: transition.id, ...answer }))),
+      });
+    }
+    const photoIds = body.photo_file_version_ids ?? [];
+    if (photoIds.length > 0) {
+      await tx.transitionPhoto.createMany({
+        data: transitions.flatMap((transition) =>
+          photoIds.map((fileVersionId) => ({ id: newId(), transitionId: transition.id, fileVersionId })),
+        ),
+      });
+    }
+
+    // Pieces that land together are updated together.
+    const together = new Map<string, string[]>();
+    landings.forEach((landing, index) => {
+      const key = `${landing.status}:${landing.stepId ?? ''}`;
+      together.set(key, [...(together.get(key) ?? []), pieces[index].id]);
+    });
+    for (const [key, ids] of together) {
+      const [status, stepId] = key.split(':');
+      await tx.workOrder.updateMany({ where: { id: { in: ids } }, data: { status, currentStepId: stepId || null } });
+    }
+  }
+}

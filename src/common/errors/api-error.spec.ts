@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { toApiError } from './api-error';
 
@@ -14,6 +14,18 @@ describe('toApiError', () => {
 
   it('keeps the detail of a deliberate bad request', () => {
     expect(toApiError(new BadRequestException('cursor is invalid')).detail).toBe('cursor is invalid');
+  });
+
+  it('keeps the entries a deliberate refusal names', () => {
+    const errors = [{ path: 'work_order_ids.0', message: '1/3 is at casting, not polishing' }];
+
+    expect(toApiError(new ConflictException({ message: 'Some pieces cannot move', errors }))).toEqual({
+      type: 'about:blank',
+      title: 'Conflict',
+      status: 409,
+      detail: 'Some pieces cannot move',
+      errors,
+    });
   });
 
   it('maps a validation failure to one entry per bad field', () => {

@@ -51,6 +51,18 @@ function detailOf(exception: HttpException): string | undefined {
   return undefined;
 }
 
+/** A refusal we wrote can name each thing it refuses: `new ConflictException({ message, errors })`. */
+function errorsOf(exception: HttpException): ApiError['errors'] {
+  const response: unknown = exception.getResponse();
+  const errors = typeof response === 'object' && response !== null ? (response as { errors?: unknown }).errors : undefined;
+  if (!Array.isArray(errors)) {
+    return undefined;
+  }
+  return errors
+    .filter((entry): entry is { path: unknown; message: unknown } => typeof entry === 'object' && entry !== null)
+    .map((entry) => ({ path: String(entry.path), message: String(entry.message) }));
+}
+
 /**
  * Converts anything thrown into an `ApiError`.
  *
@@ -73,11 +85,13 @@ export function toApiError(error: unknown): ApiError {
 
   if (error instanceof HttpException) {
     const status = error.getStatus();
+    const errors = errorsOf(error);
     return {
       type: 'about:blank',
       title: titleFor(status),
       status,
       detail: detailOf(error),
+      ...(errors ? { errors } : {}),
     };
   }
 

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
 import { DefectsController } from './defects.controller';
 import { DefectsService } from './defects.service';
+import { MovesService } from './moves.service';
 import { WorkOrdersController } from './work-orders.controller';
 import { WorkOrdersService } from './work-orders.service';
 import { WorkflowsController } from './workflows.controller';
@@ -11,7 +12,7 @@ import { WorkflowsService } from './workflows.service';
 @Module({
   imports: [AuditModule],
   controllers: [DefectsController, WorkflowsController, WorkOrdersController],
-  providers: [DefectsService, WorkflowsService, WorkOrdersService],
+  providers: [DefectsService, MovesService, WorkflowsService, WorkOrdersService],
   exports: [WorkOrdersService],
 })
 export class WorkflowModule {}

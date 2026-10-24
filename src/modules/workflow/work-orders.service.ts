@@ -13,7 +13,13 @@ import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
 import { WORK_ORDER_STATUSES } from './work-order-response';
-import type { GroupResponse, WorkOrderDetailResponse, WorkOrderResponse, WorkOrderStatus } from './work-order-response';
+import type {
+  GroupResponse,
+  TransitionResponse,
+  WorkOrderDetailResponse,
+  WorkOrderResponse,
+  WorkOrderStatus,
+} from './work-order-response';
 
 /** More pieces than this in one group would be a typo, not an order (Workflow/QC plan, limits). */
 export const MAX_PIECES = 10_000;
@@ -176,10 +182,16 @@ export class WorkOrdersService {
       const steps = await this.versionSteps(tx, row.group.workflowVersionId);
       const path = pathFor(stepsForPath(steps), chainOf(row.group));
       const byId = new Map(steps.map((step) => [step.id, step]));
+      const history = await tx.transition.findMany({
+        where: { workOrderId: id },
+        include: transitionInclude,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
       return {
         ...toWorkOrder(row),
         path: path.map((stepId) => ({ key: byId.get(stepId)!.key, name: byId.get(stepId)!.name })),
         sop_file_version_id: row.currentStepId ? (byId.get(row.currentStepId)?.sopFileVersionId ?? null) : null,
+        history: history.map(toTransition),
       };
     });
   }
@@ -218,10 +230,40 @@ export class WorkOrdersService {
   }
 }
 
-const pieceInclude = {
+export const pieceInclude = {
   currentStep: { select: { id: true, key: true, name: true } },
   group: { select: { quantity: true } },
 } as const;
+
+const stepRef = { select: { id: true, key: true, name: true } } as const;
+
+export const transitionInclude = {
+  fromStep: stepRef,
+  toStep: stepRef,
+  defect: { select: { id: true, key: true, name: true } },
+  actor: { select: { id: true, name: true } },
+  answers: { orderBy: { id: 'asc' } },
+  photos: { orderBy: { id: 'asc' } },
+} as const satisfies Prisma.TransitionInclude;
+
+type TransitionRow = Prisma.TransitionGetPayload<{ include: typeof transitionInclude }>;
+
+export function toTransition(row: TransitionRow): TransitionResponse {
+  return {
+    id: row.id,
+    kind: row.kind as TransitionResponse['kind'],
+    outcome: row.outcome as TransitionResponse['outcome'],
+    from_step: row.fromStep,
+    to_step: row.toStep,
+    defect: row.defect,
+    override_reason: row.overrideReason,
+    comment: row.comment,
+    answers: row.answers.map((answer) => ({ item: answer.itemKey, value: answer.value, note: answer.note, passing: answer.passing })),
+    photo_file_version_ids: row.photos.map((photo) => photo.fileVersionId),
+    actor: row.actor,
+    created_at: row.createdAt.toISOString(),
+  };
+}
 
 export function stepsForPath(steps: WorkflowStepRow[]) {
   return steps.map((step) => ({

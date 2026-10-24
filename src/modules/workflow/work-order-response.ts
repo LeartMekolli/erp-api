@@ -22,12 +22,39 @@ export const workOrderResponseSchema = z.strictObject({
 });
 export type WorkOrderResponse = z.infer<typeof workOrderResponseSchema>;
 
+export const transitionResponseSchema = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(['pass', 'fail', 'correction']),
+  /** What a fail did with the piece; null for a pass or a correction. */
+  outcome: z.enum(['rework', 'scrap', 'continue']).nullable(),
+  /** Null when the piece wasn't at a step, such as a finished piece being reopened. */
+  from_step: stepRefSchema.nullable(),
+  /** Null when the piece left the path: finished or scrapped. */
+  to_step: stepRefSchema.nullable(),
+  defect: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }).nullable(),
+  /** Why the defect's default outcome or rework target was not followed. */
+  override_reason: z.string().nullable(),
+  comment: z.string().nullable(),
+  /** As given; yes/no answers read "true" or "false". */
+  answers: z.array(z.strictObject({ item: z.string(), value: z.string(), note: z.string().nullable(), passing: z.boolean() })),
+  photo_file_version_ids: z.array(z.uuid()),
+  actor: z.strictObject({ id: z.uuid(), name: z.string() }),
+  created_at: z.iso.datetime(),
+});
+export type TransitionResponse = z.infer<typeof transitionResponseSchema>;
+
 export const workOrderDetailResponseSchema = workOrderResponseSchema.extend({
   /** Every step the piece goes through, in order. */
   path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
   /** The instructions for the piece's current step. */
   sop_file_version_id: z.uuid().nullable(),
+  /** Every move of the piece, oldest first. */
+  history: z.array(transitionResponseSchema),
 });
+
+/** The moved pieces, in the order the move named them. */
+export const moveResponseSchema = z.strictObject({ data: z.array(workOrderResponseSchema) });
+export type MoveResponse = z.infer<typeof moveResponseSchema>;
 export type WorkOrderDetailResponse = z.infer<typeof workOrderDetailResponseSchema>;
 
 export const groupResponseSchema = z.strictObject({
