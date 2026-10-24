@@ -137,6 +137,22 @@ A walkthrough in Swagger, after the Pricing walkthrough:
 5. `POST /portal/customers/{id}/products` with the quote and "Luna Moon Ring", then quote it with only options and size: the same price.
 6. As another customer's person, none of it is visible: `GET /portal/customers/{theirs}/quotes` is empty and Luna's paths answer 404.
 
+## Workflow/QC
+
+Staff set up how pieces are made and checked, under `/workflow`: a defect catalogue, and workflows of steps, each using a step type (final QC and packing are step types nobody prices: `summary_group: null`). A step carries its checklist (choice, yes/no, number with limits, text), the defects it records with their default outcome (rework to a step, scrap, or continue), its rework targets, the photos and comment a pass and a fail need, an SOP file, an expected duration, and whether customers see it and under which name. Sending a workflow's steps adds its next version; a category gets a workflow and a product can override it. A product can only be quoted when its workflow has every step the quote prices. `POST /workflow/groups` starts a saved quote's pieces, one work order per piece, on the workflow's current version; each piece's path skips the priced steps the quote didn't price. `POST /workflow/moves` passes, fails or corrects many pieces at once behind the QC gate, and every move leaves a permanent transition row per piece. A scrapped piece is replaced at once under its number. `GET /workflow/transitions` is the filterable QC history. `npm run seed` also gives the `demo` workspace defects and a workflow for each demo category.
+
+A walkthrough in Swagger, as the owner, after the Pricing walkthrough:
+
+1. `POST /pricing/step-types` Final QC and Packing with `summary_group: null`; `POST /workflow/defects` porosity, scratch and crack; `POST /workflow/workflows` "Cast rings", then `PUT /workflow/workflows/{id}/steps` with print pattern → casting tree → casting → polishing → plating → final QC → packing: polishing asks for a Surface choice and a comment on every fail, final QC asks for a Weight of 4.8–5.2 g and a photo on every pass; casting, polishing and final QC are shown to customers as Casting, Finishing and Quality check. `PUT /workflow/categories/{id}/workflow` for "Cast metal parts".
+2. `POST /pricing/quotes` for 10 polished silver parts, then `POST /workflow/groups` with its `quote_id`: 10 pieces at print pattern, and `GET /workflow/groups/{id}` shows the path without plating.
+3. `POST /workflow/moves` with all 10 `work_order_ids`, `at_step: print_pattern`, `kind: pass`; again for casting tree and casting. `GET /workflow/work-orders/{id}`: one row per move in `history`.
+4. At polishing: `kind: fail` for 3 pieces with the scratch `defect_id`, a comment and a photo; `kind: pass` for the other 7 with `answers: [{ "item": "surface", "value": "ok" }]`. The group shows 7 at final QC and 3 `in_rework` at polishing.
+5. At final QC, a pass without a photo is a 400 naming `photos`; with `weight` 5.0 and a photo `file_version_id`, it goes through.
+6. Fail one of the 3 with crack: it is scrapped, a replacement with the same number starts at print pattern, and the group still has 10 live pieces.
+7. `kind: correction`, `to_step: final_qc` and a comment for a piece passed to packing by mistake: both rows stay in its history, and nothing counts as rework.
+8. `PUT /workflow/workflows/{id}/steps` again: the running group stays on version 1; a new quote's group starts on version 2.
+9. `GET /workflow/groups/{id}/customer-view`: each piece's customer-facing stage and the plain `redone` and `restarted` flags, nothing else.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

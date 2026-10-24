@@ -1,4 +1,5 @@
-import type { WorkOrderStatus } from './work-order-response';
+import type { CustomerViewResponse, WorkOrderStatus } from './work-order-response';
+import type { StepConfig } from './workflow-config';
 
 // Progress is derived from the pieces and their transitions, never stored (D39).
 
@@ -47,5 +48,38 @@ export function groupProgress(
         in_rework: here.filter((piece) => inRework(piece.history) !== null).length,
       };
     }),
+  };
+}
+
+/**
+ * What a customer sees of a group (D19, goal 10): per live piece, the customer name of the visible stage
+ * it is at or last passed, and plain flags. Never defects, answers, photos, comments or hidden steps.
+ */
+export function customerView(
+  path: { id: string; customer: StepConfig['customer'] }[],
+  quantity: number,
+  pieces: { number: number; status: string; currentStepId: string | null; replacesId: string | null; history: TransitionFacts[] }[],
+): CustomerViewResponse {
+  const stage = (stepId: string | null): string | null => {
+    const at = path.findIndex((step) => step.id === stepId);
+    for (let index = at; index >= 0; index -= 1) {
+      const { customer } = path[index];
+      if (customer.visible) {
+        return customer.name;
+      }
+    }
+    return null;
+  };
+  return {
+    pieces: pieces
+      .filter((piece) => piece.status === 'active' || piece.status === 'finished')
+      .sort((a, b) => a.number - b.number)
+      .map((piece) => ({
+        label: `${piece.number}/${quantity}`,
+        stage: piece.status === 'active' ? stage(piece.currentStepId) : null,
+        redone: piece.status === 'active' && inRework(piece.history) !== null,
+        restarted: piece.status === 'active' && piece.replacesId !== null,
+        finished: piece.status === 'finished',
+      })),
   };
 }

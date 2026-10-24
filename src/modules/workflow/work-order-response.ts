@@ -58,6 +58,23 @@ export const workOrderDetailResponseSchema = workOrderResponseSchema.extend({
   history: z.array(transitionResponseSchema),
 });
 
+/** What a customer will see of a group's progress; built now, shown with Orders and Plans. */
+export const customerViewResponseSchema = z.strictObject({
+  pieces: z.array(
+    z.strictObject({
+      label: z.string(),
+      /** The customer name of the visible stage the piece is at or last passed; null before the first, or once finished. */
+      stage: z.string().nullable(),
+      /** Being redone after a failed check. */
+      redone: z.boolean(),
+      /** Started again in place of a piece that couldn't be saved. */
+      restarted: z.boolean(),
+      finished: z.boolean(),
+    }),
+  ),
+});
+export type CustomerViewResponse = z.infer<typeof customerViewResponseSchema>;
+
 /** The moved pieces, in the order the move named them. */
 export const moveResponseSchema = z.strictObject({ data: z.array(workOrderResponseSchema) });
 export type MoveResponse = z.infer<typeof moveResponseSchema>;

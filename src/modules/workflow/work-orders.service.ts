@@ -12,9 +12,12 @@ import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
-import { groupProgress } from './progress';
+import { customerView, groupProgress } from './progress';
+import type { TransitionFacts } from './progress';
+import type { StepConfig } from './workflow-config';
 import { WORK_ORDER_STATUSES } from './work-order-response';
 import type {
+  CustomerViewResponse,
   GroupResponse,
   TransitionListItem,
   TransitionResponse,
@@ -168,6 +171,28 @@ export class WorkOrdersService {
     return this.prisma.inTenant(tenantId, (tx) => this.groupView(tx, id));
   }
 
+  /** Exactly what a customer will see of the group: a staff-only preview for now (B7). */
+  async customerView(tenantId: string, id: string): Promise<CustomerViewResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const group = await tx.workOrderGroup.findUnique({ where: { id } });
+      if (!group) {
+        throw new NotFoundException('Group not found');
+      }
+      const steps = await this.versionSteps(tx, group.workflowVersionId);
+      const byId = new Map(steps.map((step) => [step.id, step]));
+      const path = pathFor(stepsForPath(steps), chainOf(group)).map((stepId) => ({
+        id: stepId,
+        customer: (byId.get(stepId)!.config as StepConfig).customer,
+      }));
+      const { pieces, histories } = await this.piecesWithHistory(tx, id);
+      return customerView(
+        path,
+        group.quantity,
+        pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
+      );
+    });
+  }
+
   /** Pieces in the order they started, filtered by group, current step or status. */
   async list(tenantId: string, query: WorkOrderQuery): Promise<Page<WorkOrderResponse>> {
     const secret = this.config.get('APP_SECRET');
@@ -263,21 +288,7 @@ export class WorkOrdersService {
     }
     const steps = await this.versionSteps(tx, group.workflowVersionId);
     const path = pathFor(stepsForPath(steps), chainOf(group));
-    const pieces = await tx.workOrder.findMany({ where: { groupId: id }, select: { id: true, status: true, currentStepId: true } });
-    const transitions = await tx.transition.findMany({
-      where: { workOrder: { groupId: id } },
-      select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    });
-    const histories = new Map<string, typeof transitions>();
-    for (const row of transitions) {
-      const history = histories.get(row.workOrderId);
-      if (history) {
-        history.push(row);
-      } else {
-        histories.set(row.workOrderId, [row]);
-      }
-    }
+    const { pieces, histories } = await this.piecesWithHistory(tx, id);
     const byId = new Map(steps.map((step) => [step.id, step]));
     const progress = groupProgress(
       path.map((stepId) => byId.get(stepId)!),
@@ -292,6 +303,29 @@ export class WorkOrdersService {
       quantity: group.quantity,
       ...progress,
     };
+  }
+
+  /** A group's pieces, and each piece's transitions oldest first, read in two queries. */
+  private async piecesWithHistory(tx: Prisma.TransactionClient, groupId: string) {
+    const pieces = await tx.workOrder.findMany({
+      where: { groupId },
+      select: { id: true, number: true, status: true, currentStepId: true, replacesId: true },
+    });
+    const transitions = await tx.transition.findMany({
+      where: { workOrder: { groupId } },
+      select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const histories = new Map<string, TransitionFacts[]>();
+    for (const row of transitions) {
+      const history = histories.get(row.workOrderId);
+      if (history) {
+        history.push(row);
+      } else {
+        histories.set(row.workOrderId, [row]);
+      }
+    }
+    return { pieces, histories };
   }
 
   private versionSteps(tx: Prisma.TransactionClient, versionId: string): Promise<WorkflowStepRow[]> {

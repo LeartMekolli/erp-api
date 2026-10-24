@@ -10,6 +10,7 @@ import { RequirePermission } from '../identity/route-markers';
 import { MAX_PHOTOS_PER_MOVE, MAX_PIECES_PER_MOVE, MovesService, moveSchema } from './moves.service';
 import type { MoveBody } from './moves.service';
 import {
+  customerViewResponseSchema,
   groupResponseSchema,
   moveResponseSchema,
   transitionListItemSchema,
@@ -17,6 +18,7 @@ import {
   workOrderResponseSchema,
 } from './work-order-response';
 import type {
+  CustomerViewResponse,
   GroupResponse,
   MoveResponse,
   TransitionListItem,
@@ -64,6 +66,24 @@ export class WorkOrdersController {
   @Get('groups/:id')
   group(@CurrentTenant() tenantId: string, @Param('id', new ZodValidationPipe(idSchema)) id: string): Promise<GroupResponse> {
     return this.workOrders.group(tenantId, id);
+  }
+
+  @ApiDoc({
+    summary: "A staff preview of exactly what a customer will see of a group: each piece's customer-facing stage and plain flags.",
+    description:
+      'Hidden steps show the last visible stage before them; `redone` marks a piece being redone after a failed ' +
+      'check and `restarted` a replacement. Scrapped and cancelled pieces are left out, and defects, answers, ' +
+      'photos and comments never appear. Customers get this view later, with Orders and Plans.',
+    response: customerViewResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('workflow.read')
+  @Get('groups/:id/customer-view')
+  customerView(
+    @CurrentTenant() tenantId: string,
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+  ): Promise<CustomerViewResponse> {
+    return this.workOrders.customerView(tenantId, id);
   }
 
   @ApiDoc({
