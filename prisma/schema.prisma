@@ -74,6 +74,7 @@ model Tenant {
   partnerClosedPeriods PartnerClosedPeriod[]
   partnerOfferings PartnerOffering[]
   partnerStepPrices PartnerStepPrice[]
+  jobAssignments  JobAssignment[]
 
   @@map("tenant")
 }
@@ -1179,6 +1180,7 @@ model WorkOrderGroup {
   fileVersion     FileVersion?    @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
   customer        Customer?       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   workOrders      WorkOrder[]
+  assignments     JobAssignment[]
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
@@ -1320,6 +1322,7 @@ model Partner {
   closedPeriods    PartnerClosedPeriod[]
   offerings        PartnerOffering[]
   stepPrices       PartnerStepPrice[]
+  assignments      JobAssignment[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1432,4 +1435,38 @@ model PartnerStepPrice {
   @@index([tenantId, stepTypeId])
   @@index([tenantId, materialId])
   @@map("partner_step_price")
+}
+
+// A job (a work order group) handed to a partner: an offer, a direct send, or a reassignment (goals 10,
+// 11, P16). Every row is kept as history. At most one row per group is `offered` or `accepted`, which
+// writes keep under a lock on the group row.
+model JobAssignment {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  tenantId           String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  groupId            String    @map("group_id") @db.Uuid
+  partnerId          String    @map("partner_id") @db.Uuid
+  // offer | direct | reassign
+  kind               String
+  // offered | accepted | declined | expired | withdrawn | replaced
+  status             String
+  // What the partner is paid for the job, frozen when it is handed over.
+  cost               Decimal   @db.Decimal(18, 2)
+  // Set by staff instead of `cost`, with a reason, such as for a partner replaced mid-way (P16).
+  owedOverride       Decimal?  @map("owed_override") @db.Decimal(18, 2)
+  owedOverrideReason String?   @map("owed_override_reason")
+  // When an offer lapses; null for a job handed over without an offer.
+  expiresAt          DateTime? @map("expires_at")
+  respondedAt        DateTime? @map("responded_at")
+  createdByUserId    String    @map("created_by_user_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group   WorkOrderGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  partner Partner        @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, groupId])
+  @@index([tenantId, partnerId, status])
+  @@index([status, expiresAt])
+  @@map("job_assignment")
 }

@@ -58,6 +58,24 @@ export async function resolveAudience(
       }
       break;
     }
+    case 'partner': {
+      const assignment = await tx.jobAssignment.findFirst({
+        where: { id: notification.subjectId },
+        select: { partnerId: true },
+      });
+      if (assignment) {
+        const people = await tx.user.findMany({
+          where: {
+            status: 'active',
+            kind: 'partner',
+            memberships: { some: { organisationType: 'partner', organisationId: assignment.partnerId } },
+          },
+          orderBy: { id: 'asc' },
+        });
+        targets.push(...people.map((user) => ({ userId: user.id, email: user.email, locale: user.locale })));
+      }
+      break;
+    }
     case 'permission': {
       const subjectUser =
         notification.subjectType === 'user'

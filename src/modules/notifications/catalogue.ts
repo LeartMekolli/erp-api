@@ -6,7 +6,9 @@ export type Audience =
   | { kind: 'user' }
   | { kind: 'permission'; permission: TenantPermission }
   /** The user who uploaded the file version the notification is about. */
-  | { kind: 'uploader' };
+  | { kind: 'uploader' }
+  /** The people of the partner the job assignment is for. */
+  | { kind: 'partner' };
 
 export interface VariableSpec {
   /** Shown by the template preview. */
@@ -22,7 +24,15 @@ export interface VariableSpec {
 export interface EventDefinition {
   audience: Audience;
   channels: readonly ('email' | 'feed')[];
-  subjectType: 'invitation' | 'customer_invitation' | 'partner_invitation' | 'partner' | 'user' | 'file_version' | 'material';
+  subjectType:
+    | 'invitation'
+    | 'customer_invitation'
+    | 'partner_invitation'
+    | 'partner'
+    | 'job_assignment'
+    | 'user'
+    | 'file_version'
+    | 'material';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -167,6 +177,56 @@ export const EVENTS = {
         body:
           '{{ partner_name }} has finished setting up what it can do, how much it can take and which options it offers.\n\n' +
           'Check its setup and signed agreement, then approve it so it can be offered jobs.',
+      },
+    },
+  },
+  // A job offered to a partner, to accept or decline before the deadline (Partners spec, goal 10).
+  // Never names the customer.
+  'partner.job.offered': {
+    audience: { kind: 'partner' },
+    channels: ['email', 'feed'],
+    subjectType: 'job_assignment',
+    variables: {
+      product_name: { sample: 'Custom cast part' },
+      quantity: { sample: '10' },
+      expires_at: { sample: '2026-10-25T18:00:00.000Z' },
+    },
+    defaults: {
+      en: {
+        subject: 'New job offer: {{ quantity }} × {{ product_name }}',
+        body: 'You have been offered a job of {{ quantity }} × {{ product_name }}.\n\nAccept or decline it before {{ expires_at }}; after that the offer lapses.',
+      },
+    },
+  },
+  'partner.job.declined': {
+    audience: { kind: 'permission', permission: 'partner.assign' },
+    channels: ['email', 'feed'],
+    subjectType: 'job_assignment',
+    variables: {
+      partner_name: { sample: 'CastCo' },
+      product_name: { sample: 'Custom cast part' },
+      quantity: { sample: '10' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ partner_name }} declined {{ quantity }} × {{ product_name }}',
+        body: '{{ partner_name }} declined the job of {{ quantity }} × {{ product_name }}. It needs a partner again.',
+      },
+    },
+  },
+  'partner.job.expired': {
+    audience: { kind: 'permission', permission: 'partner.assign' },
+    channels: ['email', 'feed'],
+    subjectType: 'job_assignment',
+    variables: {
+      partner_name: { sample: 'CastCo' },
+      product_name: { sample: 'Custom cast part' },
+      quantity: { sample: '10' },
+    },
+    defaults: {
+      en: {
+        subject: 'The offer to {{ partner_name }} for {{ quantity }} × {{ product_name }} lapsed',
+        body: '{{ partner_name }} did not answer the offer of {{ quantity }} × {{ product_name }} in time. It needs a partner again.',
       },
     },
   },

@@ -60,6 +60,52 @@ export type PartnerSetupResponse = z.infer<typeof partnerSetupResponseSchema>;
 export const partnerPricesResponseSchema = z.strictObject({ data: z.array(stepPriceResponseSchema) });
 export type PartnerPricesResponse = z.infer<typeof partnerPricesResponseSchema>;
 
+const partnerRefSchema = z.strictObject({ id: z.uuid(), name: z.string() });
+
+/** Staff only: who can take a job, cheapest first, and who can't, with why. */
+export const eligiblePartnersResponseSchema = z.strictObject({
+  data: z.array(
+    z.strictObject({
+      partner: partnerRefSchema,
+      /** What the partner would be paid for the job. */
+      cost: z.string(),
+      /** The quote's total less the partner's cost. */
+      margin: z.string(),
+      /** Pieces the partner would still have room for at each of its steps, in path order, after this job. */
+      room: z.array(z.strictObject({ step_key: z.string(), left: z.number().int() })),
+      /** The partner's overall score out of 5; null for now, until scores exist. */
+      score: z.number().nullable(),
+    }),
+  ),
+  ineligible: z.array(z.strictObject({ partner: partnerRefSchema, reasons: z.array(z.string()) })),
+});
+export type EligiblePartnersResponse = z.infer<typeof eligiblePartnersResponseSchema>;
+
+export const ASSIGNMENT_KINDS = ['offer', 'direct', 'reassign'] as const;
+export const ASSIGNMENT_STATUSES = ['offered', 'accepted', 'declined', 'expired', 'withdrawn', 'replaced'] as const;
+
+/** A job handed to a partner. Holds no customer, quote or customer price, so partners may see it. */
+export const jobAssignmentResponseSchema = z.strictObject({
+  id: z.uuid(),
+  group_id: z.uuid(),
+  partner: partnerRefSchema,
+  kind: z.enum(ASSIGNMENT_KINDS),
+  status: z.enum(ASSIGNMENT_STATUSES),
+  /** What the partner is paid for the job, frozen when it was handed over. */
+  cost: z.string(),
+  /** An amount staff set instead, with why. */
+  owed_override: z.strictObject({ amount: z.string(), reason: z.string() }).nullable(),
+  /** When an offer lapses; null when there was no offer. */
+  expires_at: z.iso.datetime().nullable(),
+  responded_at: z.iso.datetime().nullable(),
+  created_at: z.iso.datetime(),
+});
+export type JobAssignmentResponse = z.infer<typeof jobAssignmentResponseSchema>;
+
+/** Every time a job was handed to a partner, oldest first. */
+export const jobHistoryResponseSchema = z.strictObject({ data: z.array(jobAssignmentResponseSchema) });
+export type JobHistoryResponse = z.infer<typeof jobHistoryResponseSchema>;
+
 /** An invitation to act for a partner; the token goes only to the invitee's inbox. */
 export const partnerInvitationResponseSchema = z.strictObject({
   id: z.uuid(),
