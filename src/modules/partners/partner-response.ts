@@ -102,6 +102,51 @@ export const jobAssignmentResponseSchema = z.strictObject({
 });
 export type JobAssignmentResponse = z.infer<typeof jobAssignmentResponseSchema>;
 
+export const PARTNER_JOB_STATUSES = ['offered', 'accepted', 'finished'] as const;
+
+/**
+ * A job as its partner sees it: what to make, its own steps and what it is paid. Never the customer,
+ * the quote or the customer's price (plan Review Focus 2).
+ */
+export const partnerJobResponseSchema = z.strictObject({
+  /** The job's id: its work order group. */
+  id: z.uuid(),
+  /** Offered and waiting for an answer, accepted and in production, or finished: no piece left to make. */
+  status: z.enum(PARTNER_JOB_STATUSES),
+  offered_at: z.iso.datetime(),
+  /** When an offer lapses; null for a job handed over without one. */
+  expires_at: z.iso.datetime().nullable(),
+  product: z.strictObject({ name: z.string() }).nullable(),
+  /** The chosen options, by name, in option order. */
+  options: z.array(z.strictObject({ group: z.string(), value: z.string() })),
+  quantity: z.number().int(),
+  /** The design to make; download it from the job's `design` route. */
+  design_file_version_id: z.uuid().nullable(),
+  /** The partner's own steps, in order, with each step's instructions. */
+  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), sop_file_version_id: z.uuid().nullable() })),
+  /** What the partner is paid for the job. */
+  cost: z.string(),
+  pieces: z.strictObject({ active: z.number().int(), finished: z.number().int(), scrapped: z.number().int() }),
+});
+export type PartnerJobResponse = z.infer<typeof partnerJobResponseSchema>;
+
+export const partnerJobsResponseSchema = z.strictObject({ data: z.array(partnerJobResponseSchema) });
+
+/** A job with each of its pieces, so the partner knows which to move. */
+export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
+  work_orders: z.array(
+    z.strictObject({
+      id: z.uuid(),
+      /** Such as 3/10. */
+      label: z.string(),
+      status: z.enum(['active', 'finished', 'scrapped']),
+      /** The step the piece is at; null once it is finished or scrapped. */
+      step_key: z.string().nullable(),
+    }),
+  ),
+});
+export type PartnerJobDetailResponse = z.infer<typeof partnerJobDetailResponseSchema>;
+
 /** Every time a job was handed to a partner, oldest first. */
 export const jobHistoryResponseSchema = z.strictObject({ data: z.array(jobAssignmentResponseSchema) });
 export type JobHistoryResponse = z.infer<typeof jobHistoryResponseSchema>;

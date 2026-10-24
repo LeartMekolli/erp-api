@@ -92,7 +92,13 @@ interface ReplacementRow {
 export class MovesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async move(auth: TenantAuth, body: MoveBody): Promise<MoveResponse> {
+  /**
+   * With a `scope`, a partner's own people move: every piece must be of a job the partner has
+   * accepted (else not found), and every step the move touches must be a partner step (else 409,
+   * naming the piece). Each transition records the partner its job is with, when made at a partner
+   * step, whoever made it (Partners spec, goal 13 and B5).
+   */
+  async move(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, body: MoveBody, scope?: { partnerId: string }): Promise<MoveResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const ids = body.work_order_ids;
       // In id order, so two moves sharing pieces can't deadlock; the second sees where the first left them.
@@ -105,6 +111,17 @@ export class MovesService {
       const byId = new Map(rows.map((row) => [row.id, row]));
       const pieces = ids.map((id) => byId.get(id)!);
       const label = (piece: (typeof pieces)[number]) => `${piece.number}/${piece.group.quantity}`;
+
+      // The partner each piece's job is with: the one that accepted it, if any.
+      const accepted = await tx.jobAssignment.findMany({
+        where: { groupId: { in: [...new Set(pieces.map((piece) => piece.groupId))] }, status: 'accepted' },
+        select: { groupId: true, partnerId: true },
+      });
+      const partnerOf = new Map(accepted.map((row) => [row.groupId, row.partnerId]));
+      if (scope && pieces.some((piece) => partnerOf.get(piece.groupId) !== scope.partnerId)) {
+        // Another partner's pieces, or a job not accepted yet, look like no pieces at all.
+        throw new NotFoundException('Work order not found');
+      }
 
       const replacements = body.kind === 'correction' ? await this.untouchedReplacements(tx, pieces) : new Map<string, ReplacementRow>();
       const cancelling = new Set([...replacements.values()].map((replacement) => replacement.id));
@@ -144,8 +161,29 @@ export class MovesService {
 
       const steps = await tx.workflowStep.findMany({ where: { versionId }, include: { stepType: true }, orderBy: { position: 'asc' } });
       const stepByKey = new Map(steps.map((step) => [step.key, step]));
+      const stepById = new Map(steps.map((step) => [step.id, step]));
       const here = body.kind === 'correction' ? undefined : stepByKey.get(body.at_step!)!;
       const config = here ? (here.config as StepConfig) : undefined;
+
+      if (scope) {
+        const inHouse: MoveProblem[] = [];
+        pieces.forEach((piece, index) => {
+          const touched =
+            body.kind === 'correction'
+              ? [piece.currentStepId ? stepById.get(piece.currentStepId) : undefined, stepByKey.get(body.to_step!)]
+              : [here];
+          const workspaceStep = touched.find((step) => step?.doneBy === 'workspace');
+          if (workspaceStep) {
+            inHouse.push({ path: `work_order_ids.${index}`, message: `${label(piece)}: ${workspaceStep.key} is done by the workspace` });
+          }
+        });
+        if (inHouse.length > 0) {
+          throw new ConflictException({ message: "Some pieces would move at the workspace's own steps", errors: inHouse });
+        }
+      }
+      /** The partner a move made at `stepId` counts for. */
+      const creditFor = (groupId: string, stepId: string | null): string | null =>
+        stepId !== null && stepById.get(stepId)?.doneBy === 'partner' ? (partnerOf.get(groupId) ?? null) : null;
 
       const problems = checkMove(config ?? NO_CHECKS, body);
       if (problems.length > 0) {
@@ -176,7 +214,11 @@ export class MovesService {
         throw new BadRequestException({ message: 'Some pieces cannot go there', errors: refusals });
       }
 
-      await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[]);
+      // A move counts for the step it is made at; reopening a finished piece, for the step it reopens at.
+      const credited = pieces.map((piece, index) =>
+        creditFor(piece.groupId, piece.currentStepId ?? (landings[index] as Landing).stepId),
+      );
+      await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[], credited);
 
       // A scrapped piece is replaced at once, under its number, at the first step of the same path.
       const scrapped = pieces.filter((_, index) => (landings[index] as Landing).status === 'scrapped');
@@ -192,10 +234,11 @@ export class MovesService {
         });
       }
       // A restored piece's replacement is cancelled, and the log says so.
-      const cancelled = pieces.filter((piece) => piece.status === 'scrapped').map((piece) => replacements.get(piece.id)!);
+      const restored = pieces.filter((piece) => piece.status === 'scrapped');
+      const cancelled = restored.map((piece) => replacements.get(piece.id)!);
       if (cancelled.length > 0) {
         await tx.transition.createMany({
-          data: cancelled.map((replacement) => ({
+          data: cancelled.map((replacement, index) => ({
             id: newId(),
             workOrderId: replacement.id,
             kind: 'correction',
@@ -205,6 +248,7 @@ export class MovesService {
             toStatus: 'cancelled',
             comment: body.comment ? body.comment : null,
             actorUserId: auth.userId,
+            partnerId: creditFor(restored[index].groupId, replacement.currentStepId),
           })),
         });
         await tx.workOrder.updateMany({
@@ -321,6 +365,7 @@ export class MovesService {
     config: StepConfig | undefined,
     pieces: { id: string; status: string; currentStepId: string | null }[],
     landings: Landing[],
+    partnerIds: (string | null)[],
   ): Promise<void> {
     const comment = body.comment && body.comment.length > 0 ? body.comment : null;
     const transitions = pieces.map((piece, index) => ({
@@ -336,6 +381,7 @@ export class MovesService {
       overrideReason: body.override_reason ?? null,
       comment,
       actorUserId,
+      partnerId: partnerIds[index],
     }));
     await tx.transition.createMany({ data: transitions });
 

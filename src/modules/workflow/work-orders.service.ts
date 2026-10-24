@@ -352,6 +352,7 @@ export const transitionInclude = {
   toStep: stepRef,
   defect: { select: { id: true, key: true, name: true } },
   actor: { select: { id: true, name: true } },
+  partner: { select: { id: true, name: true } },
   answers: { orderBy: { id: 'asc' } },
   photos: { orderBy: { id: 'asc' } },
 } as const satisfies Prisma.TransitionInclude;
@@ -371,6 +372,7 @@ export function toTransition(row: TransitionRow): TransitionResponse {
     answers: row.answers.map((answer) => ({ item: answer.itemKey, value: answer.value, note: answer.note, passing: answer.passing })),
     photo_file_version_ids: row.photos.map((photo) => photo.fileVersionId),
     actor: row.actor,
+    partner: row.partner,
     created_at: row.createdAt.toISOString(),
   };
 }

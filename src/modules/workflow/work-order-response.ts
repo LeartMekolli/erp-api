@@ -39,6 +39,8 @@ export const transitionResponseSchema = z.strictObject({
   answers: z.array(z.strictObject({ item: z.string(), value: z.string(), note: z.string().nullable(), passing: z.boolean() })),
   photo_file_version_ids: z.array(z.uuid()),
   actor: z.strictObject({ id: z.uuid(), name: z.string() }),
+  /** The partner the move counts for: the job's partner, at one of its steps; null otherwise. */
+  partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
   created_at: z.iso.datetime(),
 });
 export type TransitionResponse = z.infer<typeof transitionResponseSchema>;

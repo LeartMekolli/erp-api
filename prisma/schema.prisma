@@ -1236,11 +1236,15 @@ model Transition {
   overrideReason String?  @map("override_reason")
   comment        String?
   actorUserId    String   @map("actor_user_id") @db.Uuid
+  // The partner the move counts for: the job's accepted partner, at a partner step; null otherwise
+  // (Partners spec, B5). Whoever made it, staff or the partner's own people.
+  partnerId      String?  @map("partner_id") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at")
 
   tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   // NoAction: a piece with history can't be deleted; only deleting the workspace removes both.
   workOrder WorkOrder        @relation(fields: [tenantId, workOrderId], references: [tenantId, id], onDelete: NoAction)
+  partner   Partner?         @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
   fromStep  WorkflowStep?    @relation("TransitionFrom", fields: [tenantId, fromStepId], references: [tenantId, id], onDelete: NoAction)
   toStep    WorkflowStep?    @relation("TransitionTo", fields: [tenantId, toStepId], references: [tenantId, id], onDelete: NoAction)
   defect    Defect?          @relation(fields: [tenantId, defectId], references: [tenantId, id], onDelete: NoAction)
@@ -1255,6 +1259,7 @@ model Transition {
   @@index([tenantId, toStepId])
   @@index([tenantId, defectId])
   @@index([tenantId, actorUserId])
+  @@index([tenantId, partnerId])
   @@map("transition")
 }
 
@@ -1323,6 +1328,7 @@ model Partner {
   offerings        PartnerOffering[]
   stepPrices       PartnerStepPrice[]
   assignments      JobAssignment[]
+  transitions      Transition[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
