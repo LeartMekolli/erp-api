@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -6,10 +6,17 @@ import type { ApiDocOptions } from '../../docs/api-doc';
 import { CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { PartnerAccess, RequirePermission } from '../identity/route-markers';
-import { partnerResponseSchema, partnerSetupResponseSchema } from './partner-response';
-import type { PartnerResponse, PartnerSetupResponse } from './partner-response';
+import { capacityHistoryResponseSchema, partnerResponseSchema, partnerSetupResponseSchema } from './partner-response';
+import type { CapacityHistoryResponse, PartnerResponse, PartnerSetupResponse } from './partner-response';
 import { PartnersService } from './partners.service';
-import { SetupService, capabilitiesSchema, closedPeriodsSchema, limitsSchema, offeringsSchema } from './setup.service';
+import {
+  SetupService,
+  capabilitiesSchema,
+  capacityHistoryQuerySchema,
+  closedPeriodsSchema,
+  limitsSchema,
+  offeringsSchema,
+} from './setup.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -59,6 +66,25 @@ export class SetupController {
   @Get('setup')
   get(@CurrentTenant() tenantId: string, @Param('id', idParam) id: string): Promise<PartnerSetupResponse> {
     return this.setup.get(tenantId, id);
+  }
+
+  @ApiDoc({
+    summary: "The partner's load and capacity per step type, as kept each day.",
+    description:
+      'Kept daily at 02:00 UTC for every step type the partner can do. `from` and `to` are UTC days, both included: ' +
+      'by default the last 30 days, at most 366.',
+    query: capacityHistoryQuerySchema,
+    response: capacityHistoryResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('partner.read')
+  @Get('capacity-history')
+  capacityHistory(
+    @CurrentTenant() tenantId: string,
+    @Param('id', idParam) id: string,
+    @Query(new ZodValidationPipe(capacityHistoryQuerySchema)) query: z.infer<typeof capacityHistoryQuerySchema>,
+  ): Promise<CapacityHistoryResponse> {
+    return this.setup.capacityHistory(tenantId, id, query);
   }
 
   @ApiDoc(CAPABILITIES)

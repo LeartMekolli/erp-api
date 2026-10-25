@@ -76,6 +76,7 @@ model Tenant {
   partnerStepPrices PartnerStepPrice[]
   jobAssignments  JobAssignment[]
   jobRatings      JobRating[]
+  partnerCapacitySnapshots PartnerCapacitySnapshot[]
 
   @@map("tenant")
 }
@@ -783,6 +784,7 @@ model StepType {
   workflowSteps WorkflowStep[]
   partnerCapabilities PartnerCapability[]
   partnerPrices PartnerStepPrice[]
+  capacitySnapshots PartnerCapacitySnapshot[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1342,6 +1344,7 @@ model Partner {
   transitions      Transition[]
   quotes           Quote[]
   ratings          JobRating[]
+  capacitySnapshots PartnerCapacitySnapshot[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1488,6 +1491,33 @@ model JobAssignment {
   @@index([tenantId, partnerId, status])
   @@index([status, expiresAt])
   @@map("job_assignment")
+}
+
+// A partner's load and capacity at one step type on one day (Partners spec, D83): the one stored
+// counter, kept daily so capacity history outlives the jobs it was read from.
+model PartnerCapacitySnapshot {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // The UTC day.
+  date           DateTime @db.Date
+  partnerId      String   @map("partner_id") @db.Uuid
+  stepTypeId     String   @map("step_type_id") @db.Uuid
+  // Pieces offered to or accepted by the partner that still had this step ahead of them.
+  load           Int
+  // The capability's capacity that day, per `capacityPeriod` (day | week).
+  capacity       Int
+  capacityPeriod String   @map("capacity_period")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner  Partner  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+  stepType StepType @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, date, partnerId, stepTypeId])
+  @@unique([tenantId, id])
+  @@index([tenantId, partnerId, date])
+  @@index([tenantId, stepTypeId])
+  @@map("partner_capacity_snapshot")
 }
 
 // A customer's rating of a finished job, for the partner that made it (Partners spec, goal 16): once per job.

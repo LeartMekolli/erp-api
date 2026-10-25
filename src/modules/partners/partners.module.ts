@@ -7,6 +7,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { SettingsModule } from '../settings/settings.module';
 import { WorkflowModule } from '../workflow/workflow.module';
+import { CapacitySnapshotHandler } from './capacity-snapshot.handler';
 import { EligibilityService } from './eligibility.service';
 import { JobsController, PortalJobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
@@ -67,6 +68,7 @@ import { SetupService } from './setup.service';
     PartnerQuotesService,
     ScoreService,
     RatingsService,
+    CapacitySnapshotHandler,
   ],
   exports: [PartnersService, PartnerInvitationsService, SetupService, EligibilityService, JobsService, PartnerQuotesService],
 })

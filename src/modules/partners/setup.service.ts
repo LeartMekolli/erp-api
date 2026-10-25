@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
@@ -6,7 +6,7 @@ import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { positiveAmountSchema } from '../pricing/decimals';
 import { CAPACITY_PERIODS } from './partner-response';
-import type { PartnerSetupResponse } from './partner-response';
+import type { CapacityHistoryResponse, PartnerSetupResponse } from './partner-response';
 import { lockPartner } from './partners.service';
 
 const distinct = <T>(values: T[]) => new Set(values).size === values.length;
@@ -54,6 +54,16 @@ export const limitsSchema = z.object({
   accepts_direct_orders: z.boolean().optional(),
 });
 
+/** The days to read capacity history for, both included; by default the last 30, up to today. */
+export const capacityHistoryQuerySchema = z.object({
+  from: z.iso.date().optional(),
+  to: z.iso.date().optional(),
+});
+
+const DAY_MS = 86_400_000;
+/** The longest range one read may cover. */
+const MAX_HISTORY_DAYS = 366;
+
 /** Who makes a change: staff, or a partner person acting for the partner. */
 type Actor = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
@@ -74,6 +84,44 @@ export class SetupService {
 
   async get(tenantId: string, partnerId: string): Promise<PartnerSetupResponse> {
     return this.prisma.inTenant(tenantId, (tx) => this.read(tx, partnerId));
+  }
+
+  /** The partner's kept load and capacity per step type, day by day (D83). */
+  async capacityHistory(
+    tenantId: string,
+    partnerId: string,
+    query: z.infer<typeof capacityHistoryQuerySchema>,
+  ): Promise<CapacityHistoryResponse> {
+    const to = query.to ? date(query.to) : date(isoDate(new Date()));
+    const from = query.from ? date(query.from) : new Date(to.getTime() - 29 * DAY_MS);
+    if (from > to) {
+      throw new BadRequestException('to: must not be before from');
+    }
+    if ((to.getTime() - from.getTime()) / DAY_MS + 1 > MAX_HISTORY_DAYS) {
+      throw new BadRequestException(`from: a range covers at most ${MAX_HISTORY_DAYS} days`);
+    }
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      if (!(await tx.partner.findUnique({ where: { id: partnerId }, select: { id: true } }))) {
+        throw new NotFoundException('Partner not found');
+      }
+      const rows = await tx.partnerCapacitySnapshot.findMany({
+        where: { partnerId, date: { gte: from, lte: to } },
+        include: { stepType: { select: { id: true, key: true, name: true, position: true } } },
+      });
+      rows.sort(
+        (a, b) =>
+          a.date.getTime() - b.date.getTime() || a.stepType.position - b.stepType.position || a.stepType.key.localeCompare(b.stepType.key),
+      );
+      return {
+        data: rows.map((row) => ({
+          date: isoDate(row.date),
+          step_type: { id: row.stepType.id, key: row.stepType.key, name: row.stepType.name },
+          load: row.load,
+          capacity: row.capacity,
+          capacity_period: row.capacityPeriod as CapacityHistoryResponse['data'][number]['capacity_period'],
+        })),
+      };
+    });
   }
 
   /** Not-priced step types are allowed: final QC can be a partner's step. Only price lists refuse them. */

@@ -85,6 +85,22 @@ export const partnerSetupResponseSchema = z.strictObject({
 });
 export type PartnerSetupResponse = z.infer<typeof partnerSetupResponseSchema>;
 
+/** A partner's load and capacity per step type, one row per day it was kept: oldest day first, then step type order. */
+export const capacityHistoryResponseSchema = z.strictObject({
+  data: z.array(
+    z.strictObject({
+      date: z.iso.date(),
+      step_type: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }),
+      /** Pieces offered to or accepted by the partner that still had the step ahead of them. */
+      load: z.number().int(),
+      /** Pieces per `capacity_period`, as the partner had it that day. */
+      capacity: z.number().int(),
+      capacity_period: z.enum(CAPACITY_PERIODS),
+    }),
+  ),
+});
+export type CapacityHistoryResponse = z.infer<typeof capacityHistoryResponseSchema>;
+
 /** A partner's price list: the same step prices as the workspace's, in step type order, each step's default first. */
 export const partnerPricesResponseSchema = z.strictObject({ data: z.array(stepPriceResponseSchema) });
 export type PartnerPricesResponse = z.infer<typeof partnerPricesResponseSchema>;

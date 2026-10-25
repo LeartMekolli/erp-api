@@ -7,6 +7,7 @@ import { createPlatformAdmin } from './platform-admins';
 import { runCli } from './run-cli';
 import { seedCatalog } from './seed-catalog';
 import { seedCustomers } from './seed-customers';
+import { seedPartners } from './seed-partners';
 import { seedPricing } from './seed-pricing';
 import { seedWorkflows } from './seed-workflows';
 
@@ -35,8 +36,8 @@ const SEED_TENANTS: CreateTenantInput[] = [
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
- * and demo customers (`seed-customers.ts`). The admin's and the customer people's generated
- * passwords are printed here, once. The owners'
+ * demo customers (`seed-customers.ts`) and demo partners (`seed-partners.ts`). The admin's, the
+ * customer people's and the partner owners' generated passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
  */
@@ -93,6 +94,13 @@ void runCli(async (app) => {
   process.stdout.write(
     `customers for demo: created ${customers.counts.customers} customers, ${customers.counts.people} people` +
       (customers.password ? ` with password ${customers.password} (anna@luna.example.test, ben@luna.example.test, mira@mira.example.test)` : '') +
+      '\n',
+  );
+
+  const partners = await seedPartners(prisma, demo.id);
+  process.stdout.write(
+    `partners for demo: created ${partners.counts.partners} partners, ${partners.counts.people} people` +
+      (partners.password ? ` with password ${partners.password} (owner@northcast.example.test, owner@layerline.example.test)` : '') +
       '\n',
   );
 });
