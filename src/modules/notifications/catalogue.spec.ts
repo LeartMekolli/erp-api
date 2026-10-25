@@ -12,6 +12,7 @@ describe('notification catalogue', () => {
       'material.price.stale',
       'partner.invited',
       'partner.job.declined',
+      'partner.job.direct',
       'partner.job.expired',
       'partner.job.offered',
       'partner.submitted',

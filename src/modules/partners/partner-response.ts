@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
+import { quotePriceSchema } from '../pricing/quote-response';
 import { PARTNER_ROLES } from './partner-roles';
 
 // What clients receive for partners; checked against real responses in the e2e tests.
@@ -146,6 +147,22 @@ export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
   ),
 });
 export type PartnerJobDetailResponse = z.infer<typeof partnerJobDetailResponseSchema>;
+
+/**
+ * The workshops a customer may pick for a configuration, each at the price the customer would pay with
+ * it. Never what a workshop costs, its own name, or why others are missing (Global Constraints).
+ */
+export const partnerChoicesResponseSchema = z.strictObject({
+  data: z.array(
+    z.strictObject({
+      partner: z.strictObject({ id: z.uuid(), display_name: z.string() }),
+      /** The workshop's overall score out of 5; null for now, until scores exist. */
+      score: z.number().nullable(),
+      price: quotePriceSchema,
+    }),
+  ),
+});
+export type PartnerChoicesResponse = z.infer<typeof partnerChoicesResponseSchema>;
 
 /** Every time a job was handed to a partner, oldest first. */
 export const jobHistoryResponseSchema = z.strictObject({ data: z.array(jobAssignmentResponseSchema) });

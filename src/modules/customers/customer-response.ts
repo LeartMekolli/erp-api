@@ -12,6 +12,8 @@ export const customerResponseSchema = z.strictObject({
   customer_group: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }).nullable(),
   /** People who can act for the customer. */
   member_count: z.number().int(),
+  /** Its people may pick the workshop that makes their quote. */
+  may_pick_partner: z.boolean(),
   created_at: z.string(),
 });
 export type CustomerResponse = z.infer<typeof customerResponseSchema>;

@@ -70,7 +70,7 @@ export class CustomersController {
   }
 
   @ApiDoc({
-    summary: "Change a customer's name, status or customer group.",
+    summary: "Change a customer's name, status, customer group, or whether its people may pick the workshop.",
     description: 'A disabled customer keeps its data; its people cannot act for it until it is active again.',
     body: updateCustomerSchema,
     response: customerResponseSchema,

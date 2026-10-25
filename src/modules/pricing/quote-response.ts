@@ -19,6 +19,8 @@ export const QUOTE_REFUSAL_CODES = [
   // The product has no workflow, or its workflow lacks a step the quote prices (Workflow/QC spec F13).
   'workflow_missing',
   'workflow_step_missing',
+  // The workshop the customer picked can't take the job right now (Partners spec, goal 12).
+  'partner_unavailable',
 ] as const;
 export type QuoteRefusalCode = (typeof QUOTE_REFUSAL_CODES)[number];
 
@@ -50,6 +52,10 @@ export const quoteSummaryResponseSchema = z.strictObject({
   expired: z.boolean(),
 });
 export type QuoteSummaryResponse = z.infer<typeof quoteSummaryResponseSchema>;
+
+/** A price as the customer would be quoted it, not saved: the summary's lines and totals. */
+export const quotePriceSchema = quoteSummaryResponseSchema.pick({ currency: true, lines: true, unit_price: true, total: true });
+export type QuotePrice = z.infer<typeof quotePriceSchema>;
 
 /** A saved quote (201), or why the configuration cannot be quoted (200, nothing saved). */
 export const quoteResultResponseSchema = z.discriminatedUnion('accepted', [
@@ -128,6 +134,8 @@ export const quoteResponseSchema = z.strictObject({
   created_at: z.string(),
   /** The customer the quote is for; null for an internal quote. */
   customer_id: z.uuid().nullable(),
+  /** The workshop the customer picked, and what it is paid for the job; null at the workspace's own prices. */
+  partner: z.strictObject({ id: z.uuid(), cost: z.string() }).nullable(),
   inputs: quoteInputsSchema,
   /** The configuration's material and every material a step names, as priced at quote time. */
   materials: z.array(quoteMaterialSchema),

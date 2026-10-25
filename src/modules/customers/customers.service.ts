@@ -24,6 +24,8 @@ export const updateCustomerSchema = z.object({
   status: z.enum(['active', 'disabled']).optional(),
   /** Null removes the group. */
   customer_group_id: z.uuid().nullable().optional(),
+  /** Lets the customer's people pick the workshop that makes their quote, at that workshop's price. */
+  may_pick_partner: z.boolean().optional(),
 });
 export const updateMemberSchema = z.object({
   /** Making someone owner turns the current owner into an admin. */
@@ -116,7 +118,12 @@ export class CustomersService {
       if (patch.customer_group_id) await this.findGroup(tx, patch.customer_group_id);
       const row = await tx.customer.update({
         where: { id },
-        data: { name: patch.name, status: patch.status, customerGroupId: patch.customer_group_id },
+        data: {
+          name: patch.name,
+          status: patch.status,
+          customerGroupId: patch.customer_group_id,
+          mayPickPartner: patch.may_pick_partner,
+        },
         include,
       });
       const after = await this.toResponse(tx, row);
@@ -224,6 +231,7 @@ export class CustomersService {
         ? { id: row.customerGroup.id, key: row.customerGroup.key, name: row.customerGroup.name }
         : null,
       member_count: memberCount,
+      may_pick_partner: row.mayPickPartner,
       created_at: row.createdAt.toISOString(),
     };
   }

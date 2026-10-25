@@ -33,6 +33,7 @@ export const CUSTOMER_REFUSAL_MESSAGES: Record<QuoteRefusalCode, string> = {
   unit_mismatch: CONTACT_US,
   workflow_missing: CONTACT_US,
   workflow_step_missing: CONTACT_US,
+  partner_unavailable: "This workshop can't take this job right now. Please pick another.",
 };
 
 /** The refusal as a customer sees it: the code and the plain message, nothing else. */

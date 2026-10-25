@@ -6,7 +6,7 @@ import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
-import type { WorkOrder, WorkOrderGroup } from '../../generated/prisma/client';
+import type { Quote, WorkOrder, WorkOrderGroup } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
 import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
@@ -73,18 +73,35 @@ export interface StartInput {
 
 type GroupRow = WorkOrderGroup & { workflowVersion: { number: number; workflow: { id: string; name: string } } };
 
+/**
+ * Runs inside the transaction that starts a quote's group, once the group exists, so another module
+ * can add to the start or refuse it by throwing, which creates nothing. What it returns runs after
+ * commit. Partners uses it for a workshop the customer picked, so Workflow never depends on Partners.
+ */
+export type StartHook = (
+  tx: Prisma.TransactionClient,
+  started: { groupId: string; quote: Quote; userId: string; tenantId: string },
+) => Promise<(() => Promise<void>) | undefined>;
+
 /** Groups of pieces and the pieces themselves: one work order per piece (F3). */
 @Injectable()
 export class WorkOrdersService {
+  private readonly startHooks: StartHook[] = [];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {}
 
+  registerStartHook(hook: StartHook): void {
+    this.startHooks.push(hook);
+  }
+
   /** Starts a saved quote's pieces on its product's current workflow (B5). */
   async startFromQuote(auth: TenantAuth, quoteId: string): Promise<GroupResponse> {
+    const afterCommit: (() => Promise<void>)[] = [];
     try {
-      return await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const started = await this.prisma.inTenant(auth.tenantId, async (tx) => {
         // Row-level security hides other workspaces' quotes, so a foreign id is simply not found.
         const quote = await tx.quote.findUnique({ where: { id: quoteId } });
         if (!quote) {
@@ -118,7 +135,7 @@ export class WorkOrdersService {
         }
 
         const inputs = quote.inputs as { file_version_id: string | null };
-        return this.start(tx, {
+        const group = await this.start(tx, {
           workflowVersionId: workflow.versionId,
           quantity: quote.quantity,
           chainStepTypeIds: chain,
@@ -128,7 +145,16 @@ export class WorkOrdersService {
           customerId: quote.customerId,
           createdByUserId: auth.userId,
         });
+        for (const hook of this.startHooks) {
+          const after = await hook(tx, { groupId: group.id, quote, userId: auth.userId, tenantId: auth.tenantId });
+          if (after) afterCommit.push(after);
+        }
+        return group;
       });
+      for (const after of afterCommit) {
+        await after();
+      }
+      return started;
     } catch (error) {
       // Two starts of one quote at once: the second meets the unique source.
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {

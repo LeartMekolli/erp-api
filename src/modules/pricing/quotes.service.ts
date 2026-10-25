@@ -32,6 +32,7 @@ import type {
   BreakdownJson,
   QuoteInputs,
   QuoteMaterial,
+  QuotePrice,
   QuoteRefusal,
   QuoteResponse,
   QuoteResultResponse,
@@ -74,6 +75,27 @@ export interface QuoteContext {
 
 /** Whoever asks for the quote: a staff user or a customer person. */
 type Requester = Pick<TenantAuth, 'tenantId' | 'userId'>;
+
+/** What was priced, for a picked workshop to judge whether it can take the job (Partners spec, goal 12). */
+export interface QuotedJob {
+  productId: string;
+  quantity: number;
+  /** The step types the quote priced. */
+  chainStepTypeIds: string[];
+  optionValueIds: string[];
+  /** At the chosen size, in base units (mm, mm², mm³). */
+  measures: { type: string; value: Prisma.Decimal }[];
+}
+
+/**
+ * A workshop the customer picked: its prices replace the workspace's on its steps, and the quote is
+ * refused with `partner_unavailable` unless it `admits` the job, judged inside the quote's transaction.
+ * Partners provides it, so Pricing never depends on Partners.
+ */
+export interface PartnerChoice {
+  partnerId: string;
+  admits(tx: Prisma.TransactionClient, job: QuotedJob): Promise<boolean>;
+}
 
 const DAY_MS = 86_400_000;
 const exact = (value: Prisma.Decimal) => value.toDecimalPlaces(10, Prisma.Decimal.ROUND_HALF_UP).toFixed();
@@ -165,44 +187,14 @@ export class QuotesService {
     auth: Requester,
     body: CustomerQuoteRequest & { customer_group?: string },
     context?: QuoteContext,
+    partner?: PartnerChoice,
   ): Promise<QuoteResultResponse> {
-    if (context && body.customer_group) {
-      throw new BadRequestException("customer_group: a customer's quote gets the customer's own group");
-    }
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const customer = context ? await this.findCustomer(tx, context.customerId) : null;
-      const onlyVisible = context?.audience === 'customer' ? visibleTo(context.customerId) : {};
-      // Row-level security hides other tenants' products, so a foreign id is simply not found.
-      const product = await tx.product.findFirst({
-        where: { id: body.product_id, ...onlyVisible },
-        select: { id: true, name: true, categoryId: true },
-      });
-      if (!product) {
-        throw new NotFoundException('Product not found');
+      const priced = await this.priceRequest(tx, auth.tenantId, body, context, partner);
+      if (!priced.accepted) {
+        return { accepted: false, reasons: priced.reasons };
       }
-      if (context?.audience === 'customer' && body.file_version_id) {
-        const owned = await tx.fileVersion.findFirst({
-          where: { id: body.file_version_id, file: { ownerType: 'customer', ownerId: context.customerId } },
-          select: { id: true },
-        });
-        if (!owned) {
-          throw new NotFoundException('File version not found');
-        }
-      }
-      const adjustments = await this.adjustments.load(tx, { categoryId: product.categoryId, productId: product.id });
-      const groupKey = customer ? customer.groupKey : (body.customer_group ?? null);
-      if (groupKey && !adjustments.groups.has(groupKey)) {
-        throw new BadRequestException(`customer_group: ${groupKey} is not a customer group of this workspace`);
-      }
-      const speedKey = body.delivery_speed ?? adjustments.defaultSpeedKey;
-      if (speedKey && !adjustments.speeds.has(speedKey)) {
-        throw new BadRequestException(`delivery_speed: ${speedKey} is not a delivery speed of this workspace`);
-      }
-
-      const result = await this.run(tx, auth.tenantId, product, body, { adjustments, groupKey, speedKey });
-      if (!result.accepted) {
-        return { accepted: false, reasons: result.reasons };
-      }
+      const { product, groupKey, speedKey, result } = priced;
       const { evaluation, profile } = result;
       const summary = customerSummary(result.breakdown);
 
@@ -227,10 +219,103 @@ export class QuotesService {
           expiresAt: new Date(Date.now() + profile.quoteValidDays * DAY_MS),
           createdByUserId: auth.userId,
           customerId: context?.customerId ?? null,
+          partnerId: partner?.partnerId ?? null,
+          partnerCost: partner ? partnerCost(result.breakdown.steps, result.partnerStepKeys, body.quantity) : null,
         },
       });
       return { accepted: true, quote: toSummary(row, product.name) };
     });
+  }
+
+  /** As `create`, with nothing saved: the price a customer would be quoted, such as with a workshop it may pick. */
+  async preview(
+    auth: Requester,
+    body: CustomerQuoteRequest,
+    context: QuoteContext,
+    partner?: PartnerChoice,
+  ): Promise<{ accepted: true; price: QuotePrice } | { accepted: false; reasons: QuoteRefusal[] }> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const priced = await this.priceRequest(tx, auth.tenantId, body, context, partner);
+      if (!priced.accepted) {
+        return { accepted: false, reasons: priced.reasons };
+      }
+      const { breakdown, evaluation } = priced.result;
+      return {
+        accepted: true,
+        price: {
+          currency: evaluation.price.currency,
+          lines: customerSummary(breakdown).lines.map((line) => ({ label: line.label, amount: line.amount.toFixed(2) })),
+          unit_price: breakdown.unitPrice.toFixed(2),
+          total: breakdown.total.toFixed(2),
+        },
+      };
+    });
+  }
+
+  /**
+   * Everything a quote checks and prices, before anything is saved: the customer's own products and
+   * files, the group and speed, the pricing run, and the picked workshop, which must take the job as
+   * priced (else `partner_unavailable`).
+   */
+  private async priceRequest(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    body: CustomerQuoteRequest & { customer_group?: string },
+    context: QuoteContext | undefined,
+    partner: PartnerChoice | undefined,
+  ) {
+    if (context && body.customer_group) {
+      throw new BadRequestException("customer_group: a customer's quote gets the customer's own group");
+    }
+    const customer = context ? await this.findCustomer(tx, context.customerId) : null;
+    const onlyVisible = context?.audience === 'customer' ? visibleTo(context.customerId) : {};
+    // Row-level security hides other tenants' products, so a foreign id is simply not found.
+    const product = await tx.product.findFirst({
+      where: { id: body.product_id, ...onlyVisible },
+      select: { id: true, name: true, categoryId: true },
+    });
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    if (context?.audience === 'customer' && body.file_version_id) {
+      const owned = await tx.fileVersion.findFirst({
+        where: { id: body.file_version_id, file: { ownerType: 'customer', ownerId: context.customerId } },
+        select: { id: true },
+      });
+      if (!owned) {
+        throw new NotFoundException('File version not found');
+      }
+    }
+    const adjustments = await this.adjustments.load(tx, { categoryId: product.categoryId, productId: product.id });
+    const groupKey = customer ? customer.groupKey : (body.customer_group ?? null);
+    if (groupKey && !adjustments.groups.has(groupKey)) {
+      throw new BadRequestException(`customer_group: ${groupKey} is not a customer group of this workspace`);
+    }
+    const speedKey = body.delivery_speed ?? adjustments.defaultSpeedKey;
+    if (speedKey && !adjustments.speeds.has(speedKey)) {
+      throw new BadRequestException(`delivery_speed: ${speedKey} is not a delivery speed of this workspace`);
+    }
+
+    const result = await this.run(tx, tenantId, product, body, { adjustments, groupKey, speedKey, partnerId: partner?.partnerId });
+    if (!result.accepted) {
+      return { accepted: false as const, reasons: result.reasons };
+    }
+    if (partner) {
+      const job: QuotedJob = {
+        productId: product.id,
+        quantity: body.quantity,
+        chainStepTypeIds: result.chainStepTypeIds,
+        optionValueIds: result.evaluation.valueIds,
+        measures: result.evaluation.measures,
+      };
+      if (!(await partner.admits(tx, job))) {
+        return {
+          accepted: false as const,
+          reasons: [{ code: 'partner_unavailable' as const, message: 'The workshop picked cannot take this job right now' }],
+        };
+      }
+    }
+    return { accepted: true as const, product, groupKey, speedKey, result };
   }
 
   /** A customer's quotes as it sees them, newest first. */
@@ -346,6 +431,7 @@ export class QuotesService {
         profile: Awaited<ReturnType<PricingProfileService['get']>>;
         /** The keys of the chain's steps that are the partner's; empty without a partner. */
         partnerStepKeys: Set<string>;
+        chainStepTypeIds: string[];
       }
   > {
     // 1. The Catalog check.
@@ -442,6 +528,7 @@ export class QuotesService {
       materials: priced.list,
       profile,
       partnerStepKeys: new Set(chain.steps.filter((step) => partnerStepTypes.has(step.id)).map((step) => step.key)),
+      chainStepTypeIds: chain.steps.map((step) => step.id),
     };
   }
 
@@ -542,6 +629,7 @@ function toStaffView(row: Quote): QuoteResponse {
     expired: isExpired(row),
     created_at: row.createdAt.toISOString(),
     customer_id: row.customerId,
+    partner: row.partnerId && row.partnerCost ? { id: row.partnerId, cost: row.partnerCost.toFixed(2) } : null,
     inputs: row.inputs as QuoteInputs,
     materials: row.materials as QuoteMaterial[],
     breakdown: row.breakdown as BreakdownJson,

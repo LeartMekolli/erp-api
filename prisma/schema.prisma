@@ -997,15 +997,21 @@ model Quote {
   createdByUserId String   @map("created_by_user_id") @db.Uuid
   // The customer the quote is for, which sees it in the portal; null for an internal quote.
   customerId      String?  @map("customer_id") @db.Uuid
+  // The workshop the customer picked, whose prices the quote used on its steps, and what it is paid
+  // for the job (Partners spec, goal 12). Both null for a quote at the workspace's own prices.
+  partnerId       String?  @map("partner_id") @db.Uuid
+  partnerCost     Decimal? @map("partner_cost") @db.Decimal(18, 2)
   createdAt       DateTime @default(now()) @map("created_at")
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   // A quoted product is kept: a saved quote outlives changes to the catalog.
   product  Product   @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
   customer Customer? @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  partner  Partner?  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
 
   @@index([tenantId])
   @@index([tenantId, customerId])
+  @@index([tenantId, partnerId])
   @@map("quote")
 }
 
@@ -1017,6 +1023,8 @@ model Customer {
   // active | disabled: a disabled customer's people cannot act for it
   status          String   @default("active")
   customerGroupId String?  @map("customer_group_id") @db.Uuid
+  // The customer's people may pick the workshop for a quote (Partners spec, goal 12).
+  mayPickPartner  Boolean  @default(false) @map("may_pick_partner")
   createdAt       DateTime @default(now()) @map("created_at")
 
   tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1329,6 +1337,7 @@ model Partner {
   stepPrices       PartnerStepPrice[]
   assignments      JobAssignment[]
   transitions      Transition[]
+  quotes           Quote[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])

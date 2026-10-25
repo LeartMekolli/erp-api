@@ -18,6 +18,7 @@ import { PartnerMembersService } from './partner-members.service';
 import { PartnerPortalController } from './partner-portal.controller';
 import { PartnerPricesController, PortalPricesController } from './partner-prices.controller';
 import { PartnerPricesService } from './partner-prices.service';
+import { PartnerQuotesService } from './partner-quotes.service';
 import { PartnersController } from './partners.controller';
 import { PartnersService } from './partners.service';
 import { PortalSetupController, SetupController } from './setup.controller';
@@ -57,7 +58,8 @@ import { SetupService } from './setup.service';
     JobsService,
     OfferExpiryHandler,
     PartnerJobsService,
+    PartnerQuotesService,
   ],
-  exports: [PartnersService, PartnerInvitationsService, SetupService, EligibilityService, JobsService],
+  exports: [PartnersService, PartnerInvitationsService, SetupService, EligibilityService, JobsService, PartnerQuotesService],
 })
 export class PartnersModule {}

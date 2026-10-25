@@ -3,6 +3,9 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { WorkOrderGroup } from '../../generated/prisma/client';
 import { QuotesService } from '../pricing/quotes.service';
+import type { QuotedJob } from '../pricing/quotes.service';
+import { resolveWorkflow } from '../workflow/coverage';
+import type { WorkflowStepRow } from '../workflow/coverage';
 import { pathFor } from '../workflow/path';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { eligible } from './eligibility';
@@ -91,16 +94,6 @@ export class EligibilityService {
 
     const { steps, path } = await pathsOf(tx, [group]);
     const byId = new Map(steps.map((step) => [step.id, step]));
-    const partnerSteps: Job['partnerSteps'] = [];
-    const priced = new Set<string>();
-    for (const id of path(group)) {
-      const step = byId.get(id)!;
-      if (step.doneBy !== 'partner') continue;
-      if (step.priced) priced.add(step.stepTypeId);
-      if (!partnerSteps.some((one) => one.stepTypeId === step.stepTypeId)) {
-        partnerSteps.push({ stepTypeId: step.stepTypeId, key: step.stepType.key });
-      }
-    }
 
     // The chosen values, by group and value key; keys never change.
     const options = Object.entries((quote.inputs as { options: Record<string, string> }).options);
@@ -113,22 +106,57 @@ export class EligibilityService {
     );
 
     // The quote's measures are at the chosen size, in mm.
-    const sides = (quote.breakdown as { measures: { type: string; value: string }[] }).measures
-      .filter((measure) => measure.type.startsWith('bounding_box_'))
-      .map((measure) => new Prisma.Decimal(measure.value));
-    const largestSideMm = sides.length > 0 ? Prisma.Decimal.max(...sides) : null;
+    const measures = (quote.breakdown as { measures: { type: string; value: string }[] }).measures.map((measure) => ({
+      type: measure.type,
+      value: new Prisma.Decimal(measure.value),
+    }));
 
     return {
       group,
       quoteId: quote.id,
       total: quote.total,
+      ...(await this.facts(tx, path(group).map((id) => byId.get(id)!), group.quantity, valueIds, measures)),
+    };
+  }
+
+  /** A job only quoted so far, judged on the product's current workflow and the steps the quote priced. */
+  async quotedJob(tx: Tx, job: QuotedJob): Promise<Pick<Job, 'facts' | 'partnerSteps'>> {
+    const workflow = await resolveWorkflow(tx, job.productId);
+    if (!workflow) {
+      throw new ConflictException('The product has no workflow');
+    }
+    const path = pathFor(stepsForPath(workflow.steps), job.chainStepTypeIds);
+    const byId = new Map(workflow.steps.map((step) => [step.id, step]));
+    return this.facts(tx, path.map((id) => byId.get(id)!), job.quantity, job.optionValueIds, job.measures);
+  }
+
+  /** The job's facts from the steps of its path, in order. */
+  private async facts(
+    tx: Tx,
+    pathSteps: WorkflowStepRow[],
+    quantity: number,
+    optionValueIds: string[],
+    measures: { type: string; value: Prisma.Decimal }[],
+  ): Promise<Pick<Job, 'facts' | 'partnerSteps'>> {
+    const partnerSteps: Job['partnerSteps'] = [];
+    const priced = new Set<string>();
+    for (const step of pathSteps) {
+      if (step.doneBy !== 'partner') continue;
+      if (step.priced) priced.add(step.stepTypeId);
+      if (!partnerSteps.some((one) => one.stepTypeId === step.stepTypeId)) {
+        partnerSteps.push({ stepTypeId: step.stepTypeId, key: step.stepType.key });
+      }
+    }
+    const values = await tx.optionValue.findMany({ where: { id: { in: optionValueIds } }, select: { id: true, key: true } });
+    const sides = measures.filter((measure) => measure.type.startsWith('bounding_box_')).map((measure) => measure.value);
+    return {
       partnerSteps,
       facts: {
-        quantity: group.quantity,
+        quantity,
         partnerStepTypeIds: new Set(partnerSteps.map((step) => step.stepTypeId)),
         pricedStepTypeIds: priced,
-        optionValueIds: valueIds,
-        largestSideMm,
+        optionValueIds,
+        largestSideMm: sides.length > 0 ? Prisma.Decimal.max(...sides) : null,
         names: new Map([
           ...partnerSteps.map((step) => [step.stepTypeId, step.key] as const),
           ...values.map((value) => [value.id, value.key] as const),
@@ -138,34 +166,48 @@ export class EligibilityService {
   }
 
   /**
-   * Judges each partner for the job, today. The job's own offer or assignment never counts against
-   * the room it needs, so a job can be judged again while it is being moved.
+   * Judges each partner for the job, today, and costs those that pass. The job's own offer or
+   * assignment never counts against the room it needs, so a job can be judged again while it is being moved.
    */
   async judge(tx: Tx, job: Job, partnerIds: string[]): Promise<Map<string, Verdict>> {
-    const facts = await this.partnerFacts(tx, partnerIds, job.group.id);
-    const verdicts = new Map<string, Verdict>();
-    const now = new Date();
-    for (const partnerId of partnerIds) {
-      const partner = facts.get(partnerId);
-      if (!partner) {
-        throw new NotFoundException('Partner not found');
-      }
-      const verdict = eligible(job.facts, partner, now);
+    const verdicts = await this.judgeFacts(tx, job.facts, partnerIds, job.group.id);
+    const costed = new Map<string, Verdict>();
+    for (const [partnerId, verdict] of verdicts) {
       if (!verdict.ok) {
-        verdicts.set(partnerId, verdict);
+        costed.set(partnerId, verdict);
         continue;
       }
       const priced = await this.quotes.costFor(tx, job.quoteId, partnerId);
-      verdicts.set(
+      costed.set(
         partnerId,
         priced.cost === null ? { ok: false, reasons: priced.refusals.map((refusal) => refusal.message) } : { ok: true, cost: priced.cost, left: verdict.left },
       );
     }
-    return verdicts;
+    return costed;
+  }
+
+  /** Judges each partner for the job's facts, today, without costing it; `exceptGroupId` is the job's own group, if it has one. */
+  async judgeFacts(
+    tx: Tx,
+    facts: JobFacts,
+    partnerIds: string[],
+    exceptGroupId: string | null,
+  ): Promise<Map<string, { ok: true; left: Map<string, number> } | { ok: false; reasons: string[] }>> {
+    const partners = await this.partnerFacts(tx, partnerIds, exceptGroupId);
+    const now = new Date();
+    return new Map(
+      partnerIds.map((partnerId) => {
+        const partner = partners.get(partnerId);
+        if (!partner) {
+          throw new NotFoundException('Partner not found');
+        }
+        return [partnerId, eligible(facts, partner, now)];
+      }),
+    );
   }
 
   /** Each partner's setup, and what its other open jobs hold: pieces still to go through each step type. */
-  private async partnerFacts(tx: Tx, partnerIds: string[], exceptGroupId: string): Promise<Map<string, PartnerFacts>> {
+  private async partnerFacts(tx: Tx, partnerIds: string[], exceptGroupId: string | null): Promise<Map<string, PartnerFacts>> {
     const partners = await tx.partner.findMany({
       where: { id: { in: partnerIds } },
       include: {
@@ -176,7 +218,11 @@ export class EligibilityService {
       },
     });
     const open = await tx.jobAssignment.findMany({
-      where: { partnerId: { in: partnerIds }, status: { in: OPEN_STATUSES }, groupId: { not: exceptGroupId } },
+      where: {
+        partnerId: { in: partnerIds },
+        status: { in: OPEN_STATUSES },
+        ...(exceptGroupId ? { groupId: { not: exceptGroupId } } : {}),
+      },
       include: { group: true },
     });
     const groups = [...new Map(open.map((row) => [row.groupId, row.group])).values()];

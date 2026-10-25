@@ -198,6 +198,22 @@ export const EVENTS = {
       },
     },
   },
+  // A job a customer sent the partner directly: it is the partner's at once (goal 11).
+  'partner.job.direct': {
+    audience: { kind: 'partner' },
+    channels: ['email', 'feed'],
+    subjectType: 'job_assignment',
+    variables: {
+      product_name: { sample: 'Custom cast part' },
+      quantity: { sample: '10' },
+    },
+    defaults: {
+      en: {
+        subject: 'New job: {{ quantity }} × {{ product_name }}',
+        body: 'A customer picked you for a job of {{ quantity }} × {{ product_name }}. It is yours: you will find it under your jobs.',
+      },
+    },
+  },
   'partner.job.declined': {
     audience: { kind: 'permission', permission: 'partner.assign' },
     channels: ['email', 'feed'],
