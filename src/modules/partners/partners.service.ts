@@ -11,6 +11,7 @@ import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PARTNER_STATUSES } from './partner-response';
 import type { PartnerResponse, PartnerStatus } from './partner-response';
+import { ScoreService } from './score.service';
 
 /** Who made a change: staff, or a partner person acting for the partner. */
 type Actor = Pick<TenantAuth, 'tenantId' | 'userId'>;
@@ -49,6 +50,7 @@ export class PartnersService {
     private readonly audit: AuditService,
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
+    private readonly score: ScoreService,
   ) {}
 
   async create(auth: TenantAuth, input: z.infer<typeof createPartnerSchema>): Promise<PartnerResponse> {
@@ -181,6 +183,7 @@ export class PartnersService {
           : null,
       member_count: memberCount,
       submitted_at: row.submittedAt?.toISOString() ?? null,
+      score: await this.score.scoreOf(tx, row.id),
       created_at: row.createdAt.toISOString(),
     };
   }

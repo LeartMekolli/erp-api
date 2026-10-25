@@ -20,7 +20,7 @@ import { createTestTenant, createTestUser, deleteTestTenants } from './factories
 import { pricedCastPart } from './pricing-fixtures';
 
 interface Eligible {
-  data: { partner: { id: string; name: string }; cost: string; margin: string; room: { step_key: string; left: number }[]; score: null }[];
+  data: { partner: { id: string; name: string }; cost: string; margin: string; room: { step_key: string; left: number }[]; score: { overall: number | null } }[];
   ineligible: { partner: { id: string; name: string }; reasons: string[] }[];
 }
 interface Assignment {
@@ -176,7 +176,8 @@ describe('partners: eligible partners, offers and assignments', () => {
     // MetalWorks' casting setup is 20 more for the run of 10.
     expect(new Prisma.Decimal(metalworks.cost).minus(castco.cost).toFixed(2)).toBe('20.00');
     expect(castco.margin).toBe(new Prisma.Decimal(first.total).minus(castco.cost).toFixed(2));
-    expect(castco.score).toBeNull();
+    // No finished jobs yet: "new".
+    expect(castco.score.overall).toBeNull();
     expect(castco.room.map((step) => step.step_key)).toEqual([
       'print_pattern',
       'casting_tree',

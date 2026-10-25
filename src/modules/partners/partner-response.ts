@@ -8,6 +8,33 @@ import { PARTNER_ROLES } from './partner-roles';
 export const PARTNER_STATUSES = ['setting_up', 'approved', 'suspended'] as const;
 export type PartnerStatus = (typeof PARTNER_STATUSES)[number];
 
+/** Each part a share from 0 to 1 over the last 90 days; null when there is nothing to go on. */
+const scorePartSchema = z.number().min(0).max(1).nullable();
+
+/**
+ * A partner's score (Partners spec, goal 15), for staff and the partner itself; customers see only
+ * `overall`. Derived on read from the partner's moves, offers and ratings.
+ */
+export const partnerScoreSchema = z.strictObject({
+  /** Out of 5, to one decimal: the workspace's weighted mix of the parts. Null ("new") until 5 jobs are finished. */
+  overall: z.number().nullable(),
+  parts: z.strictObject({
+    /** Pieces that passed each of the partner's steps first time. */
+    quality: scorePartSchema,
+    /** One less the share of pieces scrapped. */
+    scrap: scorePartSchema,
+    /** Offers accepted, rather than declined or left to expire. */
+    reliability: scorePartSchema,
+    /** Always null until due dates come with Orders. */
+    on_time: scorePartSchema,
+    /** Customers' stars, 1 to 5 as 0 to 1. */
+    rating: scorePartSchema,
+  }),
+  /** Jobs the partner has finished, ever. */
+  finished_jobs: z.number().int(),
+});
+export type PartnerScore = z.infer<typeof partnerScoreSchema>;
+
 export const partnerResponseSchema = z.strictObject({
   id: z.uuid(),
   /** The company's own name, for staff. */
@@ -23,6 +50,7 @@ export const partnerResponseSchema = z.strictObject({
   member_count: z.number().int(),
   /** When the partner's owner said its setup is ready for approval; null until then. */
   submitted_at: z.iso.datetime().nullable(),
+  score: partnerScoreSchema,
   created_at: z.iso.datetime(),
 });
 export type PartnerResponse = z.infer<typeof partnerResponseSchema>;
@@ -63,7 +91,7 @@ export type PartnerPricesResponse = z.infer<typeof partnerPricesResponseSchema>;
 
 const partnerRefSchema = z.strictObject({ id: z.uuid(), name: z.string() });
 
-/** Staff only: who can take a job, cheapest first, and who can't, with why. */
+/** Staff only: who can take a job, best score first, then cheapest, and who can't, with why. */
 export const eligiblePartnersResponseSchema = z.strictObject({
   data: z.array(
     z.strictObject({
@@ -74,8 +102,7 @@ export const eligiblePartnersResponseSchema = z.strictObject({
       margin: z.string(),
       /** Pieces the partner would still have room for at each of its steps, in path order, after this job. */
       room: z.array(z.strictObject({ step_key: z.string(), left: z.number().int() })),
-      /** The partner's overall score out of 5; null for now, until scores exist. */
-      score: z.number().nullable(),
+      score: partnerScoreSchema,
     }),
   ),
   ineligible: z.array(z.strictObject({ partner: partnerRefSchema, reasons: z.array(z.string()) })),
@@ -156,7 +183,7 @@ export const partnerChoicesResponseSchema = z.strictObject({
   data: z.array(
     z.strictObject({
       partner: z.strictObject({ id: z.uuid(), display_name: z.string() }),
-      /** The workshop's overall score out of 5; null for now, until scores exist. */
+      /** The workshop's overall score out of 5; null for a new workshop. Never its parts. */
       score: z.number().nullable(),
       price: quotePriceSchema,
     }),
@@ -193,6 +220,53 @@ export const portalOwedResponseSchema = z.strictObject({
   jobs: z.array(owedJobResponseSchema.omit({ override_reason: true })),
 });
 export type PortalOwedResponse = z.infer<typeof portalOwedResponseSchema>;
+
+/** A customer's rating of a finished job, as staff see it: who rated it and every comment. */
+export const ratingResponseSchema = z.strictObject({
+  id: z.uuid(),
+  group_id: z.uuid(),
+  partner: partnerRefSchema,
+  customer: z.strictObject({ id: z.uuid(), name: z.string() }),
+  stars: z.number().int().min(1).max(5),
+  comment: z.string().nullable(),
+  /** The partner may read the comment, never who wrote it. */
+  shared_with_partner: z.boolean(),
+  created_at: z.iso.datetime(),
+});
+export type RatingResponse = z.infer<typeof ratingResponseSchema>;
+
+/** A partner's ratings, newest first. */
+export const partnerRatingsResponseSchema = z.strictObject({ data: z.array(ratingResponseSchema) });
+export type PartnerRatingsResponse = z.infer<typeof partnerRatingsResponseSchema>;
+
+/** A rating as the customer who gave it sees it. */
+export const customerRatingResponseSchema = z.strictObject({
+  id: z.uuid(),
+  group_id: z.uuid(),
+  stars: z.number().int(),
+  comment: z.string().nullable(),
+  created_at: z.iso.datetime(),
+});
+export type CustomerRatingResponse = z.infer<typeof customerRatingResponseSchema>;
+
+/**
+ * A partner's own score, parts and stars, newest rating first. A comment only once staff share it, and
+ * never anything naming the customer (P15).
+ */
+export const partnerScoreResponseSchema = z.strictObject({
+  score: partnerScoreSchema,
+  ratings: z.array(
+    z.strictObject({
+      id: z.uuid(),
+      group_id: z.uuid(),
+      stars: z.number().int(),
+      /** Null unless staff shared it. */
+      comment: z.string().nullable(),
+      created_at: z.iso.datetime(),
+    }),
+  ),
+});
+export type PartnerScoreResponse = z.infer<typeof partnerScoreResponseSchema>;
 
 /** Every time a job was handed to a partner, oldest first. */
 export const jobHistoryResponseSchema = z.strictObject({ data: z.array(jobAssignmentResponseSchema) });

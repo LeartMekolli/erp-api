@@ -12,6 +12,7 @@ import { EligibilityService } from './eligibility.service';
 import { jobLabel, toAssignment } from './jobs.service';
 import type { PartnerChoicesResponse } from './partner-response';
 import { lockPartner } from './partners.service';
+import { ScoreService } from './score.service';
 
 type Tx = Prisma.TransactionClient;
 
@@ -29,6 +30,7 @@ export class PartnerQuotesService implements OnModuleInit {
     private readonly workOrders: WorkOrdersService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
+    private readonly score: ScoreService,
   ) {}
 
   onModuleInit(): void {
@@ -38,18 +40,21 @@ export class PartnerQuotesService implements OnModuleInit {
   /** The workshops the customer may pick for the configuration, by name, each priced as a quote with it. */
   async choices(auth: CustomerAuth, body: CustomerQuoteRequest): Promise<PartnerChoicesResponse> {
     await this.mayPick(auth);
-    const partners = await this.prisma.inTenant(auth.tenantId, (tx) =>
-      tx.partner.findMany({
+    const { partners, scores } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const rows = await tx.partner.findMany({
         where: { status: 'approved', acceptsDirectOrders: true },
         orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
         select: { id: true, displayName: true },
-      }),
-    );
+      });
+      return { partners: rows, scores: await this.score.scores(tx, rows.map((row) => row.id)) };
+    });
     const data: PartnerChoicesResponse['data'] = [];
     for (const partner of partners) {
       const priced = await this.quotes.preview(auth, body, this.context(auth), this.choice(partner.id));
       if (priced.accepted) {
-        data.push({ partner: { id: partner.id, display_name: partner.displayName }, score: null, price: priced.price });
+        // Only the overall score: never its parts (Global Constraints).
+        const score = scores.get(partner.id)!.overall;
+        data.push({ partner: { id: partner.id, display_name: partner.displayName }, score, price: priced.price });
       }
     }
     return { data };

@@ -11,6 +11,7 @@ import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { eligible } from './eligibility';
 import type { JobFacts, PartnerFacts } from './eligibility';
 import type { EligiblePartnersResponse } from './partner-response';
+import { ScoreService } from './score.service';
 
 /** Offers and jobs that hold a partner's capacity. */
 export const OPEN_STATUSES = ['offered', 'accepted'];
@@ -50,14 +51,19 @@ export class EligibilityService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly quotes: QuotesService,
+    private readonly score: ScoreService,
   ) {}
 
-  /** Staff only: every partner that can take the job, cheapest first, and every one that can't, with why. */
+  /** Staff only: every partner that can take the job, best score first, then cheapest, and every one that can't, with why. */
   async list(tenantId: string, groupId: string): Promise<EligiblePartnersResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       const job = await this.job(tx, groupId);
       const partners = await tx.partner.findMany({ orderBy: [{ name: 'asc' }, { id: 'asc' }], select: { id: true, name: true } });
       const verdicts = await this.judge(tx, job, partners.map((partner) => partner.id));
+      const scores = await this.score.scores(
+        tx,
+        partners.filter((partner) => verdicts.get(partner.id)!.ok).map((partner) => partner.id),
+      );
 
       const data: EligiblePartnersResponse['data'] = [];
       const ineligible: EligiblePartnersResponse['ineligible'] = [];
@@ -72,11 +78,15 @@ export class EligibilityService {
           cost: verdict.cost.toFixed(2),
           margin: job.total.minus(verdict.cost).toFixed(2),
           room: job.partnerSteps.map((step) => ({ step_key: step.key, left: verdict.left.get(step.stepTypeId) ?? 0 })),
-          score: null,
+          score: scores.get(partner.id)!,
         });
       }
-      // Cheapest first; partners are already in name order, and the sort is stable.
-      data.sort((a, b) => new Prisma.Decimal(a.cost).comparedTo(b.cost));
+      // Best score first, a new partner after any scored one, then cheapest; partners are already in
+      // name order, and the sort is stable.
+      data.sort(
+        (a, b) =>
+          (b.score.overall ?? -1) - (a.score.overall ?? -1) || new Prisma.Decimal(a.cost).comparedTo(b.cost),
+      );
       return { data, ineligible };
     });
   }

@@ -75,6 +75,7 @@ model Tenant {
   partnerOfferings PartnerOffering[]
   partnerStepPrices PartnerStepPrice[]
   jobAssignments  JobAssignment[]
+  jobRatings      JobRating[]
 
   @@map("tenant")
 }
@@ -1033,6 +1034,7 @@ model Customer {
   products      Product[]
   quotes        Quote[]
   workOrderGroups WorkOrderGroup[]
+  jobRatings    JobRating[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -1189,6 +1191,7 @@ model WorkOrderGroup {
   customer        Customer?       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   workOrders      WorkOrder[]
   assignments     JobAssignment[]
+  rating          JobRating?
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
@@ -1338,6 +1341,7 @@ model Partner {
   assignments      JobAssignment[]
   transitions      Transition[]
   quotes           Quote[]
+  ratings          JobRating[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1484,4 +1488,31 @@ model JobAssignment {
   @@index([tenantId, partnerId, status])
   @@index([status, expiresAt])
   @@map("job_assignment")
+}
+
+// A customer's rating of a finished job, for the partner that made it (Partners spec, goal 16): once per job.
+model JobRating {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  groupId           String   @map("group_id") @db.Uuid
+  partnerId         String   @map("partner_id") @db.Uuid
+  customerId        String   @map("customer_id") @db.Uuid
+  // 1..5
+  stars             Int
+  comment           String?
+  // Staff let the partner read the comment, never who wrote it (P15).
+  sharedWithPartner Boolean  @default(false) @map("shared_with_partner")
+  ratedByUserId     String   @map("rated_by_user_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group    WorkOrderGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  partner  Partner        @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+  customer Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, groupId])
+  @@unique([tenantId, id])
+  @@index([tenantId, partnerId, createdAt])
+  @@index([tenantId, customerId])
+  @@map("job_rating")
 }

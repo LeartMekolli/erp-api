@@ -38,7 +38,8 @@ export class JobsController {
   ) {}
 
   @ApiDoc({
-    summary: "The partners who can take a job, cheapest first, with cost, margin and room; and those who can't, with why.",
+    summary:
+      "The partners who can take a job, best score first, then cheapest, with cost, margin, room and score; and those who can't, with why.",
     description:
       "A job is a work order group started from a quote. Margin is the quote total less the partner's cost. " +
       'Room is what each partner step would have left after the job, within one capacity period.',

@@ -21,6 +21,9 @@ import { PartnerPricesService } from './partner-prices.service';
 import { PartnerQuotesService } from './partner-quotes.service';
 import { PartnersController } from './partners.controller';
 import { PartnersService } from './partners.service';
+import { PartnerScoreController, PortalRatingsController, RatingsController } from './ratings.controller';
+import { RatingsService } from './ratings.service';
+import { ScoreService } from './score.service';
 import { PortalSetupController, SetupController } from './setup.controller';
 import { SetupService } from './setup.service';
 
@@ -47,6 +50,9 @@ import { SetupService } from './setup.service';
     PortalPricesController,
     PortalJobsController,
     PartnerJobsController,
+    RatingsController,
+    PortalRatingsController,
+    PartnerScoreController,
   ],
   providers: [
     PartnersService,
@@ -59,6 +65,8 @@ import { SetupService } from './setup.service';
     OfferExpiryHandler,
     PartnerJobsService,
     PartnerQuotesService,
+    ScoreService,
+    RatingsService,
   ],
   exports: [PartnersService, PartnerInvitationsService, SetupService, EligibilityService, JobsService, PartnerQuotesService],
 })
