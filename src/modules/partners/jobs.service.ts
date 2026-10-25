@@ -1,14 +1,17 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
-import type { JobAssignment, Prisma } from '../../generated/prisma/client';
+import { Prisma } from '../../generated/prisma/client';
+import type { JobAssignment } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
+import { payoutStepId } from '../workflow/partner-steps';
 import { EligibilityService, OPEN_STATUSES } from './eligibility.service';
 import type { Job, Verdict } from './eligibility.service';
-import type { JobAssignmentResponse, JobHistoryResponse } from './partner-response';
+import { owedFor, passedPayout } from './owed';
+import type { JobAssignmentResponse, JobHistoryResponse, OwedJobResponse, PartnerOwedResponse } from './partner-response';
 
 const MONEY = /^\d{1,16}(\.\d{1,2})?$/;
 
@@ -24,6 +27,17 @@ export const reassignSchema = z.object({
     })
     .optional(),
 });
+
+/** Staff set what a partner is owed for a job instead of its cost, with a reason (Partners spec, goal 14). */
+export const setOwedSchema = z.object({
+  /** The partner the job is or was with: a job moved mid-way has two. */
+  partner_id: z.uuid(),
+  amount: z.string().regex(MONEY, 'must be an amount with at most 2 places, such as 180.00'),
+  reason: z.string().trim().min(1).max(500),
+});
+
+/** The hand-overs a partner can be owed for: the job it has, and those taken from it mid-way. */
+const OWED_STATUSES = ['accepted', 'replaced'];
 
 /** How long an offer stays open when the workspace hasn't set `partners.routing`. */
 const DEFAULT_OFFER_HOURS = 24;
@@ -182,6 +196,45 @@ export class JobsService {
     });
   }
 
+  /** What the partner is owed, per hand-over, newest first; another workspace's partner is not found. */
+  async owed(tenantId: string, partnerId: string): Promise<PartnerOwedResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      if (!(await tx.partner.findUnique({ where: { id: partnerId }, select: { id: true } }))) {
+        throw new NotFoundException('Partner not found');
+      }
+      const rows = await tx.jobAssignment.findMany({
+        where: { partnerId, status: { in: OWED_STATUSES } },
+        orderBy: { id: 'desc' },
+      });
+      const jobs = await owedJobs(tx, rows);
+      const total = jobs
+        .filter((job) => job.state === 'owed')
+        .reduce((sum, job) => sum.plus(job.amount), new Prisma.Decimal(0));
+      return { total: total.toFixed(2), jobs };
+    });
+  }
+
+  /** Sets what the partner is owed for the job instead of its cost; the job must be or have been the partner's. */
+  async setOwed(auth: TenantAuth, groupId: string, input: z.infer<typeof setOwedSchema>): Promise<OwedJobResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await lockGroup(tx, groupId);
+      const current = await tx.jobAssignment.findFirst({
+        where: { groupId, partnerId: input.partner_id, status: { in: OWED_STATUSES } },
+        orderBy: { id: 'desc' },
+      });
+      if (!current) {
+        throw new NotFoundException('The job was never with this partner');
+      }
+      const row = await tx.jobAssignment.update({
+        where: { id: current.id },
+        data: { owedOverride: input.amount, owedOverrideReason: input.reason },
+        include,
+      });
+      await this.record(tx, auth.userId, row);
+      return (await owedJobs(tx, [row]))[0];
+    });
+  }
+
   /** The partner takes the offered job; only before its deadline, whether or not the expiry run has been (Review Focus 4). */
   async accept(auth: PartnerAuth, groupId: string): Promise<JobAssignmentResponse> {
     const { row } = await this.answer(auth, groupId, 'accepted');
@@ -251,6 +304,47 @@ export class JobsService {
       after: toAssignment(row),
     });
   }
+}
+
+/** What each hand-over is owed, read from its job's pieces and its workflow version's payout step. */
+async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[]> {
+  const groups = await tx.workOrderGroup.findMany({
+    where: { id: { in: [...new Set(rows.map((row) => row.groupId))] } },
+    select: {
+      id: true,
+      quantity: true,
+      product: { select: { name: true } },
+      workflowVersion: { select: { payoutStepId: true, steps: { select: { id: true, position: true, doneBy: true } } } },
+      workOrders: { select: { status: true, currentStep: { select: { position: true } } } },
+    },
+  });
+  const byId = new Map(groups.map((group) => [group.id, group]));
+  return rows.flatMap((row) => {
+    const group = byId.get(row.groupId)!;
+    const { steps, payoutStepId: explicit } = group.workflowVersion;
+    const payoutId = payoutStepId(steps, explicit);
+    // A version without partner steps has no payout step: only finished pieces count as past it.
+    const payoutPosition = steps.find((step) => step.id === payoutId)?.position ?? Number.POSITIVE_INFINITY;
+    const owed = owedFor(
+      row,
+      group.workOrders.map((piece) => ({
+        status: piece.status,
+        passedPayout: passedPayout({ status: piece.status, stepPosition: piece.currentStep?.position ?? null }, payoutPosition),
+      })),
+    );
+    if (!owed) return [];
+    return [
+      {
+        assignment_id: row.id,
+        group_id: row.groupId,
+        product: group.product ? { name: group.product.name } : null,
+        quantity: group.quantity,
+        state: owed.state,
+        amount: owed.amount.toFixed(2),
+        override_reason: row.owedOverride !== null ? row.owedOverrideReason : null,
+      },
+    ];
+  });
 }
 
 /** What a job's notifications name: never the customer. */

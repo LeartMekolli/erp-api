@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -6,9 +6,21 @@ import { CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-con
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { PartnerAccess, RequirePermission } from '../identity/route-markers';
 import { EligibilityService } from './eligibility.service';
-import { JobsService, offerSchema, reassignSchema } from './jobs.service';
-import { eligiblePartnersResponseSchema, jobAssignmentResponseSchema, jobHistoryResponseSchema } from './partner-response';
-import type { EligiblePartnersResponse, JobAssignmentResponse, JobHistoryResponse } from './partner-response';
+import { JobsService, offerSchema, reassignSchema, setOwedSchema } from './jobs.service';
+import {
+  eligiblePartnersResponseSchema,
+  jobAssignmentResponseSchema,
+  jobHistoryResponseSchema,
+  owedJobResponseSchema,
+  partnerOwedResponseSchema,
+} from './partner-response';
+import type {
+  EligiblePartnersResponse,
+  JobAssignmentResponse,
+  JobHistoryResponse,
+  OwedJobResponse,
+  PartnerOwedResponse,
+} from './partner-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -101,6 +113,39 @@ export class JobsController {
   @Get('jobs/:groupId')
   history(@CurrentTenant() tenantId: string, @Param('groupId', idParam) groupId: string): Promise<JobHistoryResponse> {
     return this.jobs.history(tenantId, groupId);
+  }
+
+  @ApiDoc({
+    summary: 'Set what a partner is owed for a job instead of its cost, with a reason.',
+    description:
+      'For the partner that has the job, or one it was taken from mid-way (else 404). The job is still owed only once ' +
+      'every live piece has passed the payout step; for a partner replaced mid-way, at once.',
+    body: setOwedSchema,
+    response: owedJobResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('partner.assign')
+  @Put('jobs/:groupId/owed')
+  setOwed(
+    @CurrentUser() auth: TenantAuth,
+    @Param('groupId', idParam) groupId: string,
+    @Body(new ZodValidationPipe(setOwedSchema)) body: z.infer<typeof setOwedSchema>,
+  ): Promise<OwedJobResponse> {
+    return this.jobs.setOwed(auth, groupId, body);
+  }
+
+  @ApiDoc({
+    summary: 'What a partner is owed, per job it has or had, newest first.',
+    description:
+      "A job is owed once every live piece has passed its workflow's payout step: the cost frozen when it was handed " +
+      'over, or what staff set instead. `total` counts only what is owed now; paying it comes with Payments.',
+    response: partnerOwedResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('partner.read')
+  @Get(':id/owed')
+  owed(@CurrentTenant() tenantId: string, @Param('id', idParam) partnerId: string): Promise<PartnerOwedResponse> {
+    return this.jobs.owed(tenantId, partnerId);
   }
 }
 

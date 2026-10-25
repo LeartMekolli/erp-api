@@ -164,6 +164,36 @@ export const partnerChoicesResponseSchema = z.strictObject({
 });
 export type PartnerChoicesResponse = z.infer<typeof partnerChoicesResponseSchema>;
 
+/**
+ * What a partner is owed for one hand-over of a job (Partners spec, goal 14): owed once every live piece
+ * has passed the payout step, or at once for a partner replaced mid-way (P16).
+ */
+export const owedJobResponseSchema = z.strictObject({
+  assignment_id: z.uuid(),
+  /** The job's id: its work order group. */
+  group_id: z.uuid(),
+  product: z.strictObject({ name: z.string() }).nullable(),
+  quantity: z.number().int(),
+  /** `not_yet` until every live piece has passed the payout step. */
+  state: z.enum(['not_yet', 'owed']),
+  /** What is owed, or will be: the cost frozen at the hand-over, or what staff set instead. */
+  amount: z.string(),
+  /** Why staff set the amount; null when it is the cost. */
+  override_reason: z.string().nullable(),
+});
+export type OwedJobResponse = z.infer<typeof owedJobResponseSchema>;
+
+/** What staff see a partner is owed, newest hand-over first; `total` counts only what is owed now. */
+export const partnerOwedResponseSchema = z.strictObject({ total: z.string(), jobs: z.array(owedJobResponseSchema) });
+export type PartnerOwedResponse = z.infer<typeof partnerOwedResponseSchema>;
+
+/** What a partner sees it is owed: the same, without staff's reasons. */
+export const portalOwedResponseSchema = z.strictObject({
+  total: z.string(),
+  jobs: z.array(owedJobResponseSchema.omit({ override_reason: true })),
+});
+export type PortalOwedResponse = z.infer<typeof portalOwedResponseSchema>;
+
 /** Every time a job was handed to a partner, oldest first. */
 export const jobHistoryResponseSchema = z.strictObject({ data: z.array(jobAssignmentResponseSchema) });
 export type JobHistoryResponse = z.infer<typeof jobHistoryResponseSchema>;

@@ -10,9 +10,10 @@ import { MovesService, moveSchema } from '../workflow/moves.service';
 import type { MoveBody } from '../workflow/moves.service';
 import { moveResponseSchema } from '../workflow/work-order-response';
 import type { MoveResponse } from '../workflow/work-order-response';
+import { JobsService } from './jobs.service';
 import { PartnerJobsService, partnerJobsQuerySchema } from './partner-jobs.service';
-import { partnerJobDetailResponseSchema, partnerJobsResponseSchema } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse } from './partner-response';
+import { partnerJobDetailResponseSchema, partnerJobsResponseSchema, portalOwedResponseSchema } from './partner-response';
+import type { PartnerJobDetailResponse, PartnerJobResponse, PortalOwedResponse } from './partner-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -22,7 +23,34 @@ export class PartnerJobsController {
   constructor(
     private readonly jobs: PartnerJobsService,
     private readonly moves: MovesService,
+    private readonly assignments: JobsService,
   ) {}
+
+  @ApiDoc({
+    summary: 'What the partner is owed, per job it has or had, newest first.',
+    description:
+      'A job is owed once every live piece has passed the payout step: its cost, or an amount the workspace set. ' +
+      '`total` counts only what is owed now.',
+    response: portalOwedResponseSchema,
+    errors: [400, 404],
+  })
+  @PartnerAccess('admin')
+  @Get('owed')
+  async owed(@CurrentPartner() partner: PartnerAuth): Promise<PortalOwedResponse> {
+    const { total, jobs } = await this.assignments.owed(partner.tenantId, partner.partnerId);
+    // Staff's reasons stay with staff.
+    return {
+      total,
+      jobs: jobs.map((job) => ({
+        assignment_id: job.assignment_id,
+        group_id: job.group_id,
+        product: job.product,
+        quantity: job.quantity,
+        state: job.state,
+        amount: job.amount,
+      })),
+    };
+  }
 
   @ApiDoc({
     summary: 'The jobs offered to or accepted by the partner, newest first.',
