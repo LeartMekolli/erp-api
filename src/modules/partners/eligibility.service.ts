@@ -102,10 +102,11 @@ export class EligibilityService {
     if (!group) {
       throw new NotFoundException('Job not found');
     }
-    if (group.sourceType !== 'quote') {
-      throw new ConflictException('Only jobs started from a quote can go to a partner for now');
+    // Started from a quote or from an order line, the job knows the quote it was priced by.
+    if (!group.quoteId) {
+      throw new ConflictException('The job has no quote to cost it by, so it cannot go to a partner');
     }
-    const quote = await tx.quote.findUniqueOrThrow({ where: { id: group.sourceId } });
+    const quote = await tx.quote.findUniqueOrThrow({ where: { id: group.quoteId } });
 
     const { steps, path } = await pathsOf(tx, [group]);
     const byId = new Map(steps.map((step) => [step.id, step]));

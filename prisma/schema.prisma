@@ -1016,7 +1016,10 @@ model Quote {
   product  Product   @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
   customer Customer? @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   partner  Partner?  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+  workOrderGroups WorkOrderGroup[]
 
+  // For tenant-scoped foreign keys to a quote (work order groups, order lines).
+  @@unique([tenantId, id])
   @@index([tenantId])
   @@index([tenantId, customerId])
   @@index([tenantId, partnerId])
@@ -1181,6 +1184,8 @@ model WorkOrderGroup {
   // quote | order_line
   sourceType        String   @map("source_type")
   sourceId          String   @map("source_id") @db.Uuid
+  // The quote the pieces were priced by, whichever source started them (Orders plan, Task 3).
+  quoteId           String?  @map("quote_id") @db.Uuid
   productId         String?  @map("product_id") @db.Uuid
   fileVersionId     String?  @map("file_version_id") @db.Uuid
   customerId        String?  @map("customer_id") @db.Uuid
@@ -1193,6 +1198,7 @@ model WorkOrderGroup {
 
   tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   workflowVersion WorkflowVersion @relation(fields: [tenantId, workflowVersionId], references: [tenantId, id], onDelete: NoAction)
+  quote           Quote?          @relation(fields: [tenantId, quoteId], references: [tenantId, id], onDelete: NoAction)
   product         Product?        @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
   fileVersion     FileVersion?    @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
   customer        Customer?       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)

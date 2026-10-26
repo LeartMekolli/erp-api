@@ -72,6 +72,8 @@ export interface StartInput {
   /** The step types the source priced; null runs every step. */
   chainStepTypeIds: string[] | null;
   source: { type: 'quote' | 'order_line'; id: string };
+  /** The quote the pieces were priced by, whichever source started them; Partners reads it. */
+  quoteId?: string | null;
   productId?: string | null;
   fileVersionId?: string | null;
   customerId?: string | null;
@@ -107,7 +109,7 @@ export class WorkOrdersService {
 
   /** Starts a saved quote's pieces on its product's current workflow (B5). */
   async startFromQuote(auth: TenantAuth, quoteId: string): Promise<GroupResponse> {
-    const afterCommit: (() => Promise<void>)[] = [];
+    let afterCommit: (() => Promise<void>)[] = [];
     let started: GroupResponse;
     try {
       started = await this.prisma.inTenant(auth.tenantId, async (tx) => {
@@ -116,53 +118,9 @@ export class WorkOrdersService {
         if (!quote) {
           throw new NotFoundException('Quote not found');
         }
-        // A picked workshop's job is handed over by a start hook; without one it would silently be made in-house.
-        if (quote.partnerId && this.startHooks.length === 0) {
-          throw new InternalServerErrorException('This process cannot hand jobs to partners');
-        }
-        if (quote.expiresAt.getTime() <= Date.now()) {
-          throw new ConflictException('The quote has expired; quote again to start production');
-        }
-        if (quote.quantity > MAX_PIECES) {
-          throw new BadRequestException(`A group holds at most ${MAX_PIECES} pieces`);
-        }
-        if (await tx.workOrderGroup.findFirst({ where: { sourceType: 'quote', sourceId: quoteId } })) {
-          throw new ConflictException('Production has already started for this quote');
-        }
-
-        const workflow = await resolveWorkflow(tx, quote.productId);
-        if (!workflow) {
-          throw new ConflictException('The product has no workflow');
-        }
-        // The steps the quote priced, by key: step type keys never change.
-        const keys = (quote.breakdown as { steps: { key: string }[] }).steps.map((step) => step.key);
-        const types = await tx.stepType.findMany({ where: { key: { in: keys } }, select: { id: true, key: true } });
-        const idOf = new Map(types.map((type) => [type.key, type.id]));
-        const keyOf = new Map(types.map((type) => [type.id, type.key]));
-        // Step types are never deleted, so every key the quote priced still names one.
-        const chain = keys.map((key) => idOf.get(key)!);
-        const missing = missingStepTypes(workflow.steps, chain);
-        if (missing.length > 0) {
-          const names = missing.map((id) => keyOf.get(id)!);
-          throw new ConflictException(`Workflow ${workflow.name} has no ${names.join(', ')} step`);
-        }
-
-        const inputs = quote.inputs as { file_version_id: string | null };
-        const group = await this.start(tx, {
-          workflowVersionId: workflow.versionId,
-          quantity: quote.quantity,
-          chainStepTypeIds: chain,
-          source: { type: 'quote', id: quoteId },
-          productId: quote.productId,
-          fileVersionId: inputs.file_version_id,
-          customerId: quote.customerId,
-          createdByUserId: auth.userId,
-        });
-        for (const hook of this.startHooks) {
-          const after = await hook(tx, { groupId: group.id, quote, userId: auth.userId, tenantId: auth.tenantId });
-          if (after) afterCommit.push(after);
-        }
-        return group;
+        const result = await this.startQuoted(tx, auth, quote, { type: 'quote', id: quoteId });
+        afterCommit = result.afterCommit;
+        return result.group;
       });
     } catch (error) {
       // Two starts of one quote at once: the second meets the unique source.
@@ -182,6 +140,71 @@ export class WorkOrdersService {
     return started;
   }
 
+  /**
+   * Starts a quote's pieces inside the caller's transaction, for the quote itself or for an order line
+   * priced by it (Orders plan, Task 3), and runs the start hooks, which may refuse by throwing. A quote
+   * started on its own must still hold; an order checks its quotes when it is placed. What it returns
+   * in `afterCommit` is for the caller to run once its transaction has committed.
+   */
+  async startQuoted(
+    tx: Prisma.TransactionClient,
+    auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
+    quote: Quote,
+    source: { type: 'quote' | 'order_line'; id: string },
+  ): Promise<{ group: GroupResponse; afterCommit: (() => Promise<void>)[] }> {
+    // A picked workshop's job is handed over by a start hook; without one it would silently be made in-house.
+    if (quote.partnerId && this.startHooks.length === 0) {
+      throw new InternalServerErrorException('This process cannot hand jobs to partners');
+    }
+    if (source.type === 'quote' && quote.expiresAt.getTime() <= Date.now()) {
+      throw new ConflictException('The quote has expired; quote again to start production');
+    }
+    if (quote.quantity > MAX_PIECES) {
+      throw new BadRequestException(`A group holds at most ${MAX_PIECES} pieces`);
+    }
+    if (await tx.workOrderGroup.findFirst({ where: { sourceType: source.type, sourceId: source.id } })) {
+      throw new ConflictException(
+        source.type === 'quote' ? 'Production has already started for this quote' : 'Production has already started for this order line',
+      );
+    }
+
+    const workflow = await resolveWorkflow(tx, quote.productId);
+    if (!workflow) {
+      throw new ConflictException('The product has no workflow');
+    }
+    // The steps the quote priced, by key: step type keys never change.
+    const keys = (quote.breakdown as { steps: { key: string }[] }).steps.map((step) => step.key);
+    const types = await tx.stepType.findMany({ where: { key: { in: keys } }, select: { id: true, key: true } });
+    const idOf = new Map(types.map((type) => [type.key, type.id]));
+    const keyOf = new Map(types.map((type) => [type.id, type.key]));
+    // Step types are never deleted, so every key the quote priced still names one.
+    const chain = keys.map((key) => idOf.get(key)!);
+    const missing = missingStepTypes(workflow.steps, chain);
+    if (missing.length > 0) {
+      const names = missing.map((id) => keyOf.get(id)!);
+      throw new ConflictException(`Workflow ${workflow.name} has no ${names.join(', ')} step`);
+    }
+
+    const inputs = quote.inputs as { file_version_id: string | null };
+    const group = await this.start(tx, {
+      workflowVersionId: workflow.versionId,
+      quantity: quote.quantity,
+      chainStepTypeIds: chain,
+      source,
+      quoteId: quote.id,
+      productId: quote.productId,
+      fileVersionId: inputs.file_version_id,
+      customerId: quote.customerId,
+      createdByUserId: auth.userId,
+    });
+    const afterCommit: (() => Promise<void>)[] = [];
+    for (const hook of this.startHooks) {
+      const after = await hook(tx, { groupId: group.id, quote, userId: auth.userId, tenantId: auth.tenantId });
+      if (after) afterCommit.push(after);
+    }
+    return { group, afterCommit };
+  }
+
   /** Creates pieces 1..quantity at the first step of their path. The entry point for Orders and tests. */
   async start(tx: Prisma.TransactionClient, input: StartInput): Promise<GroupResponse> {
     const steps = await this.versionSteps(tx, input.workflowVersionId);
@@ -194,6 +217,7 @@ export class WorkOrdersService {
         workflowVersionId: input.workflowVersionId,
         sourceType: input.source.type,
         sourceId: input.source.id,
+        quoteId: input.quoteId ?? null,
         productId: input.productId ?? null,
         fileVersionId: input.fileVersionId ?? null,
         customerId: input.customerId ?? null,

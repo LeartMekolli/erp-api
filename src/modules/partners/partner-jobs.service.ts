@@ -159,10 +159,11 @@ export class PartnerJobsService {
    */
   private async options(
     tx: Tx,
-    groups: { id: string; sourceType: string; sourceId: string; productId: string | null }[],
+    groups: { id: string; quoteId: string | null; productId: string | null }[],
   ): Promise<Map<string, PartnerJobResponse['options']>> {
-    const fromQuotes = groups.filter((group) => group.sourceType === 'quote');
-    const quotes = await tx.quote.findMany({ where: { id: { in: fromQuotes.map((group) => group.sourceId) } }, select: { id: true, inputs: true } });
+    // Started from a quote or from an order line, a job knows the quote it was priced by.
+    const fromQuotes = groups.filter((group): group is typeof group & { quoteId: string } => group.quoteId !== null);
+    const quotes = await tx.quote.findMany({ where: { id: { in: fromQuotes.map((group) => group.quoteId) } }, select: { id: true, inputs: true } });
     const chosenOf = new Map(
       quotes.map((quote) => [quote.id, Object.entries((quote.inputs as { options: Record<string, string> }).options)]),
     );
@@ -182,7 +183,7 @@ export class PartnerJobsService {
       fromQuotes.map((group) => {
         const positionOf = (groupId: string) =>
           positions.find((one) => one.productId === group.productId && one.groupId === groupId)?.position ?? Number.MAX_SAFE_INTEGER;
-        const chosen = chosenOf.get(group.sourceId) ?? [];
+        const chosen = chosenOf.get(group.quoteId) ?? [];
         const named = chosen
           .flatMap(([groupKey, key]) => values.filter((one) => one.group.key === groupKey && one.key === key))
           .sort((a, b) => positionOf(a.group.id) - positionOf(b.group.id) || a.group.key.localeCompare(b.group.key))
