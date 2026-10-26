@@ -43,6 +43,14 @@ describe('pricing demo seed', () => {
     // 9 step types, a default price for each plus casting's own for gold, 2 category chains.
     expect(await seedPricing(prisma, tenant.id)).toEqual({ stepTypes: 9, stepPrices: 10, chains: 2, tiers: 2, groups: 2, speeds: 3 });
     expect(await seedPricing(prisma, tenant.id)).toEqual({ stepTypes: 0, stepPrices: 0, chains: 0, tiers: 0, groups: 0, speeds: 0 });
+    // Each speed promises working days; a quote holds for 4 hours.
+    const speeds = await prisma.inTenant(tenant.id, (tx) => tx.deliverySpeed.findMany({ orderBy: { key: 'asc' } }));
+    expect(speeds.map((speed) => [speed.key, speed.workingDays])).toEqual([
+      ['express', 5],
+      ['rush', 2],
+      ['standard', 10],
+    ]);
+    expect((await prisma.inTenant(tenant.id, (tx) => tx.pricingProfile.findFirstOrThrow())).quoteValidHours).toBe(4);
 
     // 3 defects, final QC and packing, and one workflow per demo category.
     expect(await seedWorkflows(prisma, tenant.id)).toEqual({ defects: 3, stepTypes: 2, workflows: 2 });

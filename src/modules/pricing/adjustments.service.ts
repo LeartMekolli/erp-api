@@ -44,11 +44,13 @@ export const createDeliverySpeedSchema = z.object({
   key: keySchema,
   name: nameSchema,
   surcharge_percent: percentSchema(0, 500),
+  working_days: z.number().int().min(0).max(365).default(0),
   is_default: z.boolean().default(false),
 });
 export const updateDeliverySpeedSchema = z.object({
   name: nameSchema.optional(),
   surcharge_percent: percentSchema(0, 500).optional(),
+  working_days: z.number().int().min(0).max(365).optional(),
   is_default: z.boolean().optional(),
 });
 
@@ -103,6 +105,7 @@ const toSpeed = (row: DeliverySpeed): DeliverySpeedResponse => ({
   key: row.key,
   name: row.name,
   surcharge_percent: row.surchargePercent.toFixed(),
+  working_days: row.workingDays,
   is_default: row.isDefault,
 });
 const toSurcharge = (row: MinSizeSurcharge): MinSizeSurchargeResponse => ({
@@ -216,7 +219,13 @@ export class AdjustmentsService {
         if (input.is_default) await this.refuseSecondDefault(tx, null);
         const created = toSpeed(
           await tx.deliverySpeed.create({
-            data: { key: input.key, name: input.name, surchargePercent: input.surcharge_percent, isDefault: input.is_default },
+            data: {
+              key: input.key,
+              name: input.name,
+              surchargePercent: input.surcharge_percent,
+              workingDays: input.working_days,
+              isDefault: input.is_default,
+            },
           }),
         );
         await this.record(tx, auth, { type: 'delivery_speed', id: created.id }, undefined, created);
@@ -238,7 +247,12 @@ export class AdjustmentsService {
       const updated = toSpeed(
         await tx.deliverySpeed.update({
           where: { id },
-          data: { name: patch.name, surchargePercent: patch.surcharge_percent, isDefault: patch.is_default },
+          data: {
+            name: patch.name,
+            surchargePercent: patch.surcharge_percent,
+            workingDays: patch.working_days,
+            isDefault: patch.is_default,
+          },
         }),
       );
       await this.record(tx, auth, { type: 'delivery_speed', id }, toSpeed(current), updated);

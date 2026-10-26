@@ -97,7 +97,7 @@ export interface PartnerChoice {
   admits(tx: Prisma.TransactionClient, job: QuotedJob): Promise<boolean>;
 }
 
-const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 const exact = (value: Prisma.Decimal) => value.toDecimalPlaces(10, Prisma.Decimal.ROUND_HALF_UP).toFixed();
 
 function breakdownJson(breakdown: Breakdown, evaluation: Extract<Evaluation, { accepted: true }>): BreakdownJson {
@@ -216,7 +216,7 @@ export class QuotesService {
           materials: result.materials,
           breakdown: breakdownJson(result.breakdown, evaluation),
           summary: { lines: summary.lines.map((line) => ({ label: line.label, amount: line.amount.toFixed(2) })) },
-          expiresAt: new Date(Date.now() + profile.quoteValidDays * DAY_MS),
+          expiresAt: new Date(Date.now() + profile.quoteValidHours * HOUR_MS),
           createdByUserId: auth.userId,
           customerId: context?.customerId ?? null,
           partnerId: partner?.partnerId ?? null,

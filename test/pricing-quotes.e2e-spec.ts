@@ -122,6 +122,10 @@ describe('pricing: saved quotes', () => {
       ['pattern_resin', '0.12', 'manual'],
       ['silver_925', '0.85', 'fallback'],
     ]);
+    // The fixture's profile holds a quote for 168 hours.
+    const holds = new Date((staff.body as { expires_at: string }).expires_at).getTime() - Date.now();
+    expect(holds).toBeGreaterThan(167 * 3_600_000);
+    expect(holds).toBeLessThanOrEqual(168 * 3_600_000);
 
     const summary = await tenant.owner.get(`/pricing/quotes/${one.id}/summary`).expect(200);
     expectDocumented(quoteSummaryResponseSchema, summary.body);

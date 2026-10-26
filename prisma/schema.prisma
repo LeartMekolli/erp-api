@@ -797,7 +797,8 @@ model PricingProfile {
   tenantId         String   @unique @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
   marginPercent    Decimal  @default(0) @map("margin_percent") @db.Decimal(9, 4)
   overheadPerPiece Decimal  @default(0) @map("overhead_per_piece") @db.Decimal(18, 6)
-  quoteValidDays   Int      @default(7) @map("quote_valid_days")
+  // How long a quote holds its price, in hours (Orders spec, goal 2).
+  quoteValidHours  Int      @default(4) @map("quote_valid_hours")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -951,6 +952,8 @@ model DeliverySpeed {
   name             String
   surchargePercent Decimal  @map("surcharge_percent") @db.Decimal(9, 4)
   isDefault        Boolean  @default(false) @map("is_default")
+  // Working days from placing an order to its promised date (Orders spec, goal 7).
+  workingDays      Int      @default(0) @map("working_days")
   createdAt        DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

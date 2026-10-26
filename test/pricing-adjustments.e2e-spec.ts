@@ -80,7 +80,7 @@ describe('pricing: margins, discount tiers, customer groups, delivery speeds, mi
   it('takes the margin from the product, else its category, else the pricing profile', async () => {
     const tenant = await freshTenant();
     const { categoryId, productId } = await catalog(tenant);
-    await tenant.owner.put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '0', quote_valid_days: 7 }).expect(200);
+    await tenant.owner.put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '0', quote_valid_hours: 168 }).expect(200);
     const margin = () =>
       prisma.inTenant(tenant.id, async (tx) => (await adjustments.load(tx, { categoryId, productId })).marginPercent.toFixed());
 
@@ -190,14 +190,15 @@ describe('pricing: margins, discount tiers, customer groups, delivery speeds, mi
     const tenant = await freshTenant();
 
     const standard = await tenant.owner
-      .post('/pricing/delivery-speeds', { key: 'standard', name: 'Standard', surcharge_percent: '0', is_default: true })
+      .post('/pricing/delivery-speeds', { key: 'standard', name: 'Standard', surcharge_percent: '0', working_days: 10, is_default: true })
       .expect(201);
     expectDocumented(deliverySpeedResponseSchema, standard.body);
-    expect(standard.body).toMatchObject({ key: 'standard', surcharge_percent: '0', is_default: true });
+    expect(standard.body).toMatchObject({ key: 'standard', surcharge_percent: '0', working_days: 10, is_default: true });
     const express = await tenant.owner
       .post('/pricing/delivery-speeds', { key: 'express', name: 'Express', surcharge_percent: '20' })
       .expect(201);
-    expect(express.body).toMatchObject({ is_default: false });
+    // Without working days, a speed promises the placing day itself.
+    expect(express.body).toMatchObject({ is_default: false, working_days: 0 });
 
     await tenant.owner
       .post('/pricing/delivery-speeds', { key: 'rush', name: 'Rush', surcharge_percent: '50', is_default: true })
@@ -207,6 +208,16 @@ describe('pricing: margins, discount tiers, customer groups, delivery speeds, mi
       () => tenant.owner.post('/pricing/delivery-speeds', { key: 'rush', name: 'Rush', surcharge_percent: '501' }),
       { surcharge_percent: '501' },
     );
+
+    // Working days are a whole number from 0 to 365.
+    for (const working_days of [-1, 366, 2.5]) {
+      await tenant.owner
+        .post('/pricing/delivery-speeds', { key: 'slow', name: 'Slow', surcharge_percent: '0', working_days })
+        .expect(400);
+    }
+    const slower = await tenant.owner.patch(`/pricing/delivery-speeds/${id(standard)}`, { working_days: 12 }).expect(200);
+    expectDocumented(deliverySpeedResponseSchema, slower.body);
+    expect(slower.body).toMatchObject({ working_days: 12 });
 
     // Moving the default: unset the old one, then set the new one.
     await tenant.owner.patch(`/pricing/delivery-speeds/${id(standard)}`, { is_default: false }).expect(200);

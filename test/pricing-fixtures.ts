@@ -110,7 +110,7 @@ export async function pricedCastPart(
   ]);
   await price(steps.plating, [{ kind: 'per_measure', measure: 'surface_area', unit: 'cm2', rate: '0.4' }]);
 
-  await staff.put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '2', quote_valid_days: 7 }).expect(200);
+  await staff.put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '2', quote_valid_hours: 168 }).expect(200);
   await staff.put('/pricing/discount-tiers', { tiers: [{ min_quantity: 10, percent: '5' }] }).expect(200);
   await staff.post('/pricing/delivery-speeds', { key: 'standard', name: 'Standard', surcharge_percent: '0', is_default: true }).expect(201);
   await staff.post('/pricing/delivery-speeds', { key: 'rush', name: 'Rush', surcharge_percent: '30' }).expect(201);

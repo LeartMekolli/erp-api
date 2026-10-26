@@ -25,8 +25,8 @@ export const pricingProfileResponseSchema = z.strictObject({
   /** Profit on cost, unless a category or product sets its own. */
   margin_percent: z.string(),
   overhead_per_piece: z.string(),
-  /** How long a quote holds its price. */
-  quote_valid_days: z.number().int(),
+  /** How long a quote holds its price, in hours. */
+  quote_valid_hours: z.number().int(),
 });
 export type PricingProfileResponse = z.infer<typeof pricingProfileResponseSchema>;
 
@@ -98,6 +98,8 @@ export const deliverySpeedResponseSchema = z.strictObject({
   key: z.string(),
   name: z.string(),
   surcharge_percent: z.string(),
+  /** Working days from placing an order to its promised date. */
+  working_days: z.number().int(),
   /** The speed a quote gets when it names none; at most one is the default. */
   is_default: z.boolean(),
 });

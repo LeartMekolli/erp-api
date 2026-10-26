@@ -99,7 +99,7 @@ const PRICES: { step: string; material: string | null; failure: string; blocks: 
   },
 ];
 
-const PROFILE = { marginPercent: '40', overheadPerPiece: '2', quoteValidDays: 7 };
+const PROFILE = { marginPercent: '40', overheadPerPiece: '2', quoteValidHours: 4 };
 const TIERS = [
   { minQuantity: 10, percent: '5' },
   { minQuantity: 50, percent: '10' },
@@ -109,9 +109,9 @@ const GROUPS = [
   { key: 'trade', name: 'Trade', percent: '-10' },
 ];
 const SPEEDS = [
-  { key: 'standard', name: 'Standard', surchargePercent: '0', isDefault: true },
-  { key: 'express', name: 'Express', surchargePercent: '15', isDefault: false },
-  { key: 'rush', name: 'Rush', surchargePercent: '30', isDefault: false },
+  { key: 'standard', name: 'Standard', surchargePercent: '0', workingDays: 10, isDefault: true },
+  { key: 'express', name: 'Express', surchargePercent: '15', workingDays: 5, isDefault: false },
+  { key: 'rush', name: 'Rush', surchargePercent: '30', workingDays: 2, isDefault: false },
 ];
 
 export interface PricingSeedCounts {

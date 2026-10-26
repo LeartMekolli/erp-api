@@ -25,6 +25,8 @@ export const SETTING_KEYS = {
       workingDays: z.array(z.number().int().min(1).max(7)).min(1),
       startHour: z.number().int().min(0).max(23),
       endHour: z.number().int().min(1).max(24),
+      // Days the workspace is closed, such as public holidays; promised dates skip them (Orders spec, B1).
+      closedDates: z.array(z.iso.date()).max(366).default([]),
     })
     .refine((calendar) => calendar.endHour > calendar.startHour, {
       message: 'endHour must be later than startHour',

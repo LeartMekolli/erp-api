@@ -30,20 +30,20 @@ export const updateStepTypeSchema = z.object({
 export const pricingProfileSchema = z.object({
   margin_percent: percentSchema(0, 1000),
   overhead_per_piece: amountSchema,
-  quote_valid_days: z.number().int().min(1).max(90),
+  quote_valid_hours: z.number().int().min(1).max(720),
 });
 
 /** A workspace's pricing defaults, as the engine reads them. */
 export interface PricingDefaults {
   marginPercent: Prisma.Decimal;
   overheadPerPiece: Prisma.Decimal;
-  quoteValidDays: number;
+  quoteValidHours: number;
 }
 
 const DEFAULTS: PricingDefaults = {
   marginPercent: new Prisma.Decimal(0),
   overheadPerPiece: new Prisma.Decimal(0),
-  quoteValidDays: 7,
+  quoteValidHours: 4,
 };
 
 export function toStepType(row: StepType): StepTypeResponse {
@@ -61,7 +61,7 @@ function toProfile(defaults: PricingDefaults): PricingProfileResponse {
   return {
     margin_percent: defaults.marginPercent.toFixed(),
     overhead_per_piece: defaults.overheadPerPiece.toFixed(),
-    quote_valid_days: defaults.quoteValidDays,
+    quote_valid_hours: defaults.quoteValidHours,
   };
 }
 
@@ -156,7 +156,7 @@ export class PricingProfileService {
       const data = {
         marginPercent: input.margin_percent,
         overheadPerPiece: input.overhead_per_piece,
-        quoteValidDays: input.quote_valid_days,
+        quoteValidHours: input.quote_valid_hours,
       };
       const row = await tx.pricingProfile.upsert({ where: { tenantId: auth.tenantId }, create: data, update: data });
       const after = toProfile(fromRow(row));
@@ -178,5 +178,5 @@ export class PricingProfileService {
 }
 
 function fromRow(row: PricingProfile): PricingDefaults {
-  return { marginPercent: row.marginPercent, overheadPerPiece: row.overheadPerPiece, quoteValidDays: row.quoteValidDays };
+  return { marginPercent: row.marginPercent, overheadPerPiece: row.overheadPerPiece, quoteValidHours: row.quoteValidHours };
 }

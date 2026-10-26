@@ -24,6 +24,8 @@ Read before analysing, specifying or planning:
 
 These are reference material, not a plan. Specs and plans are produced per topic.
 
+Every plan gets a guide per task for implementing it by hand, kept in sync as tasks land: see `docs/superpowers/guides/README.md`.
+
 ## Progress
 
 `docs/progress.md` holds the state of every backend module (from `docs/discovery/domain-map.md`) and an overall estimate. When a module's plan is fully done (every task committed), update that file and show the user the whole table with the new estimate, unasked. Not after single tasks.

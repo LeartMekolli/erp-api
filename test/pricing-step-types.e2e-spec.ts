@@ -110,13 +110,13 @@ describe('pricing: step types and the pricing profile', () => {
 
     const defaults = await tenant.owner.get('/pricing/profile').expect(200);
     expectDocumented(pricingProfileResponseSchema, defaults.body);
-    expect(defaults.body).toEqual({ margin_percent: '0', overhead_per_piece: '0', quote_valid_days: 7 });
+    expect(defaults.body).toEqual({ margin_percent: '0', overhead_per_piece: '0', quote_valid_hours: 4 });
 
     const set = await tenant.owner
-      .put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '2', quote_valid_days: 3 })
+      .put('/pricing/profile', { margin_percent: '40', overhead_per_piece: '2', quote_valid_hours: 48 })
       .expect(200);
     expectDocumented(pricingProfileResponseSchema, set.body);
-    expect(set.body).toEqual({ margin_percent: '40', overhead_per_piece: '2', quote_valid_days: 3 });
+    expect(set.body).toEqual({ margin_percent: '40', overhead_per_piece: '2', quote_valid_hours: 48 });
     expect((await tenant.owner.get('/pricing/profile').expect(200)).body).toEqual(set.body);
 
     const entries = await prisma.inTenant(tenant.id, (tx) =>
@@ -125,16 +125,17 @@ describe('pricing: step types and the pricing profile', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       subjectType: 'pricing_profile',
-      before: { margin_percent: '0', overhead_per_piece: '0', quote_valid_days: 7 },
-      after: { margin_percent: '40', overhead_per_piece: '2', quote_valid_days: 3 },
+      before: { margin_percent: '0', overhead_per_piece: '0', quote_valid_hours: 4 },
+      after: { margin_percent: '40', overhead_per_piece: '2', quote_valid_hours: 48 },
     });
 
     for (const body of [
-      { margin_percent: '40', overhead_per_piece: '2', quote_valid_days: 0 },
-      { margin_percent: '1e2', overhead_per_piece: '2', quote_valid_days: 7 },
-      { margin_percent: '1001', overhead_per_piece: '2', quote_valid_days: 7 },
-      { margin_percent: '40', overhead_per_piece: '-1', quote_valid_days: 7 },
-      { margin_percent: '40', overhead_per_piece: 'abc', quote_valid_days: 7 },
+      { margin_percent: '40', overhead_per_piece: '2', quote_valid_hours: 0 },
+      { margin_percent: '1e2', overhead_per_piece: '2', quote_valid_hours: 4 },
+      { margin_percent: '1001', overhead_per_piece: '2', quote_valid_hours: 4 },
+      { margin_percent: '40', overhead_per_piece: '-1', quote_valid_hours: 4 },
+      { margin_percent: '40', overhead_per_piece: 'abc', quote_valid_hours: 4 },
+      { margin_percent: '40', overhead_per_piece: '2', quote_valid_hours: 721 },
     ]) {
       const response = await tenant.owner.put('/pricing/profile', body);
       expect({ body, status: response.status }).toEqual({ body, status: 400 });

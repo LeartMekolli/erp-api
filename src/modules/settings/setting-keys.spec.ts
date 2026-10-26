@@ -37,6 +37,16 @@ describe('setting keys', () => {
     ).toThrow(ZodError);
   });
 
+  it('accepts closed dates on the business calendar, and none', () => {
+    const calendar = { workingDays: [1, 2, 3, 4, 5], startHour: 9, endHour: 17 };
+    expect(parseSetting('business.calendar', { ...calendar, closedDates: ['2026-12-25'] })).toEqual({
+      ...calendar,
+      closedDates: ['2026-12-25'],
+    });
+    expect(parseSetting('business.calendar', calendar)).toEqual({ ...calendar, closedDates: [] });
+    expect(() => parseSetting('business.calendar', { ...calendar, closedDates: ['25 Dec'] })).toThrow(ZodError);
+  });
+
   it('accepts partner routing with an offer deadline of 1 to 720 hours', () => {
     expect(parseSetting('partners.routing', { offerHours: 24, splitOrderLines: false })).toEqual({
       offerHours: 24,
