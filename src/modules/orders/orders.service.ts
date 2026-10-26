@@ -23,6 +23,7 @@ import type {
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
+import { lineState, orderState } from './order-state';
 import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { TAX_CALCULATOR } from './tax';
@@ -33,6 +34,30 @@ type Channel = 'staff' | 'portal';
 
 export const orderListQuerySchema = paginationQuerySchema.extend({ customer_id: z.uuid().optional() });
 export type OrderListQuery = z.infer<typeof orderListQuerySchema>;
+
+const reasonSchema = z.string().trim().min(1).max(500);
+
+export const cancelOrderSchema = z.strictObject({
+  reason: reasonSchema,
+  /** Positions of the lines to cancel; every line not cancelled yet when left out. */
+  lines: z.array(z.number().int().min(0)).min(1).max(50).optional(),
+  /** What the partner that accepted a cancelled line is owed for it; nothing when left out. */
+  partner_owed: z
+    .array(
+      z.strictObject({
+        position: z.number().int().min(0),
+        amount: z.string().regex(/^\d{1,16}(\.\d{1,2})?$/, 'must be an amount with at most 2 places, such as 25.00'),
+        reason: reasonSchema,
+      }),
+    )
+    .max(50)
+    .refine((owed) => new Set(owed.map((entry) => entry.position)).size === owed.length, 'one amount per line')
+    .optional(),
+});
+export type CancelOrder = z.infer<typeof cancelOrderSchema>;
+
+export const customerCancelOrderSchema = z.strictObject({ reason: reasonSchema });
+export type CustomerCancelOrder = z.infer<typeof customerCancelOrderSchema>;
 
 /** Jobs that hold a line: offered or accepted. */
 const HOLDING = ['offered', 'accepted'];
@@ -213,6 +238,100 @@ export class OrdersService {
     return this.customerGet(auth.tenantId, auth.customerId, placed.id);
   }
 
+  /**
+   * Staff cancel some lines, or every line left, until the order ships (Orders spec, goal 12). Each
+   * line's unfinished pieces are cancelled and its partner let go; an accepted partner is owed what
+   * `partner_owed` gives for its line, else nothing. Once every line is cancelled, so is the order.
+   */
+  async cancel(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: CancelOrder): Promise<OrderResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const order = await this.lockOrder(tx, id);
+      return this.cancelLines(tx, auth, order, body);
+    });
+  }
+
+  /** The customer cancels the whole order, only while no piece of it has been worked on (goal 12). */
+  async customerCancel(auth: CustomerAuth, id: string, body: CustomerCancelOrder): Promise<CustomerOrderResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await this.customerOrder(tx, auth.customerId, id);
+      const order = await this.lockOrder(tx, id);
+      if (order.cancelledAt) {
+        throw new ConflictException('The order is already cancelled');
+      }
+      const groupIds = (await tx.orderLine.findMany({ where: { orderId: id }, select: { groupId: true } })).flatMap((line) =>
+        line.groupId ? [line.groupId] : [],
+      );
+      // Any transition at all: a piece has passed or failed a step, or staff corrected one.
+      if (await tx.transition.findFirst({ where: { workOrder: { groupId: { in: groupIds } } }, select: { id: true } })) {
+        throw new ConflictException('Production has started on this order: please contact us to cancel it');
+      }
+      const cancelled = await this.cancelLines(tx, auth, order, { reason: body.reason });
+      return (await this.customerViews(tx, [await tx.order.findUniqueOrThrow({ where: { id: cancelled.id } })]))[0];
+    });
+  }
+
+  /** Locks the order row first, as every change to an order does (Global Constraints, lock order). */
+  private async lockOrder(tx: Tx, id: string): Promise<Order> {
+    const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "order" WHERE id = ${id}::uuid FOR UPDATE`;
+    if (rows.length === 0) {
+      throw new NotFoundException('Order not found');
+    }
+    return tx.order.findUniqueOrThrow({ where: { id } });
+  }
+
+  /** Cancels the chosen lines of a locked order, then the order once no line is left, and audits it. */
+  private async cancelLines(tx: Tx, auth: Pick<TenantAuth, 'tenantId' | 'userId'>, order: Order, body: CancelOrder): Promise<OrderResponse> {
+    if (order.shippedAt) {
+      throw new ConflictException('A shipped order cannot be cancelled');
+    }
+    const lines = await tx.orderLine.findMany({ where: { orderId: order.id }, orderBy: { position: 'asc' } });
+    for (const [index, position] of (body.lines ?? []).entries()) {
+      if (!lines.some((line) => line.position === position)) {
+        throw new BadRequestException({ message: 'The order has no such line', errors: [{ path: `lines.${index}`, message: `no line ${position}` }] });
+      }
+    }
+    const chosen = lines.filter((line) => !line.cancelledAt && (body.lines ? body.lines.includes(line.position) : true));
+    // A line named twice is one line; one already cancelled can't be again.
+    if (chosen.length === 0 || chosen.length < new Set(body.lines ?? []).size) {
+      throw new ConflictException(chosen.length === 0 ? 'Nothing left to cancel' : 'A line named is already cancelled');
+    }
+    const owed = body.partner_owed ?? [];
+    for (const [index, entry] of owed.entries()) {
+      if (!chosen.some((line) => line.position === entry.position)) {
+        throw new BadRequestException({
+          message: 'A partner is owed only for a line being cancelled',
+          errors: [{ path: `partner_owed.${index}.position`, message: `line ${entry.position} is not being cancelled` }],
+        });
+      }
+    }
+
+    const before = (await this.views(tx, [order]))[0];
+    const now = new Date();
+    await this.workOrders.cancelGroups(
+      tx,
+      chosen.flatMap((line) => {
+        if (!line.groupId) return [];
+        const forPartner = owed.find((entry) => entry.position === line.position);
+        return [{ id: line.groupId, partnerOwed: forPartner && { amount: forPartner.amount, reason: forPartner.reason } }];
+      }),
+      auth.userId,
+      body.reason,
+    );
+    await tx.orderLine.updateMany({ where: { id: { in: chosen.map((line) => line.id) } }, data: { cancelledAt: now } });
+    const left = lines.length - lines.filter((line) => line.cancelledAt).length - chosen.length;
+    const updated = left === 0 ? await tx.order.update({ where: { id: order.id }, data: { cancelledAt: now, cancelReason: body.reason } }) : order;
+
+    const after = (await this.views(tx, [updated]))[0];
+    await this.audit.record(tx, {
+      actor: { type: 'user', id: auth.userId },
+      action: 'order.changed',
+      subject: { type: 'order', id: order.id },
+      before,
+      after,
+    });
+    return after;
+  }
+
   private async customerOrder(tx: Tx, customerId: string, id: string): Promise<Order> {
     const order = await tx.order.findFirst({ where: { id, customerId } });
     if (!order) {
@@ -382,6 +501,7 @@ export class OrdersService {
       include: { partner: { select: { id: true, name: true } } },
     });
     const partnerOf = new Map(holding.map((row) => [row.groupId, row.partner]));
+    const pieces = await tx.workOrder.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, status: true } });
 
     return orders.map((order) => {
       const method = methods.find((one) => one.id === order.shippingMethodId)!;
@@ -394,8 +514,7 @@ export class OrdersService {
           quantity: line.quantity,
           unit_price: line.unitPrice.toFixed(2),
           total: line.total.toFixed(2),
-          // Ready, shipped and cancelled lines and orders come with cancelling and shipping (plan Tasks 7–8).
-          state: 'in_production',
+          state: lineState(pieces.filter((piece) => piece.groupId === line.groupId), line.cancelledAt),
           group_id: line.groupId,
           partner: line.groupId ? (partnerOf.get(line.groupId) ?? null) : null,
         }));
@@ -404,17 +523,17 @@ export class OrdersService {
         number: order.number,
         customer: customers.find((customer) => customer.id === order.customerId)!,
         channel: order.channel as Channel,
-        state: 'in_production',
+        state: orderState(orderLines.map((line) => line.state), order.shippedAt, order.deliveredAt),
         promised_on: order.promisedOn.toISOString().slice(0, 10),
         delivery_speed: order.deliverySpeedKey,
         address: order.address as Address,
         shipping: {
           method: { key: method.key, name: method.name },
           price: order.shippingPrice.toFixed(2),
-          courier: null,
-          tracking: null,
-          shipped_at: null,
-          delivered_at: null,
+          courier: order.courier,
+          tracking: order.tracking,
+          shipped_at: order.shippedAt?.toISOString() ?? null,
+          delivered_at: order.deliveredAt?.toISOString() ?? null,
         },
         lines: orderLines,
         lines_total: order.linesTotal.toFixed(2),

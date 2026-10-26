@@ -39,10 +39,10 @@ export interface ScoreFacts {
   stars: number[];
 }
 
-/** Offers the partner took: a replaced job was accepted first. */
-const TAKEN = new Set(['accepted', 'replaced']);
+/** Offers the partner took: a replaced job, or one whose order line was cancelled, was accepted first. */
+const TAKEN = new Set(['accepted', 'replaced', 'cancelled']);
 /** Offers the partner answered, or let lapse. */
-const ANSWERED = new Set(['accepted', 'replaced', 'declined', 'expired']);
+const ANSWERED = new Set(['accepted', 'replaced', 'cancelled', 'declined', 'expired']);
 
 const share = (part: number, whole: number): number | null => (whole === 0 ? null : part / whole);
 

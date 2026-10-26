@@ -92,11 +92,26 @@ export type StartHook = (
   started: { groupId: string; quote: Quote; userId: string; tenantId: string },
 ) => Promise<(() => Promise<void>) | undefined>;
 
+/** A group whose pieces were cancelled, as its cancel hooks hear of it. */
+export interface CancelledGroup {
+  groupId: string;
+  userId: string;
+  /** What a partner that had accepted the job is owed for it; nothing when left out. */
+  partnerOwed?: { amount: string; reason: string };
+}
+
+/**
+ * Runs inside the transaction that cancels a group's pieces, under the group's lock, so another
+ * module can follow. Partners uses it to let go of the job's partner, so Workflow never depends on Partners.
+ */
+export type CancelHook = (tx: Prisma.TransactionClient, cancelled: CancelledGroup) => Promise<void>;
+
 /** Groups of pieces and the pieces themselves: one work order per piece (F3). */
 @Injectable()
 export class WorkOrdersService {
   private readonly logger = new Logger(WorkOrdersService.name);
   private readonly startHooks: StartHook[] = [];
+  private readonly cancelHooks: CancelHook[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -105,6 +120,55 @@ export class WorkOrdersService {
 
   registerStartHook(hook: StartHook): void {
     this.startHooks.push(hook);
+  }
+
+  registerCancelHook(hook: CancelHook): void {
+    this.cancelHooks.push(hook);
+  }
+
+  /**
+   * Cancels every unfinished piece of the groups, each recorded as a correction to `cancelled` (as a
+   * restored piece's replacement is), then runs the cancel hooks per group. Locks as a move does, the
+   * pieces in id order and then their groups, so a move and a cancel at once can't deadlock.
+   */
+  async cancelGroups(
+    tx: Prisma.TransactionClient,
+    groups: { id: string; partnerOwed?: CancelledGroup['partnerOwed'] }[],
+    userId: string,
+    comment: string,
+  ): Promise<void> {
+    if (groups.length === 0) return;
+    const groupIds = Prisma.join([...new Set(groups.map((group) => group.id))].sort().map((id) => Prisma.sql`${id}::uuid`));
+    await tx.$queryRaw`SELECT id FROM work_order WHERE group_id IN (${groupIds}) ORDER BY id FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM work_order_group WHERE id IN (${groupIds}) ORDER BY id FOR UPDATE`;
+
+    const active = await tx.workOrder.findMany({ where: { groupId: { in: groups.map((group) => group.id) }, status: 'active' } });
+    if (active.length > 0) {
+      await tx.transition.createMany({
+        data: active.map((piece) => ({
+          id: newId(),
+          workOrderId: piece.id,
+          kind: 'correction',
+          fromStepId: piece.currentStepId,
+          toStepId: null,
+          fromStatus: 'active',
+          toStatus: 'cancelled',
+          comment,
+          actorUserId: userId,
+          // Not work done for a partner: nothing to credit.
+          partnerId: null,
+        })),
+      });
+      await tx.workOrder.updateMany({
+        where: { id: { in: active.map((piece) => piece.id) } },
+        data: { status: 'cancelled', currentStepId: null },
+      });
+    }
+    for (const group of groups) {
+      for (const hook of this.cancelHooks) {
+        await hook(tx, { groupId: group.id, userId, partnerOwed: group.partnerOwed });
+      }
+    }
   }
 
   /** Starts a saved quote's pieces on its product's current workflow (B5). */

@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import type { PaginationQuery } from '../../common/pagination/page';
@@ -12,6 +12,8 @@ import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
+import { WorkOrdersService } from '../workflow/work-orders.service';
+import type { CancelledGroup } from '../workflow/work-orders.service';
 import { EligibilityService, liveOpen } from './eligibility.service';
 import type { Job, Verdict } from './eligibility.service';
 import { owedFor, passedPayout } from './owed';
@@ -41,8 +43,8 @@ export const setOwedSchema = z.object({
   reason: z.string().trim().min(1).max(500),
 });
 
-/** The hand-overs a partner can be owed for: the job it has, and those taken from it mid-way. */
-const OWED_STATUSES = ['accepted', 'replaced'];
+/** The hand-overs a partner can be owed for: the job it has, those taken from it mid-way, and those whose order line was cancelled. */
+const OWED_STATUSES = ['accepted', 'replaced', 'cancelled'];
 
 /** How long an offer stays open when the workspace hasn't set `partners.routing`. */
 const DEFAULT_OFFER_HOURS = 24;
@@ -91,7 +93,7 @@ function refused(name: string, verdict: Extract<Verdict, { ok: false }>): Confli
 
 /** Jobs offered to partners, answered by them, and moved between them (Partners spec, goals 10 and P16). */
 @Injectable()
-export class JobsService {
+export class JobsService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eligibility: EligibilityService,
@@ -99,7 +101,36 @@ export class JobsService {
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly workOrders: WorkOrdersService,
   ) {}
+
+  onModuleInit(): void {
+    // A job whose order line is cancelled lets go of its partner (Orders spec, goal 12).
+    this.workOrders.registerCancelHook((tx, cancelled) => this.cancelForLine(tx, cancelled));
+  }
+
+  /**
+   * The job's order line was cancelled, under the group lock the caller holds: an open offer is
+   * withdrawn; an accepted job is cancelled and owed what staff set, else nothing, at once (as P16
+   * for a moved job). Any other job has nobody to let go.
+   */
+  async cancelForLine(tx: Tx, cancelled: CancelledGroup): Promise<void> {
+    const holding = await tx.jobAssignment.findFirst({ where: { groupId: cancelled.groupId, status: { in: ['offered', 'accepted'] } } });
+    if (!holding) return;
+    const row = await tx.jobAssignment.update({
+      where: { id: holding.id },
+      data:
+        holding.status === 'offered'
+          ? { status: 'withdrawn' }
+          : {
+              status: 'cancelled',
+              owedOverride: cancelled.partnerOwed?.amount ?? 0,
+              owedOverrideReason: cancelled.partnerOwed?.reason ?? 'The order line was cancelled',
+            },
+      include,
+    });
+    await this.record(tx, cancelled.userId, row);
+  }
 
   /**
    * Offers the job to a partner that can take it, open until the workspace's deadline. Refused while

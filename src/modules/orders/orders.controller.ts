@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { pageSchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
@@ -9,8 +9,8 @@ import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
 import { orderResponseSchema } from './order-response';
 import type { OrderResponse } from './order-response';
-import { OrdersService, orderListQuerySchema } from './orders.service';
-import type { OrderListQuery } from './orders.service';
+import { OrdersService, cancelOrderSchema, orderListQuerySchema } from './orders.service';
+import type { CancelOrder, OrderListQuery } from './orders.service';
 import { staffPlaceOrderSchema } from './place-order';
 import type { StaffPlaceOrder } from './place-order';
 
@@ -64,5 +64,27 @@ export class OrdersController {
   @Get(':id')
   get(@CurrentTenant() tenantId: string, @Param('id', idParam) id: string): Promise<OrderResponse> {
     return this.orders.get(tenantId, id);
+  }
+
+  @ApiDoc({
+    summary: 'Cancel some lines of an order, or every line left, until it ships.',
+    description:
+      "Each line's unfinished pieces are cancelled. A partner's open offer on it is withdrawn; a partner that had " +
+      'accepted it is owed its `partner_owed` amount at once, else nothing (an amount for a line no partner accepted ' +
+      'is not used). Once every line is cancelled, so is the order. An unknown line, or an amount for a line not being ' +
+      'cancelled, is a 400; a shipped order, a line already cancelled, or nothing left to cancel is a 409.',
+    body: cancelOrderSchema,
+    response: orderResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('order.write')
+  @Post(':id/cancel')
+  @HttpCode(200)
+  cancel(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(cancelOrderSchema)) body: CancelOrder,
+  ): Promise<OrderResponse> {
+    return this.orders.cancel(auth, id, body);
   }
 }

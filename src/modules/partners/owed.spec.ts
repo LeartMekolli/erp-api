@@ -71,6 +71,18 @@ describe('what a partner is owed for a job', () => {
     });
   });
 
+  it('owes a cancelled job what staff set, at once, and nothing without an amount', () => {
+    const cancelled = [{ status: 'cancelled', passedPayout: false }];
+    expect(owedFor({ status: 'cancelled', cost: decimal('152.40'), owedOverride: decimal('25.00') }, cancelled)).toEqual({
+      state: 'owed',
+      amount: decimal('25.00'),
+    });
+    expect(owedFor({ status: 'cancelled', cost: decimal('152.40'), owedOverride: null }, cancelled)).toEqual({
+      state: 'owed',
+      amount: decimal('0'),
+    });
+  });
+
   it('owes nothing for an offer that was never accepted', () => {
     for (const status of ['offered', 'declined', 'expired', 'withdrawn']) {
       expect(owedFor({ ...accepted, status }, passed(10))).toBeNull();

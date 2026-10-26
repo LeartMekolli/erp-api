@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
@@ -9,7 +9,8 @@ import type { CustomerAuth } from '../identity/auth-context';
 import { CustomerAccess } from '../identity/route-markers';
 import { customerOrderResponseSchema, portalShippingMethodsResponseSchema } from './order-response';
 import type { CustomerOrderResponse, PortalShippingMethodsResponse } from './order-response';
-import { OrdersService } from './orders.service';
+import { OrdersService, customerCancelOrderSchema } from './orders.service';
+import type { CustomerCancelOrder } from './orders.service';
 import { placeOrderSchema } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { ShippingMethodsService } from './shipping-methods.service';
@@ -80,5 +81,23 @@ export class PortalOrdersController {
   @Get('orders/:id')
   get(@CurrentCustomer() customer: CustomerAuth, @Param('id', idParam) id: string): Promise<CustomerOrderResponse> {
     return this.orders.customerGet(customer.tenantId, customer.customerId, id);
+  }
+
+  @ApiDoc({
+    summary: 'Cancel the whole order, while none of its pieces has been worked on.',
+    description: 'Once production has started, or the order is shipped or cancelled already, a 409: staff can still cancel what is left.',
+    body: customerCancelOrderSchema,
+    response: customerOrderResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @CustomerAccess('buyer')
+  @Post('orders/:id/cancel')
+  @HttpCode(200)
+  cancel(
+    @CurrentCustomer() customer: CustomerAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(customerCancelOrderSchema)) body: CustomerCancelOrder,
+  ): Promise<CustomerOrderResponse> {
+    return this.orders.customerCancel(customer, id, body);
   }
 }

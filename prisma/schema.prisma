@@ -1637,6 +1637,14 @@ model Order {
   note             String?
   placedByUserId   String   @map("placed_by_user_id") @db.Uuid
   placedAt         DateTime @default(now()) @map("placed_at")
+  // Shipment facts (goal 9): with cancelling, the only state stored on an order; the rest is derived.
+  courier          String?
+  tracking         String?
+  shippedAt        DateTime? @map("shipped_at")
+  deliveredAt      DateTime? @map("delivered_at")
+  // Set, with the reason, once every line is cancelled (goal 12).
+  cancelledAt      DateTime? @map("cancelled_at")
+  cancelReason     String?   @map("cancel_reason")
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer       Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)

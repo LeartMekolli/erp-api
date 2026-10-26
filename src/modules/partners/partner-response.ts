@@ -143,7 +143,7 @@ export const eligiblePartnersResponseSchema = z.strictObject({
 export type EligiblePartnersResponse = z.infer<typeof eligiblePartnersResponseSchema>;
 
 export const ASSIGNMENT_KINDS = ['offer', 'direct', 'reassign'] as const;
-export const ASSIGNMENT_STATUSES = ['offered', 'accepted', 'declined', 'expired', 'withdrawn', 'replaced'] as const;
+export const ASSIGNMENT_STATUSES = ['offered', 'accepted', 'declined', 'expired', 'withdrawn', 'replaced', 'cancelled'] as const;
 
 /** A job handed to a partner. Holds no customer, quote or customer price, so partners may see it. */
 export const jobAssignmentResponseSchema = z.strictObject({

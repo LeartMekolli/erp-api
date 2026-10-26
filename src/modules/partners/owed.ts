@@ -28,13 +28,14 @@ export function passedPayout(piece: { status: string; stepPosition: number | nul
 /**
  * An accepted job is owed once every live piece has passed the payout step: the cost frozen when it was
  * handed over, or what staff set instead. Remaking a scrapped piece is the partner's own cost, so the
- * amount never changes. A partner replaced mid-way is owed what staff set, at once. Anything else: nothing.
+ * amount never changes. A partner replaced mid-way, or whose job's order line was cancelled, is owed what
+ * staff set, at once. Anything else: nothing.
  */
 export function owedFor(
   assignment: { status: string; cost: Prisma.Decimal; owedOverride: Prisma.Decimal | null },
   pieces: { status: string; passedPayout: boolean }[],
 ): Owed | null {
-  if (assignment.status === 'replaced') {
+  if (assignment.status === 'replaced' || assignment.status === 'cancelled') {
     return { state: 'owed', amount: assignment.owedOverride ?? new Prisma.Decimal(0) };
   }
   if (assignment.status !== 'accepted') return null;
