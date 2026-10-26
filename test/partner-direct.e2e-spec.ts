@@ -7,6 +7,7 @@ import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { partnerChoicesResponseSchema } from '../src/modules/partners/partner-response';
 import { quoteResponseSchema } from '../src/modules/pricing/quote-response';
 import { measuredDesign } from './catalog-fixtures';
@@ -204,6 +205,24 @@ describe('partners: customers picking a workshop, and direct jobs', () => {
     ]);
     // A direct job is never offered: there is nothing more to offer or answer.
     await tenant.staff.post(`/partners/jobs/${group}/offer`, { partner_id: tenant.castco }).expect(409);
+  });
+
+  it('keeps a started direct job when telling the workshop fails', async () => {
+    const tenant = await freshTenant();
+    await pickable(tenant);
+    const quoted = await tenant.buyer.post(quotes(tenant), tenant.body({ partner_id: tenant.metalworks })).expect(201);
+    const quote = (quoted.body as { quote: Summary }).quote;
+
+    // The start has committed by the time the workshop is told; a failure there doesn't undo or hide it.
+    const raise = jest.spyOn(app.get(NotificationsService), 'raise').mockRejectedValueOnce(new Error('down'));
+    try {
+      const started = await tenant.staff.post('/workflow/groups', { quote_id: quote.id }).expect(201);
+      const group = (started.body as { id: string }).id;
+      const history = (await tenant.staff.get(`/partners/jobs/${group}`).expect(200)).body as { data: { kind: string; status: string }[] };
+      expect(history.data).toEqual([expect.objectContaining({ kind: 'direct', status: 'accepted' })]);
+    } finally {
+      raise.mockRestore();
+    }
   });
 
   it('asks the customer to pick again when the workshop can no longer take the job', async () => {

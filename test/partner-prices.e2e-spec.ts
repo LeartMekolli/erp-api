@@ -8,9 +8,10 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { partnerPricesResponseSchema } from '../src/modules/partners/partner-response';
+import { partnerPricesResponseSchema, portalPricesResponseSchema } from '../src/modules/partners/partner-response';
 import { stepPriceResponseSchema } from '../src/modules/pricing/pricing-response';
 import { QuotesService } from '../src/modules/pricing/quotes.service';
+import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
@@ -25,7 +26,9 @@ interface Price {
 
 /**
  * Partner price lists (Partners spec, goal 8; B1): the same blocks as the workspace's step prices,
- * per partner, and a job costed for a partner with its prices on its own steps.
+ * per partner, and a job costed for a partner with its prices on its own steps. Staff may start a
+ * list from the workspace's prices, whose numbers the partner never sees; once approved, a partner's
+ * prices change through staff (the author, 2026-10-25).
  */
 describe('partners: price lists and what a job costs with a partner', () => {
   let app: INestApplication;
@@ -92,6 +95,7 @@ describe('partners: price lists and what a job costs with a partner', () => {
 
     return {
       id: tenant.id,
+      ownerId: owner.id,
       staff,
       cast,
       castco,
@@ -120,20 +124,30 @@ describe('partners: price lists and what a job costs with a partner', () => {
     await app.close();
   });
 
-  it("starts a partner's prices from the workspace's, which it then changes for itself", async () => {
+  it("starts a partner's prices from the workspace's, whose numbers the partner never sees", async () => {
     const tenant = await freshTenant();
     const portal = `/partner-portal/partners/${tenant.castco}`;
     const { printPattern, castingTree, casting, polishing } = tenant.cast.steps;
+    const portalPrices = async () => {
+      const response = await tenant.castcoMember.get(`${portal}/prices`).expect(200);
+      expectDocumented(portalPricesResponseSchema, response.body);
+      return response;
+    };
 
-    const none = await tenant.castcoMember.get(`${portal}/prices`).expect(200);
-    expectDocumented(partnerPricesResponseSchema, none.body);
-    expect(none.body).toEqual({ data: [] });
+    expect((await portalPrices()).body).toEqual({ data: [], copied: [] });
 
+    // Only staff copy the workspace's prices; the partner's own route is gone.
+    await tenant.castcoOwner.post(`${portal}/prices/copy-from-workspace`).expect(404);
     // Every priced step type of its capabilities; final QC is a capability nobody prices.
-    const copied = await tenant.castcoOwner.post(`${portal}/prices/copy-from-workspace`).expect(200);
+    const copied = await tenant.staff.post(`/partners/${tenant.castco}/prices/copy-from-workspace`).expect(200);
     expectDocumented(partnerPricesResponseSchema, copied.body);
-    const prices = (copied.body as { data: Price[] }).data;
-    expect(prices.map((price) => price.step_type_id)).toEqual([printPattern, castingTree, casting, polishing]);
+    const prices = (copied.body as { data: (Price & { copied_from_workspace: boolean })[] }).data;
+    expect(prices.map((price) => [price.step_type_id, price.copied_from_workspace])).toEqual([
+      [printPattern, true],
+      [castingTree, true],
+      [casting, true],
+      [polishing, true],
+    ]);
     const workspaceCasting = (await tenant.staff.get(`/pricing/step-types/${casting}/prices`).expect(200)).body as { data: Price[] };
     expect(prices[2]).toMatchObject({
       material_id: null,
@@ -141,7 +155,20 @@ describe('partners: price lists and what a job costs with a partner', () => {
       blocks: workspaceCasting.data[0].blocks,
     });
 
-    // CastCo's casting setup is 30, not the workspace's 15; the workspace's own price is unchanged.
+    // The partner learns which steps are priced at the workspace's rates, never the rates.
+    const hidden = await portalPrices();
+    expect(hidden.body).toEqual({
+      data: [],
+      copied: [printPattern, castingTree, casting, polishing].map((step_type_id) => ({ step_type_id, material_id: null })),
+    });
+    const amounts = prices.flatMap((price) => price.blocks.flatMap((block) => (block.amount ? [`"${block.amount}"`] : [])));
+    expect(amounts.length).toBeGreaterThan(0);
+    for (const amount of amounts) {
+      expect({ amount, found: hidden.text.includes(amount) }).toEqual({ amount, found: false });
+    }
+
+    // While being set up, CastCo sets its own casting price: setup 30, not the workspace's 15. It's
+    // then CastCo's own, and the workspace's price is unchanged.
     const castingBlocks = [
       { kind: 'material', source: { configuration: true }, basis: 'weight', loss_percent: '5' },
       { kind: 'setup', amount: '30' },
@@ -154,16 +181,29 @@ describe('partners: price lists and what a job costs with a partner', () => {
     expect(((await tenant.staff.get(`/pricing/step-types/${casting}/prices`).expect(200)).body as { data: Price[] }).data[0].blocks).toEqual(
       workspaceCasting.data[0].blocks,
     );
+    const own = (await portalPrices()).body as { data: Price[]; copied: { step_type_id: string }[] };
+    expect(own.data).toEqual([expect.objectContaining({ step_type_id: casting, blocks: castingBlocks })]);
+    expect(own.copied.map((price) => price.step_type_id)).toEqual([printPattern, castingTree, polishing]);
 
-    // Staff see CastCo's list; copying again adds nothing it already prices.
+    // Staff see CastCo's whole list; copying again adds nothing it already prices.
     const listed = await tenant.staff.get(`/partners/${tenant.castco}/prices`).expect(200);
     expectDocumented(partnerPricesResponseSchema, listed.body);
-    expect((listed.body as { data: Price[] }).data.find((price) => price.step_type_id === casting)?.blocks).toContainEqual({
-      kind: 'setup',
-      amount: '30',
-    });
+    const castingPrice = (listed.body as { data: (Price & { copied_from_workspace: boolean })[] }).data.find(
+      (price) => price.step_type_id === casting,
+    )!;
+    expect(castingPrice.blocks).toContainEqual({ kind: 'setup', amount: '30' });
+    expect(castingPrice.copied_from_workspace).toBe(false);
     const again = await tenant.staff.post(`/partners/${tenant.castco}/prices/copy-from-workspace`).expect(200);
     expect(again.body).toEqual(listed.body);
+
+    // Once approved, the partner's prices change through staff.
+    const agreement = (await measuredDesign(prisma, tenant.id, tenant.ownerId, { status: 'uploaded', measures: [] })).versionId;
+    await tenant.staff.put(`/partners/${tenant.castco}/agreement`, { file_version_id: agreement, signed_on: '2026-10-24' }).expect(200);
+    await tenant.staff.post(`/partners/${tenant.castco}/approve`).expect(200);
+    await tenant.castcoOwner.put(`${portal}/step-types/${casting}/prices`, { failure_percent: '0', blocks: castingBlocks }).expect(409);
+    await tenant.staff
+      .put(`/partners/${tenant.castco}/step-types/${casting}/prices`, { failure_percent: '0', blocks: castingBlocks })
+      .expect(200);
   });
 
   it('refuses prices that do not fit, and keeps them to the partner and its admins', async () => {
@@ -185,7 +225,6 @@ describe('partners: price lists and what a job costs with a partner', () => {
 
     // Members work jobs; another partner's list, or another workspace's partner, isn't there.
     await tenant.castcoMember.put(`${portal}/step-types/${casting}/prices`, setup).expect(403);
-    await tenant.castcoMember.post(`${portal}/prices/copy-from-workspace`).expect(403);
     await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.metalworks}/prices`).expect(404);
     await tenant.staff.get(`/partners/${other.castco}/prices`).expect(404);
 

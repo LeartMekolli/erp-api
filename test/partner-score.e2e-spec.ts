@@ -328,6 +328,19 @@ describe('partners: ratings and score', () => {
       [5, null],
     ]);
 
+    // Staff read the ratings a page at a time, newest first.
+    const page = await tenant.staff.get(`/partners/${tenant.castco}/ratings?limit=1`).expect(200);
+    expectDocumented(partnerRatingsResponseSchema, page.body);
+    const first = page.body as { data: { stars: number }[]; next_cursor: string | null };
+    expect(first.data.map((rating) => rating.stars)).toEqual([3]);
+    expect(first.next_cursor).toEqual(expect.any(String));
+    const rest = (await tenant.staff.get(`/partners/${tenant.castco}/ratings?limit=1&cursor=${first.next_cursor}`).expect(200)).body as {
+      data: { stars: number }[];
+      next_cursor: string | null;
+    };
+    expect(rest.data.map((rating) => rating.stars)).toEqual([5]);
+    expect(rest.next_cursor).toBeNull();
+
     // Staff rank by score, then cost: CastCo first, though its casting costs more.
     const eligible = await tenant.staff.get(`/partners/eligible?group_id=${declined}`).expect(200);
     expectDocumented(eligiblePartnersResponseSchema, eligible.body);

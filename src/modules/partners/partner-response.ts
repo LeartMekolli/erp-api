@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
 import { PARTNER_ROLES } from './partner-roles';
@@ -101,9 +102,25 @@ export const capacityHistoryResponseSchema = z.strictObject({
 });
 export type CapacityHistoryResponse = z.infer<typeof capacityHistoryResponseSchema>;
 
-/** A partner's price list: the same step prices as the workspace's, in step type order, each step's default first. */
-export const partnerPricesResponseSchema = z.strictObject({ data: z.array(stepPriceResponseSchema) });
+/** A partner's price for a step, as staff see it. */
+export const partnerPriceResponseSchema = stepPriceResponseSchema.extend({
+  /** Copied from the workspace's own price and not changed since; the partner doesn't see its numbers. */
+  copied_from_workspace: z.boolean(),
+});
+
+/** Staff: a partner's price list, the same step prices as the workspace's, in step type order, each step's default first. */
+export const partnerPricesResponseSchema = z.strictObject({ data: z.array(partnerPriceResponseSchema) });
 export type PartnerPricesResponse = z.infer<typeof partnerPricesResponseSchema>;
+
+/**
+ * The partner's own view of its price list: the prices it set, and which steps are priced at the
+ * workspace's rates, whose numbers it never sees (Global Constraints, the author 2026-10-25).
+ */
+export const portalPricesResponseSchema = z.strictObject({
+  data: z.array(stepPriceResponseSchema),
+  copied: z.array(z.strictObject({ step_type_id: z.uuid(), material_id: z.uuid().nullable() })),
+});
+export type PortalPricesResponse = z.infer<typeof portalPricesResponseSchema>;
 
 const partnerRefSchema = z.strictObject({ id: z.uuid(), name: z.string() });
 
@@ -174,7 +191,8 @@ export const partnerJobResponseSchema = z.strictObject({
 });
 export type PartnerJobResponse = z.infer<typeof partnerJobResponseSchema>;
 
-export const partnerJobsResponseSchema = z.strictObject({ data: z.array(partnerJobResponseSchema) });
+/** A page of the partner's jobs, newest hand-over first. */
+export const partnerJobsResponseSchema = pageSchema(partnerJobResponseSchema);
 
 /** A job with each of its pieces, so the partner knows which to move. */
 export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
@@ -226,14 +244,22 @@ export const owedJobResponseSchema = z.strictObject({
 });
 export type OwedJobResponse = z.infer<typeof owedJobResponseSchema>;
 
-/** What staff see a partner is owed, newest hand-over first; `total` counts only what is owed now. */
-export const partnerOwedResponseSchema = z.strictObject({ total: z.string(), jobs: z.array(owedJobResponseSchema) });
+/**
+ * What staff see a partner is owed: a page of hand-overs, newest first; `total` counts only what is
+ * owed now, across every page.
+ */
+export const partnerOwedResponseSchema = z.strictObject({
+  total: z.string(),
+  jobs: z.array(owedJobResponseSchema),
+  next_cursor: z.string().nullable(),
+});
 export type PartnerOwedResponse = z.infer<typeof partnerOwedResponseSchema>;
 
 /** What a partner sees it is owed: the same, without staff's reasons. */
 export const portalOwedResponseSchema = z.strictObject({
   total: z.string(),
   jobs: z.array(owedJobResponseSchema.omit({ override_reason: true })),
+  next_cursor: z.string().nullable(),
 });
 export type PortalOwedResponse = z.infer<typeof portalOwedResponseSchema>;
 
@@ -251,8 +277,8 @@ export const ratingResponseSchema = z.strictObject({
 });
 export type RatingResponse = z.infer<typeof ratingResponseSchema>;
 
-/** A partner's ratings, newest first. */
-export const partnerRatingsResponseSchema = z.strictObject({ data: z.array(ratingResponseSchema) });
+/** A page of a partner's ratings, newest first. */
+export const partnerRatingsResponseSchema = pageSchema(ratingResponseSchema);
 export type PartnerRatingsResponse = z.infer<typeof partnerRatingsResponseSchema>;
 
 /** A rating as the customer who gave it sees it. */

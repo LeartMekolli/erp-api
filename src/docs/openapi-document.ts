@@ -104,7 +104,9 @@ function accessLine(marker: RouteMarker | undefined): string {
     case 'customer':
       return `Access: a person acting for the customer, at least \`${marker.role}\`.`;
     case 'partner':
-      return `Access: a person acting for the partner, at least \`${marker.role}\`; a suspended partner only reads.`;
+      return marker.whileSuspended
+        ? `Access: a person acting for the partner, at least \`${marker.role}\`, also while the partner is suspended.`
+        : `Access: a person acting for the partner, at least \`${marker.role}\`; a suspended partner only reads.`;
     case 'partner_person':
       return 'Access: any partner person.';
     default:

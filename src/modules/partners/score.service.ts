@@ -33,18 +33,15 @@ export class ScoreService {
       where: { partnerId: { in: ids }, createdAt: { gte: since } },
       select: { partnerId: true, stars: true },
     });
-    // A finished job: the partner has it, and every live piece is finished.
-    const held = await tx.jobAssignment.findMany({
-      where: { partnerId: { in: ids }, status: 'accepted' },
-      select: {
-        partnerId: true,
-        group: {
-          select: {
-            _count: { select: { workOrders: { where: { status: 'active' } } } },
-            workOrders: { where: { status: 'finished' }, select: { id: true }, take: 1 },
-          },
-        },
+    // A finished job: the partner has it, and every live piece is finished. Counted, never loaded.
+    const finished = await tx.jobAssignment.groupBy({
+      by: ['partnerId'],
+      where: {
+        partnerId: { in: ids },
+        status: 'accepted',
+        group: { workOrders: { none: { status: 'active' }, some: { status: 'finished' } } },
       },
+      _count: { _all: true },
     });
 
     return new Map(
@@ -54,9 +51,7 @@ export class ScoreService {
           offers: offers.filter((offer) => offer.partnerId === partnerId),
           stars: ratings.filter((rating) => rating.partnerId === partnerId).map((rating) => rating.stars),
         });
-        const finishedJobs = held.filter(
-          (row) => row.partnerId === partnerId && row.group._count.workOrders === 0 && row.group.workOrders.length > 0,
-        ).length;
+        const finishedJobs = finished.find((row) => row.partnerId === partnerId)?._count._all ?? 0;
         return [
           partnerId,
           {

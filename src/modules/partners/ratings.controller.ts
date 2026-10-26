@@ -1,5 +1,7 @@
-import { Body, Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
+import { paginationQuerySchema } from '../../common/pagination/page';
+import type { PaginationQuery } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
 import { CurrentCustomer, CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-context';
@@ -47,14 +49,19 @@ export class RatingsController {
   constructor(private readonly ratings: RatingsService) {}
 
   @ApiDoc({
-    summary: "A partner's ratings, newest first, with the customer and every comment.",
+    summary: "A partner's ratings, newest first, a page at a time, with the customer and every comment.",
+    query: paginationQuerySchema,
     response: partnerRatingsResponseSchema,
     errors: [400, 404],
   })
   @RequirePermission('partner.read')
   @Get(':id/ratings')
-  list(@CurrentTenant() tenantId: string, @Param('id', idParam) partnerId: string): Promise<PartnerRatingsResponse> {
-    return this.ratings.list(tenantId, partnerId);
+  list(
+    @CurrentTenant() tenantId: string,
+    @Param('id', idParam) partnerId: string,
+    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
+  ): Promise<PartnerRatingsResponse> {
+    return this.ratings.list(tenantId, partnerId, query);
   }
 
   @ApiDoc({
@@ -76,7 +83,7 @@ export class PartnerScoreController {
   constructor(private readonly ratings: RatingsService) {}
 
   @ApiDoc({
-    summary: "The partner's score, its parts, and its customers' stars, newest first.",
+    summary: "The partner's score, its parts, and its customers' 50 newest ratings.",
     description: 'A comment shows only once staff share it, and nothing ever names the customer.',
     response: partnerScoreResponseSchema,
     errors: [400, 404],

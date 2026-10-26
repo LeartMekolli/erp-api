@@ -94,12 +94,13 @@ describe('partners demo seed', () => {
       'packing',
     ]);
     expect(setup.offerings.map((offering) => offering.key)).toEqual(expect.arrayContaining(['silver_925', 'polished']));
-    // Copied from the workspace: every priced step it does.
-    const prices = ((await owner.get(`${portal}/prices`).expect(200)).body as { data: { step_type_id: string }[] }).data;
+    // Copied from the workspace for every priced step it does: the owner sees which, never the numbers.
+    const prices = (await owner.get(`${portal}/prices`).expect(200)).body as { data: unknown[]; copied: { step_type_id: string }[] };
     const keys = new Map(
       (await prisma.inTenant(tenant.id, (tx) => tx.stepType.findMany({ select: { id: true, key: true } }))).map((type) => [type.id, type.key]),
     );
-    expect(new Set(prices.map((price) => keys.get(price.step_type_id)))).toEqual(
+    expect(prices.data).toEqual([]);
+    expect(new Set(prices.copied.map((price) => keys.get(price.step_type_id)))).toEqual(
       new Set(['print_pattern', 'casting_tree', 'casting', 'polishing', 'plating']),
     );
   });

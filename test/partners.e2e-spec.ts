@@ -96,6 +96,14 @@ describe('partners: workshops managed by staff', () => {
       tx.auditEntry.count({ where: { action: 'partner.changed', subjectId: castco } }),
     );
     expect(audited).toBe(2);
+    // The score is worked out each time it's read, so the audit never keeps it.
+    const entries = await prisma.inTenant(tenant.id, (tx) =>
+      tx.auditEntry.findMany({ where: { action: 'partner.changed', subjectId: castco }, select: { before: true, after: true } }),
+    );
+    for (const entry of entries) {
+      expect(entry.after).not.toHaveProperty('score');
+      if (entry.before) expect(entry.before).not.toHaveProperty('score');
+    }
   });
 
   it('approves a partner only once its signed agreement is on file, and can suspend it', async () => {

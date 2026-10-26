@@ -1,5 +1,9 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
+import { decodeCursor } from '../../common/pagination/cursor';
+import { toPage } from '../../common/pagination/page';
+import type { PaginationQuery } from '../../common/pagination/page';
+import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { JobRating } from '../../generated/prisma/client';
@@ -19,6 +23,9 @@ export const rateSchema = z.object({
 });
 
 type Tx = Prisma.TransactionClient;
+
+/** The partner's score shows its newest ratings, this many. */
+const PORTAL_RATINGS = 50;
 type Row = JobRating & { partner: { id: string; name: string }; customer: { id: string; name: string } };
 
 const include = { partner: { select: { id: true, name: true } }, customer: { select: { id: true, name: true } } } as const;
@@ -46,6 +53,7 @@ export class RatingsService {
     private readonly prisma: PrismaService,
     private readonly score: ScoreService,
     private readonly audit: AuditService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -96,13 +104,21 @@ export class RatingsService {
   }
 
   /** Staff: the partner's ratings, newest first, with who gave them and every comment. */
-  async list(tenantId: string, partnerId: string): Promise<PartnerRatingsResponse> {
+  async list(tenantId: string, partnerId: string, query: PaginationQuery): Promise<PartnerRatingsResponse> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(tenantId, async (tx) => {
       if (!(await tx.partner.findUnique({ where: { id: partnerId }, select: { id: true } }))) {
         throw new NotFoundException('Partner not found');
       }
-      const rows = await tx.jobRating.findMany({ where: { partnerId }, orderBy: { id: 'desc' }, include });
-      return { data: rows.map(toRating) };
+      const rows = await tx.jobRating.findMany({
+        where: { partnerId, ...(after ? { id: { lt: after.id } } : {}) },
+        orderBy: { id: 'desc' },
+        take: query.limit + 1,
+        include,
+      });
+      const page = toPage(rows, query.limit, secret);
+      return { data: page.data.map(toRating), next_cursor: page.next_cursor };
     });
   }
 
@@ -129,7 +145,7 @@ export class RatingsService {
   /** The partner's own score and stars; a comment only once shared, and never the customer. */
   async mine(auth: PartnerAuth): Promise<PartnerScoreResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const rows = await tx.jobRating.findMany({ where: { partnerId: auth.partnerId }, orderBy: { id: 'desc' } });
+      const rows = await tx.jobRating.findMany({ where: { partnerId: auth.partnerId }, orderBy: { id: 'desc' }, take: PORTAL_RATINGS });
       return {
         score: await this.score.scoreOf(tx, auth.partnerId),
         ratings: rows.map((row) => ({

@@ -139,6 +139,8 @@ async function setUp(
       materialId: price.materialId,
       failurePercent: price.failurePercent,
       blocks: price.blocks as Prisma.InputJsonValue,
+      // The workspace's own numbers: the partner sees that these steps are priced, never the prices.
+      copiedFromWorkspace: true,
     })),
   });
 

@@ -44,8 +44,9 @@ describe('workflow step configuration', () => {
       sop_file_version_id: null,
       expected_minutes: null,
       customer: { visible: false },
-      done_by: 'partner',
     });
+    // Left out, `done_by` is decided against the current version when the steps are saved.
+    expect(parsed.steps[0].done_by).toBeUndefined();
     expect(parsed.payout_step).toBeUndefined();
     expect(parsed.steps[1]).toMatchObject({ customer: { visible: true, name: 'Finishing' }, rework_targets: ['casting'] });
   });
@@ -100,7 +101,7 @@ describe('workflow step configuration', () => {
 
     const named = workflowStepsSchema.parse({ steps, payout_step: 'casting' });
     expect(named.payout_step).toBe('casting');
-    expect(named.steps.map((one) => one.done_by)).toEqual(['partner', 'partner', 'workspace']);
+    expect(named.steps.map((one) => one.done_by)).toEqual([undefined, undefined, 'workspace']);
 
     for (const payout_step of ['packing', 'nowhere', 'Casting']) {
       const result = workflowStepsSchema.safeParse({ steps, payout_step });

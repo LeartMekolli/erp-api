@@ -15,7 +15,7 @@ export type RouteMarker =
   | { kind: 'authenticated' }
   | { kind: 'permission'; permission: Permission }
   | { kind: 'customer'; role: CustomerRole }
-  | { kind: 'partner'; role: PartnerRole }
+  | { kind: 'partner'; role: PartnerRole; whileSuspended?: true }
   | { kind: 'partner_person' };
 
 /** No token needed: login, refresh, invitation acceptance, health. */
@@ -41,10 +41,11 @@ export const CustomerAccess = (role: CustomerRole): MethodDecorator & ClassDecor
  * A partner portal route: the caller is a partner person acting for the
  * route's `:partnerId`, with at least `role` there (Partners spec, goal 1).
  * No membership is a 404; a lower role is a 403. A suspended partner may
- * still read, so it can see and finish its jobs, but every other method is a 403.
+ * still read, and with `whileSuspended` use the route, so it can finish the
+ * jobs it holds; every other method is a 403.
  */
-export const PartnerAccess = (role: PartnerRole): MethodDecorator & ClassDecorator =>
-  SetMetadata<string, RouteMarker>(ROUTE_MARKER, { kind: 'partner', role });
+export const PartnerAccess = (role: PartnerRole, options: { whileSuspended?: true } = {}): MethodDecorator & ClassDecorator =>
+  SetMetadata<string, RouteMarker>(ROUTE_MARKER, { kind: 'partner', role, ...options });
 
 /** Any partner person, whatever partners they act for: their own identity in the partner portal. */
 export const PartnerPerson = (): MethodDecorator & ClassDecorator =>

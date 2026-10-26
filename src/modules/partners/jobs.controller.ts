@@ -1,5 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
+import { paginationQuerySchema } from '../../common/pagination/page';
+import type { PaginationQuery } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
 import { CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-context';
@@ -90,7 +92,8 @@ export class JobsController {
     summary: 'Move an accepted job to another partner, who has it at once.',
     description:
       "For when the partner can't finish it; staff arrange it with the new partner first, who must be able to take the job. " +
-      'The partner it is taken from is owed `previous_owed`, else nothing.',
+      'The partner it is taken from is owed `previous_owed`, else nothing; the new partner is told. A job whose ' +
+      'pieces are all past the payout step is a 409: set what each partner is owed instead.',
     body: reassignSchema,
     response: jobAssignmentResponseSchema,
     errors: [400, 404, 409],
@@ -136,17 +139,22 @@ export class JobsController {
   }
 
   @ApiDoc({
-    summary: 'What a partner is owed, per job it has or had, newest first.',
+    summary: 'What a partner is owed, per job it has or had, newest first, a page at a time.',
     description:
       "A job is owed once every live piece has passed its workflow's payout step: the cost frozen when it was handed " +
-      'over, or what staff set instead. `total` counts only what is owed now; paying it comes with Payments.',
+      'over, or what staff set instead. `total` counts only what is owed now, across every page; paying it comes with Payments.',
+    query: paginationQuerySchema,
     response: partnerOwedResponseSchema,
     errors: [400, 404],
   })
   @RequirePermission('partner.read')
   @Get(':id/owed')
-  owed(@CurrentTenant() tenantId: string, @Param('id', idParam) partnerId: string): Promise<PartnerOwedResponse> {
-    return this.jobs.owed(tenantId, partnerId);
+  owed(
+    @CurrentTenant() tenantId: string,
+    @Param('id', idParam) partnerId: string,
+    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
+  ): Promise<PartnerOwedResponse> {
+    return this.jobs.owed(tenantId, partnerId, query);
   }
 }
 

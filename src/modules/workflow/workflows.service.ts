@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma, Workflow, WorkflowVersion } from '../../generated/prisma/client';
@@ -97,7 +97,21 @@ export class WorkflowsService {
       });
       const priced = new Set(stepTypes.filter((type) => type.summaryGroup !== null).map((type) => type.id));
 
-      const latest = await tx.workflowVersion.findFirst({ where: { workflowId: id }, orderBy: { number: 'desc' } });
+      const latest = await tx.workflowVersion.findFirst({
+        where: { workflowId: id },
+        orderBy: { number: 'desc' },
+        include: { steps: { select: { key: true, doneBy: true } } },
+      });
+      // A step sent without `done_by` keeps who does it now; a new one is the partner's.
+      const before = new Map((latest?.steps ?? []).map((step) => [step.key, step.doneBy as DoneBy]));
+      const doneBy = new Map(input.steps.map((step) => [step.key, step.done_by ?? before.get(step.key) ?? 'partner']));
+      if (input.payout_step !== undefined && doneBy.get(input.payout_step) !== 'partner') {
+        throw new BadRequestException({
+          message: 'The payout step must be a partner step',
+          errors: [{ path: 'payout_step', message: `${input.payout_step} is not a partner step of the workflow` }],
+        });
+      }
+
       const version = await tx.workflowVersion.create({
         data: { workflowId: id, number: (latest?.number ?? 0) + 1, createdByUserId: auth.userId },
       });
@@ -118,7 +132,7 @@ export class WorkflowsService {
             name: step.name,
             stepTypeId: step.step_type_id,
             priced: priced.has(step.step_type_id),
-            doneBy: step.done_by,
+            doneBy: doneBy.get(step.key)!,
             config: config as Prisma.InputJsonValue,
             sopFileVersionId: step.sop_file_version_id,
             expectedMinutes: step.expected_minutes,

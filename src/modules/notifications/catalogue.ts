@@ -214,6 +214,22 @@ export const EVENTS = {
       },
     },
   },
+  // A job staff moved to the partner mid-way: it is the partner's at once (P16).
+  'partner.job.reassigned': {
+    audience: { kind: 'partner' },
+    channels: ['email', 'feed'],
+    subjectType: 'job_assignment',
+    variables: {
+      product_name: { sample: 'Custom cast part' },
+      quantity: { sample: '10' },
+    },
+    defaults: {
+      en: {
+        subject: 'Job moved to you: {{ quantity }} × {{ product_name }}',
+        body: 'A job of {{ quantity }} × {{ product_name }} was moved to you. It is yours: you will find it under your jobs.',
+      },
+    },
+  },
   'partner.job.declined': {
     audience: { kind: 'permission', permission: 'partner.assign' },
     channels: ['email', 'feed'],

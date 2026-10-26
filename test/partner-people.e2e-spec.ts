@@ -10,7 +10,7 @@ import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import {
   partnerInvitationResponseSchema,
   partnerMeResponseSchema,
-  partnerMemberResponseSchema,
+  partnerMembersResponseSchema,
 } from '../src/modules/partners/partner-response';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { expectDocumented } from './documented';
@@ -67,9 +67,8 @@ describe('partners: people, invitations and the partner portal', () => {
 
   const members = async (tenant: Tenant): Promise<Member[]> => {
     const response = await tenant.staff.get(`/partners/${tenant.castco}/members`).expect(200);
-    const data = (response.body as { data: Member[] }).data;
-    data.forEach((member) => expectDocumented(partnerMemberResponseSchema, member));
-    return data;
+    expectDocumented(partnerMembersResponseSchema, response.body);
+    return (response.body as { data: Member[] }).data;
   };
 
   beforeAll(async () => {
@@ -122,6 +121,7 @@ describe('partners: people, invitations and the partner portal', () => {
 
     expect((await members(tenant)).map((one) => one.role)).toEqual(['owner', 'admin', 'member']);
     const listed = await member.client.get(`${portal}/members`).expect(200);
+    expectDocumented(partnerMembersResponseSchema, listed.body);
     expect((listed.body as { data: Member[] }).data).toHaveLength(3);
 
     await member.client.post(`${portal}/invitations`, { email: freshEmail('dee'), role: 'member' }).expect(403);

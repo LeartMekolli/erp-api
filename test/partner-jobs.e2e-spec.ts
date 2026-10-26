@@ -51,6 +51,7 @@ describe('partners: eligible partners, offers and assignments', () => {
   const as = (token: string) => ({
     post: (path: string, body: object = {}) => http().post(path).set('Authorization', `Bearer ${token}`).send(body),
     put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
+    patch: (path: string, body: object) => http().patch(path).set('Authorization', `Bearer ${token}`).send(body),
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
 
@@ -129,6 +130,8 @@ describe('partners: eligible partners, offers and assignments', () => {
       castco,
       metalworks,
       printlab,
+      /** Every step of the cast line, for changing CastCo's capacity. */
+      castLine: [printPattern, castingTree, casting, polishing, finalQc, packing],
       jobs: [await job(), await job(), await job()],
       castcoPerson: await partnerPerson(tenant.id, castco, 'member'),
       metalworksPerson: await partnerPerson(tenant.id, metalworks, 'member'),
@@ -273,6 +276,78 @@ describe('partners: eligible partners, offers and assignments', () => {
     await offer(tenant, first.group, tenant.metalworks).expect(201);
   });
 
+  it('lets a lapsed offer go at once, without waiting for the expiry run', async () => {
+    const tenant = await freshTenant();
+    const [first, , watch] = tenant.jobs;
+    const offered = (await offer(tenant, first.group, tenant.castco).expect(201)).body as Assignment;
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.jobAssignment.update({ where: { id: offered.id }, data: { expiresAt: new Date(Date.now() - 1_000) } }),
+    );
+
+    // Past its deadline, it holds no room, even before the run.
+    expect(await castingLeft(tenant, watch.group)).toBe(190);
+    // And the job can be offered again: the lapsed offer is expired then and there, audited once.
+    await offer(tenant, first.group, tenant.metalworks).expect(201);
+    const history = (await tenant.staff.get(`/partners/jobs/${first.group}`).expect(200)).body as { data: Assignment[] };
+    expect(history.data.map((row) => [row.partner.name, row.status])).toEqual([
+      ['CastCo', 'expired'],
+      ['MetalWorks', 'offered'],
+    ]);
+    expect(await notifications(tenant, 'partner.job.expired')).toBe(1);
+    const audited = await prisma.inTenant(tenant.id, (tx) =>
+      tx.auditEntry.findMany({ where: { action: 'partner.job', subjectId: offered.id }, select: { after: true } }),
+    );
+    expect(audited.filter((row) => (row.after as { status: string }).status === 'expired')).toHaveLength(1);
+
+    // The run that comes later has nothing left to do.
+    await expiry.handle();
+    expect(await notifications(tenant, 'partner.job.expired')).toBe(1);
+  });
+
+  it('never gives a partner more than its room or its open jobs, however the offers arrive', async () => {
+    const tenant = await freshTenant();
+    const [first, second, third] = tenant.jobs;
+    const castcoOffers = () =>
+      prisma.inTenant(tenant.id, (tx) => tx.jobAssignment.count({ where: { partnerId: tenant.castco, status: 'offered' } }));
+
+    // Room for 15 a week: one job of 10 fits, two don't, even offered at the same moment.
+    await tenant.staff
+      .put(`/partners/${tenant.castco}/capabilities`, {
+        capabilities: tenant.castLine.map((step_type_id) => ({ step_type_id, capacity: 15, capacity_period: 'week' })),
+      })
+      .expect(200);
+    const both = await Promise.all([offer(tenant, first.group, tenant.castco), offer(tenant, second.group, tenant.castco)]);
+    expect(both.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(await castcoOffers()).toBe(1);
+
+    // Room enough again, but two open jobs at most, one of them taken.
+    await tenant.staff
+      .put(`/partners/${tenant.castco}/capabilities`, {
+        capabilities: tenant.castLine.map((step_type_id) => ({ step_type_id, capacity: 200, capacity_period: 'week' })),
+      })
+      .expect(200);
+    await tenant.staff.patch(`/partners/${tenant.castco}/limits`, { max_open_jobs: 2 }).expect(200);
+    const open = both.find((response) => response.status === 201)!.body as { group_id: string };
+    const rest = [first, second, third].filter((job) => job.group !== open.group_id);
+    const racing = await Promise.all(rest.map((job) => offer(tenant, job.group, tenant.castco)));
+    expect(racing.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(await castcoOffers()).toBe(2);
+  });
+
+  it('refuses a job with nothing for a partner to do', async () => {
+    const tenant = await freshTenant();
+    const [first] = tenant.jobs;
+    // Every step done in-house.
+    await prisma.inTenant(tenant.id, async (tx) => {
+      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: first.group } });
+      await tx.workflowStep.updateMany({ where: { versionId: group.workflowVersionId }, data: { doneBy: 'workspace' } });
+    });
+    const eligible = await eligibleFor(tenant, first.group);
+    expect(eligible.data).toEqual([]);
+    expect(eligible.ineligible.every((row) => row.reasons.includes('The job has no partner steps; make it in-house'))).toBe(true);
+    await offer(tenant, first.group, tenant.castco).expect(409);
+  });
+
   it('moves an accepted job to another partner, keeping what the first is owed', async () => {
     const tenant = await freshTenant();
     const [first] = tenant.jobs;
@@ -293,6 +368,8 @@ describe('partners: eligible partners, offers and assignments', () => {
       .expect(201);
     expectDocumented(jobAssignmentResponseSchema, moved.body);
     expect(moved.body).toMatchObject({ partner: { id: tenant.metalworks }, kind: 'reassign', status: 'accepted' });
+    // MetalWorks has the job at once, so it is told.
+    expect(await notifications(tenant, 'partner.job.reassigned')).toBe(1);
 
     const history = (await tenant.staff.get(`/partners/jobs/${first.group}`).expect(200)).body as { data: Assignment[] };
     expect(history.data.map((row) => [row.partner.name, row.kind, row.status, row.owed_override])).toEqual([

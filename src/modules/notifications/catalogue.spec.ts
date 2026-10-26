@@ -15,6 +15,7 @@ describe('notification catalogue', () => {
       'partner.job.direct',
       'partner.job.expired',
       'partner.job.offered',
+      'partner.job.reassigned',
       'partner.submitted',
       'user.invited',
       'user.joined',

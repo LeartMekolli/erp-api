@@ -91,8 +91,11 @@ export const workflowStepInputSchema = z.strictObject({
   /** Per piece, in minutes. Stored for delivery estimates and capacity later. */
   expected_minutes: amountSchema.nullable().default(null),
   customer: customerSchema,
-  /** A partner's step, or one the workspace does in-house. */
-  done_by: z.enum(DONE_BY).default('partner'),
+  /**
+   * A partner's step, or one the workspace does in-house. Left out, the step keeps what it was in the
+   * current version, and a new step is the partner's.
+   */
+  done_by: z.enum(DONE_BY).optional(),
 });
 export type WorkflowStepInput = z.infer<typeof workflowStepInputSchema>;
 
@@ -103,7 +106,8 @@ export const workflowStepsSchema = z
     payout_step: keySchema.optional(),
   })
   .superRefine(({ steps, payout_step }, context) => {
-    if (payout_step !== undefined && !steps.some((step) => step.key === payout_step && step.done_by === 'partner')) {
+    // A step without `done_by` is checked again once it is known (WorkflowsService.setSteps).
+    if (payout_step !== undefined && !steps.some((step) => step.key === payout_step && step.done_by !== 'workspace')) {
       context.addIssue({ code: 'custom', path: ['payout_step'], message: `${payout_step} is not a partner step of the workflow` });
     }
     const seen = new Map<string, number>();

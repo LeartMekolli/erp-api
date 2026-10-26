@@ -112,9 +112,14 @@ export class MovesService {
       const pieces = ids.map((id) => byId.get(id)!);
       const label = (piece: (typeof pieces)[number]) => `${piece.number}/${piece.group.quantity}`;
 
-      // The partner each piece's job is with: the one that accepted it, if any.
+      // The partner each piece's job is with: the one that accepted it, if any. The jobs are held
+      // FOR SHARE, so moving a job to another partner (FOR UPDATE) can't land between this read and
+      // the transitions, which would credit a partner that no longer has the job.
+      const groupIds = [...new Set(pieces.map((piece) => piece.groupId))].sort();
+      await tx.$queryRaw`
+        SELECT id FROM work_order_group WHERE id IN (${Prisma.join(groupIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR SHARE`;
       const accepted = await tx.jobAssignment.findMany({
-        where: { groupId: { in: [...new Set(pieces.map((piece) => piece.groupId))] }, status: 'accepted' },
+        where: { groupId: { in: groupIds }, status: 'accepted' },
         select: { groupId: true, partnerId: true },
       });
       const partnerOf = new Map(accepted.map((row) => [row.groupId, row.partnerId]));

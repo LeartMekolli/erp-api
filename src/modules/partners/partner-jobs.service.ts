@@ -1,5 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
+import { decodeCursor } from '../../common/pagination/cursor';
+import { paginationQuerySchema, toPage } from '../../common/pagination/page';
+import type { Page } from '../../common/pagination/page';
+import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import type { JobAssignment, Prisma } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
@@ -9,12 +13,28 @@ import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { PARTNER_JOB_STATUSES } from './partner-response';
 import type { PartnerJobDetailResponse, PartnerJobResponse } from './partner-response';
 
-export const partnerJobsQuerySchema = z.object({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
+export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
+export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
 
 type Tx = Prisma.TransactionClient;
+type PartnerJobStatus = PartnerJobResponse['status'];
 
-/** Jobs the partner is offered or has accepted: its current row of each, newest job first. */
+/** Jobs the partner is offered or has accepted: its current row of each. */
 const OPEN = ['offered', 'accepted'];
+
+/** The partner's rows of the jobs in one status, decided in the query so a page is never short. */
+function statusWhere(status: PartnerJobStatus | undefined): Prisma.JobAssignmentWhereInput {
+  switch (status) {
+    case 'offered':
+      return { status: 'offered' };
+    case 'accepted':
+      return { status: 'accepted', group: { workOrders: { some: { status: 'active' } } } };
+    case 'finished':
+      return { status: 'accepted', group: { workOrders: { none: { status: 'active' } } } };
+    default:
+      return { status: { in: OPEN } };
+  }
+}
 
 /**
  * A partner's jobs, as its people see them (Partners spec, goal 13): only jobs offered to or accepted
@@ -26,26 +46,27 @@ export class PartnerJobsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly files: FilesService,
+    private readonly config: ConfigService,
   ) {}
 
-  async list(auth: PartnerAuth, status: PartnerJobResponse['status'] | undefined): Promise<{ data: PartnerJobResponse[] }> {
+  /** Newest hand-over first, a page at a time; each page is read in a fixed number of queries. */
+  async list(auth: PartnerAuth, query: PartnerJobsQuery): Promise<Page<PartnerJobResponse>> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const rows = await tx.jobAssignment.findMany({
-        where: { partnerId: auth.partnerId, status: { in: OPEN } },
-        orderBy: { groupId: 'desc' },
+        where: { partnerId: auth.partnerId, ...statusWhere(query.status), ...(after ? { id: { lt: after.id } } : {}) },
+        orderBy: { id: 'desc' },
+        take: query.limit + 1,
       });
-      const jobs: PartnerJobResponse[] = [];
-      for (const row of rows) {
-        const job = await this.view(tx, row);
-        if (!status || job.status === status) jobs.push(job);
-      }
-      return { data: jobs };
+      const page = toPage(rows, query.limit, secret);
+      return { data: await this.views(tx, page.data), next_cursor: page.next_cursor };
     });
   }
 
   async detail(auth: PartnerAuth, groupId: string): Promise<PartnerJobDetailResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const job = await this.view(tx, await this.find(tx, auth, groupId));
+      const [job] = await this.views(tx, [await this.find(tx, auth, groupId, OPEN)]);
       const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId }, select: { quantity: true } });
       const pieces = await tx.workOrder.findMany({
         where: { groupId, status: { not: 'cancelled' } },
@@ -64,10 +85,10 @@ export class PartnerJobsService {
     });
   }
 
-  /** A short-lived link to the job's design file. */
+  /** A short-lived link to the job's design file; only once the partner has accepted the job. */
   async design(auth: PartnerAuth, groupId: string): Promise<{ url: string; expires_at: string }> {
     const version = await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      await this.find(tx, auth, groupId);
+      await this.find(tx, auth, groupId, ['accepted']);
       const group = await tx.workOrderGroup.findUniqueOrThrow({
         where: { id: groupId },
         select: { fileVersion: { select: { id: true, fileId: true } } },
@@ -81,65 +102,93 @@ export class PartnerJobsService {
   }
 
   /** The partner's current row of the job; another partner's job, or one it declined or lost, is not found. */
-  private async find(tx: Tx, auth: PartnerAuth, groupId: string): Promise<JobAssignment> {
-    const row = await tx.jobAssignment.findFirst({ where: { groupId, partnerId: auth.partnerId, status: { in: OPEN } } });
+  private async find(tx: Tx, auth: PartnerAuth, groupId: string, statuses: string[]): Promise<JobAssignment> {
+    const row = await tx.jobAssignment.findFirst({ where: { groupId, partnerId: auth.partnerId, status: { in: statuses } } });
     if (!row) {
       throw new NotFoundException('Job not found');
     }
     return row;
   }
 
-  private async view(tx: Tx, row: JobAssignment): Promise<PartnerJobResponse> {
-    const group = await tx.workOrderGroup.findUniqueOrThrow({
-      where: { id: row.groupId },
+  /** The jobs of `rows`, in their order, read with one query per kind of fact. */
+  private async views(tx: Tx, rows: JobAssignment[]): Promise<PartnerJobResponse[]> {
+    if (rows.length === 0) return [];
+    const groups = await tx.workOrderGroup.findMany({
+      where: { id: { in: rows.map((row) => row.groupId) } },
       include: { product: { select: { name: true } } },
     });
+    const groupById = new Map(groups.map((group) => [group.id, group]));
+    const steps = await tx.workflowStep.findMany({
+      where: { versionId: { in: [...new Set(groups.map((group) => group.workflowVersionId))] } },
+      include: { stepType: true },
+    });
+    const stepById = new Map(steps.map((step) => [step.id, step]));
+    const counts = await tx.workOrder.groupBy({
+      by: ['groupId', 'status'],
+      where: { groupId: { in: groups.map((group) => group.id) } },
+      _count: { _all: true },
+    });
+    const options = await this.options(tx, groups);
 
-    const steps = await tx.workflowStep.findMany({ where: { versionId: group.workflowVersionId }, include: { stepType: true } });
-    const byId = new Map(steps.map((step) => [step.id, step]));
-    const partnerSteps = pathFor(stepsForPath(steps), chainOf(group))
-      .map((id) => byId.get(id)!)
-      .filter((step) => step.doneBy === 'partner');
-
-    const counts = await tx.workOrder.groupBy({ by: ['status'], where: { groupId: group.id }, _count: { _all: true } });
-    const count = (status: string) => counts.find((one) => one.status === status)?._count._all ?? 0;
-    const active = count('active');
-
-    return {
-      id: group.id,
-      status: row.status === 'offered' ? 'offered' : active > 0 ? 'accepted' : 'finished',
-      offered_at: row.createdAt.toISOString(),
-      expires_at: row.expiresAt?.toISOString() ?? null,
-      product: group.product ? { name: group.product.name } : null,
-      options: await this.options(tx, group.sourceType === 'quote' ? group.sourceId : null, group.productId),
-      quantity: group.quantity,
-      design_file_version_id: group.fileVersionId,
-      steps: partnerSteps.map((step) => ({ key: step.key, name: step.name, sop_file_version_id: step.sopFileVersionId })),
-      cost: row.cost.toFixed(2),
-      pieces: { active, finished: count('finished'), scrapped: count('scrapped') },
-    };
+    return rows.map((row) => {
+      const group = groupById.get(row.groupId)!;
+      const partnerSteps = pathFor(stepsForPath(steps.filter((step) => step.versionId === group.workflowVersionId)), chainOf(group))
+        .map((id) => stepById.get(id)!)
+        .filter((step) => step.doneBy === 'partner');
+      const count = (status: string) => counts.find((one) => one.groupId === group.id && one.status === status)?._count._all ?? 0;
+      const active = count('active');
+      return {
+        id: group.id,
+        status: row.status === 'offered' ? 'offered' : active > 0 ? 'accepted' : 'finished',
+        offered_at: row.createdAt.toISOString(),
+        expires_at: row.expiresAt?.toISOString() ?? null,
+        product: group.product ? { name: group.product.name } : null,
+        options: options.get(group.id) ?? [],
+        quantity: group.quantity,
+        design_file_version_id: group.fileVersionId,
+        steps: partnerSteps.map((step) => ({ key: step.key, name: step.name, sop_file_version_id: step.sopFileVersionId })),
+        cost: row.cost.toFixed(2),
+        pieces: { active, finished: count('finished'), scrapped: count('scrapped') },
+      };
+    });
   }
 
   /**
-   * The chosen options by name, from the quote's inputs (keys never change), in the product's option
-   * order: stored JSON keeps no key order.
+   * Each job's chosen options by name, from its quote's inputs (keys never change), in its product's
+   * option order: stored JSON keeps no key order.
    */
-  private async options(tx: Tx, quoteId: string | null, productId: string | null): Promise<PartnerJobResponse['options']> {
-    if (!quoteId) return [];
-    const quote = await tx.quote.findUniqueOrThrow({ where: { id: quoteId }, select: { inputs: true } });
-    const chosen = Object.entries((quote.inputs as { options: Record<string, string> }).options);
-    if (chosen.length === 0) return [];
+  private async options(
+    tx: Tx,
+    groups: { id: string; sourceType: string; sourceId: string; productId: string | null }[],
+  ): Promise<Map<string, PartnerJobResponse['options']>> {
+    const fromQuotes = groups.filter((group) => group.sourceType === 'quote');
+    const quotes = await tx.quote.findMany({ where: { id: { in: fromQuotes.map((group) => group.sourceId) } }, select: { id: true, inputs: true } });
+    const chosenOf = new Map(
+      quotes.map((quote) => [quote.id, Object.entries((quote.inputs as { options: Record<string, string> }).options)]),
+    );
+    const pairs = [...chosenOf.values()].flat();
+    if (pairs.length === 0) return new Map();
     const values = await tx.optionValue.findMany({
-      where: { OR: chosen.map(([groupKey, key]) => ({ key, group: { key: groupKey } })) },
+      where: { OR: pairs.map(([groupKey, key]) => ({ key, group: { key: groupKey } })) },
       include: { group: { select: { id: true, key: true, name: true } } },
     });
-    const positions = productId
-      ? await tx.productOptionGroup.findMany({ where: { productId }, select: { groupId: true, position: true } })
-      : [];
-    const positionOf = (groupId: string) => positions.find((one) => one.groupId === groupId)?.position ?? Number.MAX_SAFE_INTEGER;
-    return chosen
-      .flatMap(([groupKey, key]) => values.filter((one) => one.group.key === groupKey && one.key === key))
-      .sort((a, b) => positionOf(a.group.id) - positionOf(b.group.id) || a.group.key.localeCompare(b.group.key))
-      .map((value) => ({ group: value.group.name, value: value.name }));
+    const productIds = [...new Set(fromQuotes.flatMap((group) => (group.productId ? [group.productId] : [])))];
+    const positions = await tx.productOptionGroup.findMany({
+      where: { productId: { in: productIds } },
+      select: { productId: true, groupId: true, position: true },
+    });
+
+    return new Map(
+      fromQuotes.map((group) => {
+        const positionOf = (groupId: string) =>
+          positions.find((one) => one.productId === group.productId && one.groupId === groupId)?.position ?? Number.MAX_SAFE_INTEGER;
+        const chosen = chosenOf.get(group.sourceId) ?? [];
+        const named = chosen
+          .flatMap(([groupKey, key]) => values.filter((one) => one.group.key === groupKey && one.key === key))
+          .sort((a, b) => positionOf(a.group.id) - positionOf(b.group.id) || a.group.key.localeCompare(b.group.key))
+          .map((value) => ({ group: value.group.name, value: value.name }));
+        return [group.id, named];
+      }),
+    );
   }
 }

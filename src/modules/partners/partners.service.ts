@@ -56,9 +56,9 @@ export class PartnersService {
   async create(auth: TenantAuth, input: z.infer<typeof createPartnerSchema>): Promise<PartnerResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const row = await tx.partner.create({ data: { name: input.name, displayName: input.display_name } });
-      const created = await this.toResponse(tx, row);
+      const created = await this.audited(tx, row);
       await this.record(tx, auth, row.id, undefined, created);
-      return created;
+      return { ...created, score: await this.score.scoreOf(tx, row.id) };
     });
   }
 
@@ -72,16 +72,21 @@ export class PartnersService {
         take: query.limit + 1,
       });
       const page = toPage(rows, query.limit, secret);
+      // One score run for the whole page.
+      const scores = await this.score.scores(tx, page.data.map((row) => row.id));
       const data: PartnerResponse[] = [];
       for (const row of page.data) {
-        data.push(await this.toResponse(tx, row));
+        data.push({ ...(await this.audited(tx, row)), score: scores.get(row.id)! });
       }
       return { data, next_cursor: page.next_cursor };
     });
   }
 
   async get(tenantId: string, id: string): Promise<PartnerResponse> {
-    return this.prisma.inTenant(tenantId, async (tx) => this.toResponse(tx, await this.find(tx, id)));
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const row = await this.find(tx, id);
+      return { ...(await this.audited(tx, row)), score: await this.score.scoreOf(tx, id) };
+    });
   }
 
   async update(auth: TenantAuth, id: string, patch: z.infer<typeof updatePartnerSchema>): Promise<PartnerResponse> {
@@ -161,15 +166,16 @@ export class PartnersService {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockPartner(tx, id);
       const current = await this.find(tx, id);
-      const before = await this.toResponse(tx, current);
+      const before = await this.audited(tx, current);
       const row = await tx.partner.update({ where: { id }, data: await changes(current, tx) });
-      const after = await this.toResponse(tx, row);
+      const after = await this.audited(tx, row);
       await this.record(tx, auth, id, before, after);
-      return after;
+      return { ...after, score: await this.score.scoreOf(tx, id) };
     });
   }
 
-  private async toResponse(tx: Prisma.TransactionClient, row: Partner): Promise<PartnerResponse> {
+  /** The partner as audited: the response without its score, which is derived and changes on its own. */
+  private async audited(tx: Prisma.TransactionClient, row: Partner): Promise<Omit<PartnerResponse, 'score'>> {
     const memberCount = await tx.organisationMembership.count({ where: { organisationType: 'partner', organisationId: row.id } });
     return {
       id: row.id,
@@ -183,7 +189,6 @@ export class PartnersService {
           : null,
       member_count: memberCount,
       submitted_at: row.submittedAt?.toISOString() ?? null,
-      score: await this.score.scoreOf(tx, row.id),
       created_at: row.createdAt.toISOString(),
     };
   }
@@ -192,8 +197,8 @@ export class PartnersService {
     tx: Prisma.TransactionClient,
     auth: Actor,
     id: string,
-    before: PartnerResponse | undefined,
-    after: PartnerResponse,
+    before: Omit<PartnerResponse, 'score'> | undefined,
+    after: Omit<PartnerResponse, 'score'>,
   ): Promise<void> {
     return this.audit.record(tx, {
       actor: { type: 'user', id: auth.userId },

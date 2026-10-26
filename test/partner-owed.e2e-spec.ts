@@ -240,6 +240,13 @@ describe('partners: what they are owed', () => {
     expect(forJob(all, group)).toMatchObject({ state: 'owed', amount: cost, override_reason: null });
     expect(all.total).toBe(cost);
 
+    // Done work is paid, not moved: MetalWorks would be owed at once for rings it never touched.
+    const before = (await tenant.staff.get(`/partners/jobs/${group}`).expect(200)).body as object;
+    await tenant.staff
+      .post(`/partners/jobs/${group}/reassign`, { partner_id: tenant.metalworks, previous_owed: { amount: '40.00', reason: 'Too late' } })
+      .expect(409);
+    expect((await tenant.staff.get(`/partners/jobs/${group}`).expect(200)).body).toEqual(before);
+
     // Staff send a ring back to polishing: not owed until it passes final QC again.
     await tenant.staff
       .post('/workflow/moves', { work_order_ids: [ids[3]], kind: 'correction', to_step: 'polishing', comment: 'Back for a polish' })
@@ -298,6 +305,19 @@ describe('partners: what they are owed', () => {
       [tenant.first.group, 'not_yet', tenant.first.cost, null],
     ]);
     expect(castco.total).toBe('40.00');
+
+    // A page at a time; the total still covers every page.
+    const firstPage = await tenant.staff.get(`/partners/${tenant.castco}/owed?limit=1`).expect(200);
+    expectDocumented(partnerOwedResponseSchema, firstPage.body);
+    const page = firstPage.body as Owed & { next_cursor: string | null };
+    expect(page.jobs.map((job) => job.group_id)).toEqual([group]);
+    expect(page.total).toBe('40.00');
+    expect(page.next_cursor).toEqual(expect.any(String));
+    const secondPage = (await tenant.staff.get(`/partners/${tenant.castco}/owed?limit=1&cursor=${page.next_cursor}`).expect(200))
+      .body as Owed & { next_cursor: string | null };
+    expect(secondPage.jobs.map((job) => job.group_id)).toEqual([tenant.first.group]);
+    expect(secondPage.total).toBe('40.00');
+    expect(secondPage.next_cursor).toBeNull();
 
     // MetalWorks is owed its own cost, frozen at the move, once it has passed every ring through final QC.
     expect((await owed(tenant, tenant.metalworks)).jobs).toEqual([

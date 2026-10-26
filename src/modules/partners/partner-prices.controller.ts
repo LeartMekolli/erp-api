@@ -10,14 +10,14 @@ import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import type { StepPriceResponse } from '../pricing/pricing-response';
 import { stepPriceSchema } from '../pricing/step-prices.service';
 import { PartnerPricesService } from './partner-prices.service';
-import { partnerPricesResponseSchema } from './partner-response';
-import type { PartnerPricesResponse } from './partner-response';
+import { partnerPricesResponseSchema, portalPricesResponseSchema } from './partner-response';
+import type { PartnerPricesResponse, PortalPricesResponse } from './partner-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
-// The same docs for staff and the partner's own people; only the access differs.
 const LIST: ApiDocOptions = {
   summary: "The partner's price list, in step type order, each step's default first.",
+  description: '`copied_from_workspace` marks prices still at the workspace numbers staff copied, which the partner never sees.',
   response: partnerPricesResponseSchema,
   errors: [400, 404],
 };
@@ -32,7 +32,9 @@ const PUT: ApiDocOptions = {
 };
 const COPY: ApiDocOptions = {
   summary: "Copy the workspace's prices for the partner's priced capabilities that it hasn't priced yet.",
-  description: 'Prices the partner already has are kept, so copying again adds nothing. Answers the whole list.',
+  description:
+    'Prices the partner already has are kept, so copying again adds nothing. Answers the whole list. The partner ' +
+    'sees which steps are priced this way, never the numbers.',
   response: partnerPricesResponseSchema,
   errors: [400, 404],
 };
@@ -70,19 +72,31 @@ export class PartnerPricesController {
   }
 }
 
-/** A partner's owner and admins keep its own price list (Partners spec, goal 8). */
+/**
+ * A partner's owner and admins keep its own price list while it is being set up (Partners spec, goal
+ * 8); the workspace's own prices stay the workspace's.
+ */
 @Controller('partner-portal/partners/:partnerId')
 export class PortalPricesController {
   constructor(private readonly prices: PartnerPricesService) {}
 
-  @ApiDoc(LIST)
+  @ApiDoc({
+    summary: "The partner's own prices, and which steps are priced at the workspace's rates.",
+    description: 'Prices staff copied from the workspace are listed under `copied` by step and material only, without their numbers.',
+    response: portalPricesResponseSchema,
+    errors: [400, 404],
+  })
   @PartnerAccess('member')
   @Get('prices')
-  list(@CurrentPartner() partner: PartnerAuth): Promise<PartnerPricesResponse> {
-    return this.prices.list(partner.tenantId, partner.partnerId);
+  list(@CurrentPartner() partner: PartnerAuth): Promise<PortalPricesResponse> {
+    return this.prices.portalList(partner);
   }
 
-  @ApiDoc(PUT)
+  @ApiDoc({
+    ...PUT,
+    description: `${PUT.description} Only while the partner is being set up; once approved, a 409: staff change its prices.`,
+    errors: [400, 404, 409],
+  })
   @PartnerAccess('admin')
   @Put('step-types/:stepTypeId/prices')
   put(
@@ -90,14 +104,6 @@ export class PortalPricesController {
     @Param('stepTypeId', idParam) stepTypeId: string,
     @Body(new ZodValidationPipe(stepPriceSchema)) body: z.infer<typeof stepPriceSchema>,
   ): Promise<StepPriceResponse> {
-    return this.prices.put(partner, partner.partnerId, stepTypeId, body);
-  }
-
-  @ApiDoc(COPY)
-  @PartnerAccess('admin')
-  @Post('prices/copy-from-workspace')
-  @HttpCode(200)
-  copy(@CurrentPartner() partner: PartnerAuth): Promise<PartnerPricesResponse> {
-    return this.prices.copyFromWorkspace(partner, partner.partnerId);
+    return this.prices.put(partner, partner.partnerId, stepTypeId, body, 'partner');
   }
 }

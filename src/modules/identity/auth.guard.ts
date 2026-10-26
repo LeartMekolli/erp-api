@@ -80,7 +80,7 @@ export class AuthGuard implements CanActivate {
       await this.requirePartnerPerson(auth);
     }
     if (marker.kind === 'partner') {
-      await this.partnerAuth(request, auth, marker.role);
+      await this.partnerAuth(request, auth, marker.role, marker.whileSuspended === true);
     }
 
     return true;
@@ -103,9 +103,10 @@ export class AuthGuard implements CanActivate {
   /**
    * As `customerAuth`, for a partner person acting for the route's partner.
    * Another partner's id and a removed membership look the same: not found.
-   * A suspended partner reads only (GET and HEAD); anything else is refused.
+   * A suspended partner reads only (GET and HEAD), and uses routes marked
+   * `whileSuspended`, such as moving the pieces of jobs it holds; anything else is refused.
    */
-  private async partnerAuth(request: Request, auth: AuthContext, required: PartnerRole): Promise<void> {
+  private async partnerAuth(request: Request, auth: AuthContext, required: PartnerRole, whileSuspended: boolean): Promise<void> {
     const { tenantId, userId } = await this.requirePartnerPerson(auth);
     const partnerId = z.uuid().safeParse(request.params.partnerId);
     if (!partnerId.success) {
@@ -128,7 +129,7 @@ export class AuthGuard implements CanActivate {
     if (!atLeastPartner(role, required)) {
       throw new ForbiddenException();
     }
-    if (found.status === 'suspended' && !['GET', 'HEAD'].includes(request.method)) {
+    if (found.status === 'suspended' && !whileSuspended && !['GET', 'HEAD'].includes(request.method)) {
       throw new ForbiddenException('The partner is suspended: it can read, but not change anything');
     }
 

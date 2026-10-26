@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { z } from 'zod';
 import { newId } from '../../common/ids/uuid';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
@@ -86,6 +93,7 @@ export type StartHook = (
 /** Groups of pieces and the pieces themselves: one work order per piece (F3). */
 @Injectable()
 export class WorkOrdersService {
+  private readonly logger = new Logger(WorkOrdersService.name);
   private readonly startHooks: StartHook[] = [];
 
   constructor(
@@ -100,12 +108,17 @@ export class WorkOrdersService {
   /** Starts a saved quote's pieces on its product's current workflow (B5). */
   async startFromQuote(auth: TenantAuth, quoteId: string): Promise<GroupResponse> {
     const afterCommit: (() => Promise<void>)[] = [];
+    let started: GroupResponse;
     try {
-      const started = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      started = await this.prisma.inTenant(auth.tenantId, async (tx) => {
         // Row-level security hides other workspaces' quotes, so a foreign id is simply not found.
         const quote = await tx.quote.findUnique({ where: { id: quoteId } });
         if (!quote) {
           throw new NotFoundException('Quote not found');
+        }
+        // A picked workshop's job is handed over by a start hook; without one it would silently be made in-house.
+        if (quote.partnerId && this.startHooks.length === 0) {
+          throw new InternalServerErrorException('This process cannot hand jobs to partners');
         }
         if (quote.expiresAt.getTime() <= Date.now()) {
           throw new ConflictException('The quote has expired; quote again to start production');
@@ -151,10 +164,6 @@ export class WorkOrdersService {
         }
         return group;
       });
-      for (const after of afterCommit) {
-        await after();
-      }
-      return started;
     } catch (error) {
       // Two starts of one quote at once: the second meets the unique source.
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -162,6 +171,15 @@ export class WorkOrdersService {
       }
       throw error;
     }
+    // The start has committed: a failure from here on (telling someone) must not report it as failed.
+    for (const after of afterCommit) {
+      try {
+        await after();
+      } catch (error) {
+        this.logger.error({ err: error, quoteId }, 'a step after starting a quote failed');
+      }
+    }
+    return started;
   }
 
   /** Creates pieces 1..quantity at the first step of their path. The entry point for Orders and tests. */

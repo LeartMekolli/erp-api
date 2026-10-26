@@ -13,8 +13,13 @@ import type { JobFacts, PartnerFacts } from './eligibility';
 import type { EligiblePartnersResponse } from './partner-response';
 import { ScoreService } from './score.service';
 
-/** Offers and jobs that hold a partner's capacity. */
-export const OPEN_STATUSES = ['offered', 'accepted'];
+/**
+ * Offers and jobs that hold a job, and a partner's capacity: accepted, or offered and not past the
+ * deadline, whether or not the expiry run has come by.
+ */
+export function liveOpen(now: Date): Prisma.JobAssignmentWhereInput {
+  return { OR: [{ status: 'accepted' }, { status: 'offered', expiresAt: { gt: now } }] };
+}
 
 /** A job as eligibility sees it: a work order group started from a quote. */
 export interface Job {
@@ -233,10 +238,12 @@ export class EligibilityService {
         stepPrices: { select: { stepTypeId: true } },
       },
     });
+    // Only jobs that still have a piece to make: finished jobs stay accepted, but hold nothing.
     const open = await tx.jobAssignment.findMany({
       where: {
         partnerId: { in: partnerIds },
-        status: { in: OPEN_STATUSES },
+        ...liveOpen(new Date()),
+        group: { workOrders: { some: { status: 'active' } } },
         ...(exceptGroupId ? { groupId: { not: exceptGroupId } } : {}),
       },
       include: { group: true },

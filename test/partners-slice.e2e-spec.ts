@@ -143,7 +143,8 @@ describe('partners: the walkthrough', () => {
         })
         .expect(200);
       await who.person.put(`${who.portal}/offerings`, { option_value_ids: [ids.values.get('silver_925'), ids.values.get('polished')] }).expect(200);
-      await who.person.post(`${who.portal}/prices/copy-from-workspace`).expect(200);
+      // Staff start its prices from the workspace's; it sets its own casting price before submitting.
+      await staff.post(`/partners/${who.id}/prices/copy-from-workspace`).expect(200);
       await who.person
         .put(`${who.portal}/step-types/${step('casting')}/prices`, {
           failure_percent: '0',

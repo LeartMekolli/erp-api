@@ -1,14 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import type { PartnerStepPrice, Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
-import type { TenantAuth } from '../identity/auth-context';
+import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import type { Block } from '../pricing/blocks';
 import type { StepPriceResponse } from '../pricing/pricing-response';
 import { StepPricesService } from '../pricing/step-prices.service';
 import type { stepPriceSchema } from '../pricing/step-prices.service';
-import type { PartnerPricesResponse } from './partner-response';
+import type { PartnerPricesResponse, PortalPricesResponse } from './partner-response';
 import { lockPartner } from './partners.service';
 
 /** Who makes a change: staff, or a partner person acting for the partner. */
@@ -26,7 +26,9 @@ function toResponse(row: PartnerStepPrice): StepPriceResponse {
 
 /**
  * A partner's price list (Partners spec, goal 8): the workspace's step price blocks and checks, with
- * the partner's own numbers. Saves lock the partner row, which keeps one default per step type.
+ * the partner's own numbers. Saves lock the partner row, which keeps one default per step type. Staff
+ * may start it from the workspace's own prices, which the partner never sees; once approved, the
+ * partner's prices change through staff (the author, 2026-10-25).
  */
 @Injectable()
 export class PartnerPricesService {
@@ -36,6 +38,7 @@ export class PartnerPricesService {
     private readonly audit: AuditService,
   ) {}
 
+  /** Staff: every price, and which are still the workspace's copied numbers. */
   async list(tenantId: string, partnerId: string): Promise<PartnerPricesResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       if ((await tx.partner.count({ where: { id: partnerId } })) === 0) {
@@ -45,19 +48,50 @@ export class PartnerPricesService {
     });
   }
 
-  /** Creates the partner's price for the step and material (or the step's default), or replaces it. */
+  /** The partner: the prices it set, and which steps are priced at the workspace's rates, without their numbers. */
+  async portalList(auth: PartnerAuth): Promise<PortalPricesResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const { data } = await this.read(tx, auth.partnerId);
+      return {
+        data: data
+          .filter((price) => !price.copied_from_workspace)
+          .map((price) => ({
+            id: price.id,
+            step_type_id: price.step_type_id,
+            material_id: price.material_id,
+            failure_percent: price.failure_percent,
+            blocks: price.blocks,
+          })),
+        copied: data
+          .filter((price) => price.copied_from_workspace)
+          .map((price) => ({ step_type_id: price.step_type_id, material_id: price.material_id })),
+      };
+    });
+  }
+
+  /**
+   * Creates the partner's price for the step and material (or the step's default), or replaces it; it
+   * is then the partner's own. The partner's own people may only while it is being set up.
+   */
   async put(
     auth: Actor,
     partnerId: string,
     stepTypeId: string,
     input: z.infer<typeof stepPriceSchema>,
+    by: 'staff' | 'partner' = 'staff',
   ): Promise<StepPriceResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockPartner(tx, partnerId);
+      if (by === 'partner') {
+        const { status } = await tx.partner.findUniqueOrThrow({ where: { id: partnerId }, select: { status: true } });
+        if (status !== 'setting_up') {
+          throw new ConflictException("Once approved, the partner's prices are changed by staff");
+        }
+      }
       await this.stepPrices.checkPrice(tx, stepTypeId, input);
       const materialId = input.material_id ?? null;
       const current = await tx.partnerStepPrice.findFirst({ where: { partnerId, stepTypeId, materialId } });
-      const data = { failurePercent: input.failure_percent, blocks: input.blocks as Prisma.InputJsonValue };
+      const data = { failurePercent: input.failure_percent, blocks: input.blocks as Prisma.InputJsonValue, copiedFromWorkspace: false };
       const row = current
         ? await tx.partnerStepPrice.update({ where: { id: current.id }, data })
         : await tx.partnerStepPrice.create({ data: { partnerId, stepTypeId, materialId, ...data } });
@@ -97,6 +131,7 @@ export class PartnerPricesService {
             materialId: row.materialId,
             failurePercent: row.failurePercent,
             blocks: row.blocks as Prisma.InputJsonValue,
+            copiedFromWorkspace: true,
           })),
         });
       }
@@ -120,7 +155,7 @@ export class PartnerPricesService {
       const [positionB, keyB, materialB] = order(b);
       return positionA - positionB || keyA.localeCompare(keyB) || materialA.localeCompare(materialB);
     });
-    return { data: rows.map(toResponse) };
+    return { data: rows.map((row) => ({ ...toResponse(row), copied_from_workspace: row.copiedFromWorkspace })) };
   }
 
   private async record(

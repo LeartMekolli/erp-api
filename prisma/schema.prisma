@@ -1445,6 +1445,9 @@ model PartnerStepPrice {
   failurePercent Decimal  @map("failure_percent") @db.Decimal(9, 4)
   // Validated by blocksSchema (src/modules/pricing/blocks.ts) on every save.
   blocks         Json
+  // Staff copied it from the workspace's own price, which the partner never sees; saving it makes it
+  // the partner's own.
+  copiedFromWorkspace Boolean @default(false) @map("copied_from_workspace")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1490,6 +1493,8 @@ model JobAssignment {
   @@index([tenantId, groupId])
   @@index([tenantId, partnerId, status])
   @@index([status, expiresAt])
+  // At most one offered or accepted row per job: trigger job_assignment_one_open (migration
+  // 20261025140000_job_assignment_one_open).
   @@map("job_assignment")
 }
 

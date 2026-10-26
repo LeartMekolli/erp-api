@@ -1,17 +1,22 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
+import type { PaginationQuery } from '../../common/pagination/page';
+import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { JobAssignment } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
+import type { AuditInput } from '../audit/audit.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
-import { EligibilityService, OPEN_STATUSES } from './eligibility.service';
+import { EligibilityService, liveOpen } from './eligibility.service';
 import type { Job, Verdict } from './eligibility.service';
 import { owedFor, passedPayout } from './owed';
 import type { JobAssignmentResponse, JobHistoryResponse, OwedJobResponse, PartnerOwedResponse } from './partner-response';
+import { lockPartner } from './partners.service';
 
 const MONEY = /^\d{1,16}(\.\d{1,2})?$/;
 
@@ -93,6 +98,7 @@ export class JobsService {
     private readonly settings: SettingsService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -100,9 +106,13 @@ export class JobsService {
    * the job is offered or accepted already.
    */
   async offer(auth: TenantAuth, groupId: string, partnerId: string): Promise<JobAssignmentResponse> {
-    const { row, job } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const { row, job, expired } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockGroup(tx, groupId);
+      // An offer past its deadline lets go of the job now, not when the minute run comes by.
+      const expired = await this.expireLapsed(tx, { type: 'user', id: auth.userId }, groupId);
       await this.refuseOpen(tx, groupId);
+      // The partner's room and open jobs are judged once at a time (Review Focus 1 of the fixes).
+      await lockPartner(tx, partnerId);
       const { job, cost } = await this.able(tx, groupId, partnerId);
       const routing = (await this.settings.list(tx))['partners.routing'] as { offerHours: number } | undefined;
       const now = new Date();
@@ -119,9 +129,10 @@ export class JobsService {
         include,
       });
       await this.record(tx, auth.userId, created);
-      return { row: created, job };
+      return { row: created, job, expired };
     });
     // After commit: a notification never reports an offer that rolled back.
+    await this.notifyExpired(auth.tenantId, expired);
     await this.notifications.raise(auth.tenantId, 'partner.job.offered', { type: 'job_assignment', id: row.id }, {
       product_name: job.productName,
       quantity: String(job.quantity),
@@ -149,7 +160,7 @@ export class JobsService {
    * arranged it. The partner it is taken from is owed `previous_owed`, else nothing (P16).
    */
   async reassign(auth: TenantAuth, groupId: string, input: z.infer<typeof reassignSchema>): Promise<JobAssignmentResponse> {
-    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const { row, job } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockGroup(tx, groupId);
       const current = await tx.jobAssignment.findFirst({ where: { groupId, status: 'accepted' } });
       if (!current) {
@@ -158,7 +169,12 @@ export class JobsService {
       if (current.partnerId === input.partner_id) {
         throw new ConflictException('The job is already with this partner');
       }
-      const { cost } = await this.able(tx, groupId, input.partner_id);
+      // Done work is paid, not moved: the new partner would be owed at once for work it never did.
+      if (await jobPastPayout(tx, groupId)) {
+        throw new ConflictException('Every piece is past the payout step: set what each partner is owed instead of moving the job');
+      }
+      await lockPartner(tx, input.partner_id);
+      const { job, cost } = await this.able(tx, groupId, input.partner_id);
       const replaced = await tx.jobAssignment.update({
         where: { id: current.id },
         data: {
@@ -181,8 +197,45 @@ export class JobsService {
         include,
       });
       await this.record(tx, auth.userId, row);
-      return toAssignment(row);
+      return { row, job };
     });
+    // After commit: the partner the job moved to has it at once, so it hears of it.
+    await this.notifications.raise(auth.tenantId, 'partner.job.reassigned', { type: 'job_assignment', id: row.id }, {
+      product_name: job.productName,
+      quantity: String(job.quantity),
+    });
+    return toAssignment(row);
+  }
+
+  /**
+   * Expires the offers past their deadline, of one job or of every job, once each by a conditional
+   * update, and audits each. Returns what to tell staff once the transaction has committed.
+   */
+  async expireLapsed(tx: Tx, actor: AuditInput['actor'], groupId?: string): Promise<ExpiredOffer[]> {
+    const due = await tx.jobAssignment.findMany({
+      where: { status: 'offered', expiresAt: { lte: new Date() }, ...(groupId ? { groupId } : {}) },
+      select: { id: true },
+    });
+    const done: ExpiredOffer[] = [];
+    for (const { id } of due) {
+      const claimed = await tx.jobAssignment.updateMany({ where: { id, status: 'offered' }, data: { status: 'expired' } });
+      if (claimed.count !== 1) continue;
+      const row = await tx.jobAssignment.findUniqueOrThrow({ where: { id }, include });
+      await this.audit.record(tx, { actor, action: 'partner.job', subject: { type: 'job_assignment', id }, after: toAssignment(row) });
+      done.push({ id, partnerName: row.partner.name, job: await jobLabel(tx, row.groupId) });
+    }
+    return done;
+  }
+
+  /** Tells staff each job whose offer expired needs a partner again; after commit. */
+  async notifyExpired(tenantId: string, expired: ExpiredOffer[]): Promise<void> {
+    for (const offer of expired) {
+      await this.notifications.raise(tenantId, 'partner.job.expired', { type: 'job_assignment', id: offer.id }, {
+        partner_name: offer.partnerName,
+        product_name: offer.job.productName,
+        quantity: String(offer.job.quantity),
+      });
+    }
   }
 
   /** Every time the job was handed to a partner, oldest first. */
@@ -197,11 +250,14 @@ export class JobsService {
   }
 
   /** What the partner is owed, per hand-over, newest first; another workspace's partner is not found. */
-  async owed(tenantId: string, partnerId: string): Promise<PartnerOwedResponse> {
+  async owed(tenantId: string, partnerId: string, query: PaginationQuery): Promise<PartnerOwedResponse> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(tenantId, async (tx) => {
       if (!(await tx.partner.findUnique({ where: { id: partnerId }, select: { id: true } }))) {
         throw new NotFoundException('Partner not found');
       }
+      // The total covers every hand-over, so all are judged; the jobs and their pieces load in one query.
       const rows = await tx.jobAssignment.findMany({
         where: { partnerId, status: { in: OWED_STATUSES } },
         orderBy: { id: 'desc' },
@@ -210,7 +266,11 @@ export class JobsService {
       const total = jobs
         .filter((job) => job.state === 'owed')
         .reduce((sum, job) => sum.plus(job.amount), new Prisma.Decimal(0));
-      return { total: total.toFixed(2), jobs };
+      // Newest first by hand-over id, as the database orders uuids.
+      const rest = after ? jobs.filter((job) => job.assignment_id < after.id) : jobs;
+      const data = rest.slice(0, query.limit);
+      const next_cursor = rest.length > query.limit ? encodeCursor({ id: data.at(-1)!.assignment_id }, secret) : null;
+      return { total: total.toFixed(2), jobs: data, next_cursor };
     });
   }
 
@@ -291,7 +351,7 @@ export class JobsService {
   }
 
   private async refuseOpen(tx: Tx, groupId: string): Promise<void> {
-    if (await tx.jobAssignment.findFirst({ where: { groupId, status: { in: OPEN_STATUSES } }, select: { id: true } })) {
+    if (await tx.jobAssignment.findFirst({ where: { groupId, ...liveOpen(new Date()) }, select: { id: true } })) {
       throw new ConflictException('The job is already offered to or accepted by a partner');
     }
   }
@@ -306,10 +366,10 @@ export class JobsService {
   }
 }
 
-/** What each hand-over is owed, read from its job's pieces and its workflow version's payout step. */
-async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[]> {
+/** Jobs with each piece and whether it has passed its workflow version's payout step. */
+async function jobsWithPieces(tx: Tx, groupIds: string[]) {
   const groups = await tx.workOrderGroup.findMany({
-    where: { id: { in: [...new Set(rows.map((row) => row.groupId))] } },
+    where: { id: { in: [...new Set(groupIds)] } },
     select: {
       id: true,
       quantity: true,
@@ -318,20 +378,34 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
       workOrders: { select: { status: true, currentStep: { select: { position: true } } } },
     },
   });
-  const byId = new Map(groups.map((group) => [group.id, group]));
-  return rows.flatMap((row) => {
-    const group = byId.get(row.groupId)!;
-    const { steps, payoutStepId: explicit } = group.workflowVersion;
-    const payoutId = payoutStepId(steps, explicit);
-    // A version without partner steps has no payout step: only finished pieces count as past it.
-    const payoutPosition = steps.find((step) => step.id === payoutId)?.position ?? Number.POSITIVE_INFINITY;
-    const owed = owedFor(
-      row,
-      group.workOrders.map((piece) => ({
+  return new Map(
+    groups.map((group) => {
+      const { steps, payoutStepId: explicit } = group.workflowVersion;
+      const payoutId = payoutStepId(steps, explicit);
+      // A version without partner steps has no payout step: only finished pieces count as past it.
+      const payoutPosition = steps.find((step) => step.id === payoutId)?.position ?? Number.POSITIVE_INFINITY;
+      const pieces = group.workOrders.map((piece) => ({
         status: piece.status,
         passedPayout: passedPayout({ status: piece.status, stepPosition: piece.currentStep?.position ?? null }, payoutPosition),
-      })),
-    );
+      }));
+      return [group.id, { ...group, pieces }];
+    }),
+  );
+}
+
+/** Every live piece of the job has passed the payout step. */
+async function jobPastPayout(tx: Tx, groupId: string): Promise<boolean> {
+  const { pieces } = (await jobsWithPieces(tx, [groupId])).get(groupId)!;
+  const live = pieces.filter((piece) => piece.status === 'active' || piece.status === 'finished');
+  return live.length > 0 && live.every((piece) => piece.passedPayout);
+}
+
+/** What each hand-over is owed, read from its job's pieces and its workflow version's payout step. */
+async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[]> {
+  const byId = await jobsWithPieces(tx, rows.map((row) => row.groupId));
+  return rows.flatMap((row) => {
+    const group = byId.get(row.groupId)!;
+    const owed = owedFor(row, group.pieces);
     if (!owed) return [];
     return [
       {
@@ -351,6 +425,13 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
 export interface JobLabel {
   productName: string;
   quantity: number;
+}
+
+/** An offer that just expired, for telling staff after commit. */
+export interface ExpiredOffer {
+  id: string;
+  partnerName: string;
+  job: JobLabel;
 }
 
 export async function jobLabel(tx: Tx, groupId: string): Promise<JobLabel> {

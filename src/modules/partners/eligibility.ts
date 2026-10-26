@@ -70,6 +70,11 @@ export function eligible(
   const name = (id: string) => job.names.get(id) ?? id;
   const reasons: string[] = [];
 
+  // Nothing for a partner to do: the job is the workspace's own (P17).
+  if (job.partnerStepTypeIds.size === 0) {
+    return { ok: false, reasons: ['The job has no partner steps; make it in-house'] };
+  }
+
   if (partner.status === 'suspended') reasons.push('The partner is suspended');
   else if (partner.status !== 'approved') reasons.push('The partner is not approved yet');
 

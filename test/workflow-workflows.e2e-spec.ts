@@ -283,6 +283,14 @@ describe('workflow: workflows, versions and assignment', () => {
     // Never a step the workspace does, nor one the workflow doesn't have.
     await tenant.owner.put(path, { ...inHouse, payout_step: 'packing' }).expect(400);
     await tenant.owner.put(path, { ...inHouse, payout_step: 'engraving' }).expect(400);
+
+    // Sent again without `done_by`, packing stays in-house; and a payout step there is still refused.
+    const resent = await tenant.owner.put(path, castSteps(ids)).expect(200);
+    expect(doneBy(resent.body).at(-1)).toEqual(['packing', 'workspace']);
+    expect(doneBy(resent.body).slice(0, -1).every(([, by]) => by === 'partner')).toBe(true);
+    expect(resent.body).toMatchObject({ payout_step: 'final_qc' });
+    const refused = await tenant.owner.put(path, { ...castSteps(ids), payout_step: 'packing' }).expect(400);
+    expect((refused.body as { errors: { path: string }[] }).errors[0].path).toBe('payout_step');
   });
 
   it("assigns a workflow to a category, and lets a product use its own", async () => {

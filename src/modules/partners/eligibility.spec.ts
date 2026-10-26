@@ -124,6 +124,13 @@ describe('who may take a job', () => {
     });
   });
 
+  it('refuses a job with no partner steps: it is made in-house', () => {
+    expect(eligible({ ...job, partnerStepTypeIds: new Set() }, castco, today)).toEqual({
+      ok: false,
+      reasons: ['The job has no partner steps; make it in-house'],
+    });
+  });
+
   it('ignores the size limit when the job has no measured size, and the job limit when there is none', () => {
     expect(eligible({ ...job, largestSideMm: null }, { ...castco, maxOpenJobs: null, openJobs: 50 }, today).ok).toBe(true);
   });
