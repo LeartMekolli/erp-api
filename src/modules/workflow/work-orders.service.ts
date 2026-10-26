@@ -249,19 +249,24 @@ export class WorkOrdersService {
       if (!group) {
         throw new NotFoundException('Group not found');
       }
-      const steps = await this.versionSteps(tx, group.workflowVersionId);
-      const byId = new Map(steps.map((step) => [step.id, step]));
-      const path = pathFor(stepsForPath(steps), chainOf(group)).map((stepId) => ({
-        id: stepId,
-        customer: (byId.get(stepId)!.config as StepConfig).customer,
-      }));
-      const { pieces, histories } = await this.piecesWithHistory(tx, id);
-      return customerView(
-        path,
-        group.quantity,
-        pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
-      );
+      return this.customerProgress(tx, group);
     });
+  }
+
+  /** The customer view of a group inside a caller's transaction, such as an order's line (Orders spec, goal 10). */
+  async customerProgress(tx: Prisma.TransactionClient, group: WorkOrderGroup): Promise<CustomerViewResponse> {
+    const steps = await this.versionSteps(tx, group.workflowVersionId);
+    const byId = new Map(steps.map((step) => [step.id, step]));
+    const path = pathFor(stepsForPath(steps), chainOf(group)).map((stepId) => ({
+      id: stepId,
+      customer: (byId.get(stepId)!.config as StepConfig).customer,
+    }));
+    const { pieces, histories } = await this.piecesWithHistory(tx, group.id);
+    return customerView(
+      path,
+      group.quantity,
+      pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
+    );
   }
 
   /** Pieces in the order they started, filtered by group, current step or status. */

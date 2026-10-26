@@ -8,14 +8,21 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
-import type { TenantAuth } from '../identity/auth-context';
+import { customerRefusal } from '../customers/customer-refusals';
+import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
 import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
 import { promisedDate } from './dates';
 import type { BusinessCalendar } from './dates';
-import type { Address, OrderLineResponse, OrderResponse } from './order-response';
+import type {
+  Address,
+  CustomerOrderLineResponse,
+  CustomerOrderResponse,
+  OrderLineResponse,
+  OrderResponse,
+} from './order-response';
 import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { TAX_CALCULATOR } from './tax';
@@ -51,7 +58,7 @@ export class OrdersService {
    * hook, which refuses (409, naming the line) when it can no longer take it.
    */
   async place(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, customerId: string, body: PlaceOrder, channel: Channel): Promise<OrderResponse> {
-    body = { ...body, lines: await this.refreshLapsed(auth, customerId, body.lines) };
+    body = { ...body, lines: await this.refreshLapsed(auth, customerId, body.lines, channel) };
     let afterCommit: (() => Promise<void>)[] = [];
     let placed: OrderResponse;
     try {
@@ -180,16 +187,52 @@ export class OrdersService {
     });
   }
 
+  /** The customer's orders, newest first: the customer's view (Global Constraints). */
+  async customerList(tenantId: string, customerId: string, query: z.infer<typeof paginationQuerySchema>): Promise<Page<CustomerOrderResponse>> {
+    const secret = this.config.get('APP_SECRET');
+    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const rows = await tx.order.findMany({
+        where: { customerId, ...(after ? { id: { lt: after.id } } : {}) },
+        orderBy: { id: 'desc' },
+        take: query.limit + 1,
+      });
+      const page = toPage(rows, query.limit, secret);
+      return { data: await this.customerViews(tx, page.data), next_cursor: page.next_cursor };
+    });
+  }
+
+  /** One of the customer's orders; another customer's is simply not found. */
+  async customerGet(tenantId: string, customerId: string, id: string): Promise<CustomerOrderResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => (await this.customerViews(tx, [await this.customerOrder(tx, customerId, id)]))[0]);
+  }
+
+  /** Places an order from the customer app and answers it as the customer sees it. */
+  async customerPlace(auth: CustomerAuth, body: PlaceOrder): Promise<CustomerOrderResponse> {
+    const placed = await this.place(auth, auth.customerId, body, 'portal');
+    return this.customerGet(auth.tenantId, auth.customerId, placed.id);
+  }
+
+  private async customerOrder(tx: Tx, customerId: string, id: string): Promise<Order> {
+    const order = await tx.order.findFirst({ where: { id, customerId } });
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+    return order;
+  }
+
   /**
    * Prices every lapsed line again, each in its own transaction (Orders spec, goal 2). Unchanged
    * prices are swapped for their new quotes; any change or refusal refuses the order with every
    * lapsed line's outcome, so the customer confirms the new prices first. Lines of other customers,
-   * already ordered or unknown, are left for `orderable` to refuse.
+   * already ordered or unknown, are left for `orderable` to refuse. A customer reads each refusal in
+   * plain words, never the pricing setup behind it.
    */
   private async refreshLapsed(
     auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
     customerId: string,
     lines: PlaceOrder['lines'],
+    channel: Channel,
   ): Promise<PlaceOrder['lines']> {
     const lapsed = await this.prisma.inTenant(auth.tenantId, (tx) =>
       tx.quote.findMany({
@@ -205,7 +248,7 @@ export class OrdersService {
         quote.id,
         result.accepted
           ? { quote: result.quote, reasons: [], same: new Prisma.Decimal(result.quote.total).equals(quote.total) }
-          : { quote: null, reasons: result.reasons, same: false },
+          : { quote: null, reasons: channel === 'portal' ? result.reasons.map(customerRefusal) : result.reasons, same: false },
       );
     }
     if ([...outcomes.values()].every((outcome) => outcome.same)) {
@@ -272,6 +315,51 @@ export class OrdersService {
 
   private async timezone(tx: Tx, tenantId: string): Promise<string> {
     return (await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } })).timezone;
+  }
+
+  /**
+   * Orders as their customer sees them, field by field, so nothing staff-only is carried over by
+   * accident: no customer, channel, partner or group; each line's progress instead.
+   */
+  private async customerViews(tx: Tx, orders: Order[]): Promise<CustomerOrderResponse[]> {
+    const views = await this.views(tx, orders);
+    const groups = await tx.workOrderGroup.findMany({
+      where: { id: { in: views.flatMap((view) => view.lines.flatMap((line) => (line.group_id ? [line.group_id] : []))) } },
+    });
+    const responses: CustomerOrderResponse[] = [];
+    for (const view of views) {
+      const lines: CustomerOrderLineResponse[] = [];
+      for (const line of view.lines) {
+        const group = groups.find((one) => one.id === line.group_id);
+        lines.push({
+          id: line.id,
+          position: line.position,
+          product: line.product,
+          quantity: line.quantity,
+          unit_price: line.unit_price,
+          total: line.total,
+          state: line.state,
+          progress: group ? await this.workOrders.customerProgress(tx, group) : { pieces: [] },
+        });
+      }
+      responses.push({
+        id: view.id,
+        number: view.number,
+        state: view.state,
+        promised_on: view.promised_on,
+        delivery_speed: view.delivery_speed,
+        address: view.address,
+        shipping: view.shipping,
+        lines,
+        lines_total: view.lines_total,
+        tax: view.tax,
+        total: view.total,
+        currency: view.currency,
+        note: view.note,
+        placed_at: view.placed_at,
+      });
+    }
+    return responses;
   }
 
   /** Orders as staff see them, in the given order, read with one query per kind of fact. */

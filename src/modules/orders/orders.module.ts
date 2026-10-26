@@ -5,6 +5,7 @@ import { SettingsModule } from '../settings/settings.module';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
+import { PortalOrdersController } from './portal-orders.controller';
 import { OrderSetupController } from './shipping-methods.controller';
 import { ShippingMethodsService } from './shipping-methods.service';
 import { RateTableTaxCalculator, TAX_CALCULATOR } from './tax';
@@ -21,6 +22,7 @@ import { TaxRatesService } from './tax-rates.service';
     // First: its fixed paths (`/orders/shipping-methods`) must be matched before `/orders/:id`.
     OrderSetupController,
     OrdersController,
+    PortalOrdersController,
   ],
   providers: [
     ShippingMethodsService,

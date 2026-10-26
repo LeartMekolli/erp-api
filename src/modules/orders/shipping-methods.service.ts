@@ -5,7 +5,7 @@ import type { Prisma, ShippingMethod } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { conflictOnDuplicate, keySchema } from '../pricing/decimals';
-import type { ShippingMethodResponse } from './order-response';
+import type { PortalShippingMethodsResponse, ShippingMethodResponse } from './order-response';
 
 /** Money in the workspace's currency: zero or more, at most cents. */
 export const moneySchema = z.string().regex(/^\d{1,16}(\.\d{1,2})?$/, 'must be an amount with at most 2 places, such as 9.90');
@@ -41,6 +41,12 @@ export class ShippingMethodsService {
     return this.prisma.inTenant(tenantId, async (tx) =>
       (await tx.shippingMethod.findMany({ orderBy: { key: 'asc' } })).map(toShippingMethod),
     );
+  }
+
+  /** What a customer can choose for a new order: the active methods, without their ids. */
+  async customerList(tenantId: string): Promise<PortalShippingMethodsResponse> {
+    const rows = await this.prisma.inTenant(tenantId, (tx) => tx.shippingMethod.findMany({ where: { active: true }, orderBy: { key: 'asc' } }));
+    return { data: rows.map((row) => ({ key: row.key, name: row.name, price: row.price.toFixed(2) })) };
   }
 
   async create(auth: TenantAuth, input: z.infer<typeof createShippingMethodSchema>): Promise<ShippingMethodResponse> {

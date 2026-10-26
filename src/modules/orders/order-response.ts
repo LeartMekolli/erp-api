@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
+import { customerViewResponseSchema } from '../workflow/work-order-response';
 
 // What clients receive for orders and their setup; checked against real responses in the e2e tests.
 
@@ -96,6 +97,24 @@ export const orderResponseSchema = z.strictObject({
   placed_at: z.iso.datetime(),
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
+
+/** The shipping methods a customer can choose for a new order: only the active ones. */
+export const portalShippingMethodsResponseSchema = z.strictObject({
+  data: z.array(shippingMethodResponseSchema.pick({ key: true, name: true, price: true })),
+});
+export type PortalShippingMethodsResponse = z.infer<typeof portalShippingMethodsResponseSchema>;
+
+/** A line as its customer sees it: no partner and no work order group, with the stages the customer may see. */
+export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ group_id: true, partner: true }).extend({
+  progress: customerViewResponseSchema,
+});
+export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponseSchema>;
+
+/** An order as its customer sees it (Global Constraints): never a partner, a partner's cost or a margin. */
+export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true }).extend({
+  lines: z.array(customerOrderLineResponseSchema),
+});
+export type CustomerOrderResponse = z.infer<typeof customerOrderResponseSchema>;
 
 /**
  * 409 when a lapsed price changed or can't be worked out: nothing was placed (Orders spec, goal 2).
