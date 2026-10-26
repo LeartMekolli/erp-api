@@ -41,3 +41,57 @@ export type TaxRateResponse = z.infer<typeof taxRateResponseSchema>;
 /** The workspace's tax rates: the default first, then by country and region. */
 export const taxRatesResponseSchema = z.strictObject({ data: z.array(taxRateResponseSchema) });
 export type TaxRatesResponse = z.infer<typeof taxRatesResponseSchema>;
+
+export const LINE_STATES = ['in_production', 'ready', 'cancelled'] as const;
+export const ORDER_STATES = ['in_production', 'ready', 'shipped', 'delivered', 'cancelled'] as const;
+
+export const orderLineResponseSchema = z.strictObject({
+  id: z.uuid(),
+  /** From 0, in the order the lines were placed. */
+  position: z.number().int(),
+  product: z.strictObject({ id: z.uuid(), name: z.string() }),
+  quantity: z.number().int(),
+  unit_price: z.string(),
+  total: z.string(),
+  /** Derived from the line's pieces. */
+  state: z.enum(LINE_STATES),
+  /** The work order group the line is made as. */
+  group_id: z.uuid().nullable(),
+  /** The partner holding the line, offered or accepted; null while it is made in-house. */
+  partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+});
+export type OrderLineResponse = z.infer<typeof orderLineResponseSchema>;
+
+/** An order as staff see it, with the totals frozen when it was placed. */
+export const orderResponseSchema = z.strictObject({
+  id: z.uuid(),
+  /** Readable, counted per workspace from 1001. */
+  number: z.number().int(),
+  customer: z.strictObject({ id: z.uuid(), name: z.string() }),
+  channel: z.enum(['staff', 'portal']),
+  /** Derived from the lines, and shipping. */
+  state: z.enum(ORDER_STATES),
+  /** The day the order is promised for, in the workspace's calendar. */
+  promised_on: z.iso.date(),
+  /** The delivery speed key every line was priced at. */
+  delivery_speed: z.string().nullable(),
+  address: addressSchema,
+  shipping: z.strictObject({
+    method: z.strictObject({ key: z.string(), name: z.string() }),
+    price: z.string(),
+    courier: z.string().nullable(),
+    tracking: z.string().nullable(),
+    shipped_at: z.iso.datetime().nullable(),
+    delivered_at: z.iso.datetime().nullable(),
+  }),
+  lines: z.array(orderLineResponseSchema),
+  /** The lines' prices, before shipping and tax. */
+  lines_total: z.string(),
+  /** On the lines and the shipping together. */
+  tax: z.strictObject({ percent: z.string(), amount: z.string() }),
+  total: z.string(),
+  currency: z.string(),
+  note: z.string().nullable(),
+  placed_at: z.iso.datetime(),
+});
+export type OrderResponse = z.infer<typeof orderResponseSchema>;

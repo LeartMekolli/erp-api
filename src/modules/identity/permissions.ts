@@ -37,6 +37,10 @@ export const TENANT_PERMISSIONS = [
   'partner.write',
   // Offering, withdrawing and reassigning jobs, and setting what a partner is owed.
   'partner.assign',
+  // Orders (Orders spec): reading them, placing and cancelling them, and shipping them.
+  'order.read',
+  'order.write',
+  'order.ship',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */
@@ -71,6 +75,8 @@ export const SYSTEM_ROLES = {
     'workflow.read',
     'workflow.move',
     'partner.read',
+    'order.read',
+    'order.write',
   ],
 } as const satisfies Record<string, readonly TenantPermission[]>;
 

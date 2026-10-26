@@ -79,6 +79,9 @@ model Tenant {
   partnerCapacitySnapshots PartnerCapacitySnapshot[]
   shippingMethods ShippingMethod[]
   taxRates        TaxRate[]
+  orders          Order[]
+  orderLines      OrderLine[]
+  orderCounter    OrderCounter?
 
   @@map("tenant")
 }
@@ -720,6 +723,7 @@ model Product {
   chain        ProductChain?
   quotes       Quote[]
   workOrderGroups WorkOrderGroup[]
+  orderLines   OrderLine[]
   steps        ProductStep[]
   margin       MarginOverride?
 
@@ -1017,6 +1021,7 @@ model Quote {
   customer Customer? @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   partner  Partner?  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
   workOrderGroups WorkOrderGroup[]
+  orderLine       OrderLine?
 
   // For tenant-scoped foreign keys to a quote (work order groups, order lines).
   @@unique([tenantId, id])
@@ -1045,6 +1050,7 @@ model Customer {
   quotes        Quote[]
   workOrderGroups WorkOrderGroup[]
   jobRatings    JobRating[]
+  orders        Order[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -1205,6 +1211,7 @@ model WorkOrderGroup {
   workOrders      WorkOrder[]
   assignments     JobAssignment[]
   rating          JobRating?
+  orderLine       OrderLine?
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
@@ -1577,7 +1584,8 @@ model ShippingMethod {
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orders Order[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1600,4 +1608,85 @@ model TaxRate {
 
   @@index([tenantId, country])
   @@map("tax_rate")
+}
+
+// What a customer buys: lines priced by the quotes shown, with the totals frozen when it was placed
+// (Orders spec, goals 1, 2, 11). Its state is derived from its lines' pieces, never stored.
+model Order {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // Readable, counted per workspace from 1001 (order_counter).
+  number           Int
+  customerId       String   @map("customer_id") @db.Uuid
+  // staff | portal; outside channels later (goal 17)
+  channel          String
+  // The outside channel's own id, taken once per channel.
+  channelOrderId   String?  @map("channel_order_id")
+  // Every line's quote names this speed; null when the workspace has none.
+  deliverySpeedKey String?  @map("delivery_speed_key")
+  promisedOn       DateTime @map("promised_on") @db.Date
+  // Validated by addressSchema (order-response.ts), copied from what was typed.
+  address          Json
+  shippingMethodId String   @map("shipping_method_id") @db.Uuid
+  shippingPrice    Decimal  @map("shipping_price") @db.Decimal(18, 2)
+  linesTotal       Decimal  @map("lines_total") @db.Decimal(18, 2)
+  taxPercent       Decimal  @map("tax_percent") @db.Decimal(9, 4)
+  taxAmount        Decimal  @map("tax_amount") @db.Decimal(18, 2)
+  total            Decimal  @db.Decimal(18, 2)
+  currency         String   @db.Char(3)
+  note             String?
+  placedByUserId   String   @map("placed_by_user_id") @db.Uuid
+  placedAt         DateTime @default(now()) @map("placed_at")
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer       Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  shippingMethod ShippingMethod @relation(fields: [tenantId, shippingMethodId], references: [tenantId, id], onDelete: NoAction)
+  lines          OrderLine[]
+
+  @@unique([tenantId, number])
+  @@unique([tenantId, channel, channelOrderId])
+  @@unique([tenantId, id])
+  @@index([tenantId, customerId])
+  @@map("order")
+}
+
+// One configured product of an order, priced by its quote and made as one work order group
+// (Orders spec, goals 1–4).
+model OrderLine {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId    String    @map("order_id") @db.Uuid
+  // From 0, in the order the lines were sent.
+  position   Int
+  // A quote is ordered once.
+  quoteId    String    @map("quote_id") @db.Uuid
+  productId  String    @map("product_id") @db.Uuid
+  quantity   Int
+  unitPrice  Decimal   @map("unit_price") @db.Decimal(18, 2)
+  total      Decimal   @db.Decimal(18, 2)
+  // Set as soon as the line starts, in the transaction that places the order.
+  groupId    String?   @map("group_id") @db.Uuid
+  cancelledAt DateTime? @map("cancelled_at")
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order   Order           @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  quote   Quote           @relation(fields: [tenantId, quoteId], references: [tenantId, id], onDelete: NoAction)
+  product Product         @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+  group   WorkOrderGroup? @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, quoteId])
+  @@unique([tenantId, groupId])
+  @@unique([orderId, position])
+  @@unique([tenantId, id])
+  @@map("order_line")
+}
+
+// The last order number a workspace gave out; one row per workspace, raised under its row lock.
+model OrderCounter {
+  tenantId   String @id @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  lastNumber Int    @map("last_number")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("order_counter")
 }
