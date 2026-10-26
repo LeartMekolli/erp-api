@@ -17,6 +17,7 @@ import { IdempotencyModule } from './modules/idempotency/idempotency.module';
 import { IdempotencyInterceptor } from './modules/idempotency/idempotency.interceptor';
 import { IdentityModule } from './modules/identity/identity.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { OrdersModule } from './modules/orders/orders.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { RolesModule } from './modules/roles/roles.module';
@@ -52,6 +53,7 @@ import { StorageModule } from './storage/storage.module';
     CustomersModule,
     WorkflowModule,
     PartnersModule,
+    OrdersModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [

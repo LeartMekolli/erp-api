@@ -77,6 +77,8 @@ model Tenant {
   jobAssignments  JobAssignment[]
   jobRatings      JobRating[]
   partnerCapacitySnapshots PartnerCapacitySnapshot[]
+  shippingMethods ShippingMethod[]
+  taxRates        TaxRate[]
 
   @@map("tenant")
 }
@@ -1553,4 +1555,43 @@ model JobRating {
   @@index([tenantId, partnerId, createdAt])
   @@index([tenantId, customerId])
   @@map("job_rating")
+}
+
+// ---------------------------------------------------------------------------
+// Orders (Orders spec): what customers buy, made to order and shipped.
+
+// A way an order reaches the customer, with its price per order (Orders spec, goal 9). Switched off,
+// never deleted: past orders keep naming it.
+model ShippingMethod {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key       String
+  name      String
+  price     Decimal  @db.Decimal(18, 2)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("shipping_method")
+}
+
+// A tax rate for a country, or a region of it; the row without a country is the workspace's default
+// (Orders spec, goal 10 and B2). One row per place, kept by replacing the whole list under a lock.
+model TaxRate {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // ISO 3166-1 alpha-2; null for the default rate.
+  country   String?  @db.Char(2)
+  // Only with a country.
+  region    String?
+  percent   Decimal  @db.Decimal(9, 4)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, country])
+  @@map("tax_rate")
 }
