@@ -9,8 +9,8 @@ import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
 import { orderResponseSchema } from './order-response';
 import type { OrderResponse } from './order-response';
-import { OrdersService, cancelOrderSchema, orderListQuerySchema } from './orders.service';
-import type { CancelOrder, OrderListQuery } from './orders.service';
+import { OrdersService, cancelOrderSchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
+import type { CancelOrder, OrderListQuery, ShipOrder } from './orders.service';
 import { staffPlaceOrderSchema } from './place-order';
 import type { StaffPlaceOrder } from './place-order';
 
@@ -71,7 +71,7 @@ export class OrdersController {
     description:
       "Each line's unfinished pieces are cancelled. A partner's open offer on it is withdrawn; a partner that had " +
       'accepted it is owed its `partner_owed` amount at once, else nothing (an amount for a line no partner accepted ' +
-      'is not used). Once every line is cancelled, so is the order. An unknown line, or an amount for a line not being ' +
+      'is not used). Once every line is cancelled, so is the order, and the customer is told. An unknown line, or an amount for a line not being ' +
       'cancelled, is a 400; a shipped order, a line already cancelled, or nothing left to cancel is a 409.',
     body: cancelOrderSchema,
     response: orderResponseSchema,
@@ -86,5 +86,36 @@ export class OrdersController {
     @Body(new ZodValidationPipe(cancelOrderSchema)) body: CancelOrder,
   ): Promise<OrderResponse> {
     return this.orders.cancel(auth, id, body);
+  }
+
+  @ApiDoc({
+    summary: 'Ship a ready order, with its courier and tracking number when given, and tell the customer.',
+    description: 'Only once every line is ready or cancelled, with at least one ready; else, or once shipped, a 409.',
+    body: shipOrderSchema,
+    response: orderResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('order.ship')
+  @Post(':id/ship')
+  @HttpCode(200)
+  ship(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(shipOrderSchema)) body: ShipOrder,
+  ): Promise<OrderResponse> {
+    return this.orders.ship(auth, id, body);
+  }
+
+  @ApiDoc({
+    summary: 'Mark a shipped order delivered, and tell the customer.',
+    description: 'An order not shipped yet, or delivered already, is a 409.',
+    response: orderResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('order.ship')
+  @Post(':id/deliver')
+  @HttpCode(200)
+  deliver(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<OrderResponse> {
+    return this.orders.deliver(auth, id);
   }
 }

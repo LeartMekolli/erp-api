@@ -4,12 +4,17 @@ import { validateTemplate } from './render';
 const events = Object.keys(EVENTS) as EventKey[];
 
 describe('notification catalogue', () => {
-  it('declares the events of the foundation, the catalog, customers and partners', () => {
+  it('declares the events of the foundation, the catalog, customers, partners and orders', () => {
     expect(events.sort()).toEqual([
       'auth.password_reset_requested',
       'customer.invited',
       'file.measured',
       'material.price.stale',
+      'order.cancelled',
+      'order.delivered',
+      'order.placed',
+      'order.received',
+      'order.shipped',
       'partner.invited',
       'partner.job.declined',
       'partner.job.direct',
@@ -34,6 +39,14 @@ describe('notification catalogue', () => {
     }
     expect(definition.channels).toEqual(['email']);
     expect(['invitee', 'user']).toContain(definition.audience.kind);
+  });
+
+  it('tells the customer of its orders, and staff who read orders of each new one', () => {
+    for (const event of ['order.placed', 'order.shipped', 'order.delivered', 'order.cancelled'] as const) {
+      expect([event, EVENTS[event].audience, EVENTS[event].subjectType]).toEqual([event, { kind: 'customer' }, 'order']);
+    }
+    expect(EVENTS['order.received'].audience).toEqual({ kind: 'permission', permission: 'order.read' });
+    expect(Object.keys(variablesOf('order.shipped')).sort()).toEqual(['courier', 'number', 'tracking']);
   });
 
   it.each(events)('%s: every sample is non-empty', (event) => {

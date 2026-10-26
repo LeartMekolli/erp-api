@@ -10,6 +10,7 @@ import type { Order, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
+import { NotificationsService } from '../notifications/notifications.service';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
 import { SettingsService } from '../settings/settings.service';
@@ -59,6 +60,15 @@ export type CancelOrder = z.infer<typeof cancelOrderSchema>;
 export const customerCancelOrderSchema = z.strictObject({ reason: reasonSchema });
 export type CustomerCancelOrder = z.infer<typeof customerCancelOrderSchema>;
 
+export const shipOrderSchema = z.strictObject({
+  courier: z.string().trim().min(1).max(100).optional(),
+  tracking: z.string().trim().min(1).max(200).optional(),
+});
+export type ShipOrder = z.infer<typeof shipOrderSchema>;
+
+/** Shown in a notification for a courier or tracking number staff didn't give. */
+const NOT_GIVEN = '—';
+
 /** Jobs that hold a line: offered or accepted. */
 const HOLDING = ['offered', 'accepted'];
 
@@ -74,6 +84,7 @@ export class OrdersService {
     private readonly settings: SettingsService,
     private readonly workOrders: WorkOrdersService,
     private readonly quotes: QuotesService,
+    private readonly notifications: NotificationsService,
     @Inject(TAX_CALCULATOR) private readonly tax: TaxCalculator,
   ) {}
 
@@ -176,15 +187,88 @@ export class OrdersService {
       }
       throw error;
     }
-    // The order has committed: a failure from here on (telling a workshop) must not report it as failed.
+    // The order has committed: a failure from here on (telling a workshop, the customer, staff) must not report it as failed.
+    const number = String(placed.number);
+    const subject = { type: 'order', id: placed.id };
+    afterCommit = [
+      ...afterCommit,
+      async () => {
+        await this.notifications.raise(auth.tenantId, 'order.placed', subject, { number });
+      },
+      async () => {
+        await this.notifications.raise(auth.tenantId, 'order.received', subject, { number, customer_name: placed.customer.name });
+      },
+    ];
     for (const after of afterCommit) {
-      try {
-        await after();
-      } catch (error) {
-        this.logger.error({ err: error, orderId: placed.id }, 'a step after placing an order failed');
-      }
+      await this.afterCommit(placed.id, after);
     }
     return placed;
+  }
+
+  /**
+   * Ships a ready order, with the courier and tracking number when given, and tells the customer
+   * (Orders spec, goals 9 and 16). An order not ready yet, or shipped already, is a 409.
+   */
+  async ship(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: ShipOrder): Promise<OrderResponse> {
+    const shipped = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const order = await this.lockOrder(tx, id);
+      const before = (await this.views(tx, [order]))[0];
+      if (before.state !== 'ready') {
+        throw new ConflictException(`Only a ready order can be shipped; this one is ${before.state.replace('_', ' ')}`);
+      }
+      const updated = await tx.order.update({
+        where: { id },
+        data: { shippedAt: new Date(), courier: body.courier ?? null, tracking: body.tracking ?? null },
+      });
+      return this.recordChange(tx, auth, before, updated);
+    });
+    await this.afterCommit(id, async () => {
+      await this.notifications.raise(auth.tenantId, 'order.shipped', { type: 'order', id }, {
+        number: String(shipped.number),
+        courier: shipped.shipping.courier ?? NOT_GIVEN,
+        tracking: shipped.shipping.tracking ?? NOT_GIVEN,
+      });
+    });
+    return shipped;
+  }
+
+  /** Marks a shipped order delivered, and tells the customer. An order not shipped, or delivered already, is a 409. */
+  async deliver(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string): Promise<OrderResponse> {
+    const delivered = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const order = await this.lockOrder(tx, id);
+      const before = (await this.views(tx, [order]))[0];
+      if (before.state !== 'shipped') {
+        throw new ConflictException(`Only a shipped order can be delivered; this one is ${before.state.replace('_', ' ')}`);
+      }
+      const updated = await tx.order.update({ where: { id }, data: { deliveredAt: new Date() } });
+      return this.recordChange(tx, auth, before, updated);
+    });
+    await this.afterCommit(id, async () => {
+      await this.notifications.raise(auth.tenantId, 'order.delivered', { type: 'order', id }, { number: String(delivered.number) });
+    });
+    return delivered;
+  }
+
+  /** Audits a change to an order and answers it as staff see it now. */
+  private async recordChange(tx: Tx, auth: Pick<TenantAuth, 'userId'>, before: OrderResponse, updated: Order): Promise<OrderResponse> {
+    const after = (await this.views(tx, [updated]))[0];
+    await this.audit.record(tx, {
+      actor: { type: 'user', id: auth.userId },
+      action: 'order.changed',
+      subject: { type: 'order', id: updated.id },
+      before,
+      after,
+    });
+    return after;
+  }
+
+  /** Runs a step once the order's change has committed; a failure is logged, never answered. */
+  private async afterCommit(orderId: string, step: () => Promise<void>): Promise<void> {
+    try {
+      await step();
+    } catch (error) {
+      this.logger.error({ err: error, orderId }, 'a step after changing an order failed');
+    }
   }
 
   async list(tenantId: string, query: OrderListQuery): Promise<Page<OrderResponse>> {
@@ -244,10 +328,20 @@ export class OrdersService {
    * `partner_owed` gives for its line, else nothing. Once every line is cancelled, so is the order.
    */
   async cancel(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: CancelOrder): Promise<OrderResponse> {
-    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const cancelled = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const order = await this.lockOrder(tx, id);
       return this.cancelLines(tx, auth, order, body);
     });
+    // The customer hears of it once the whole order is cancelled; cancelling some lines leaves it open.
+    if (cancelled.state === 'cancelled') {
+      await this.afterCommit(id, async () => {
+        await this.notifications.raise(auth.tenantId, 'order.cancelled', { type: 'order', id }, {
+          number: String(cancelled.number),
+          reason: body.reason,
+        });
+      });
+    }
+    return cancelled;
   }
 
   /** The customer cancels the whole order, only while no piece of it has been worked on (goal 12). */
@@ -320,16 +414,7 @@ export class OrdersService {
     await tx.orderLine.updateMany({ where: { id: { in: chosen.map((line) => line.id) } }, data: { cancelledAt: now } });
     const left = lines.length - lines.filter((line) => line.cancelledAt).length - chosen.length;
     const updated = left === 0 ? await tx.order.update({ where: { id: order.id }, data: { cancelledAt: now, cancelReason: body.reason } }) : order;
-
-    const after = (await this.views(tx, [updated]))[0];
-    await this.audit.record(tx, {
-      actor: { type: 'user', id: auth.userId },
-      action: 'order.changed',
-      subject: { type: 'order', id: order.id },
-      before,
-      after,
-    });
-    return after;
+    return this.recordChange(tx, auth, before, updated);
   }
 
   private async customerOrder(tx: Tx, customerId: string, id: string): Promise<Order> {

@@ -76,6 +76,21 @@ export async function resolveAudience(
       }
       break;
     }
+    case 'customer': {
+      const order = await tx.order.findFirst({ where: { id: notification.subjectId }, select: { customerId: true } });
+      if (order) {
+        const people = await tx.user.findMany({
+          where: {
+            status: 'active',
+            kind: 'customer',
+            memberships: { some: { organisationType: 'customer', organisationId: order.customerId } },
+          },
+          orderBy: { id: 'asc' },
+        });
+        targets.push(...people.map((user) => ({ userId: user.id, email: user.email, locale: user.locale })));
+      }
+      break;
+    }
     case 'permission': {
       const subjectUser =
         notification.subjectType === 'user'

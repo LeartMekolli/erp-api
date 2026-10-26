@@ -8,7 +8,9 @@ export type Audience =
   /** The user who uploaded the file version the notification is about. */
   | { kind: 'uploader' }
   /** The people of the partner the job assignment is for. */
-  | { kind: 'partner' };
+  | { kind: 'partner' }
+  /** The people of the customer the order is for. */
+  | { kind: 'customer' };
 
 export interface VariableSpec {
   /** Shown by the template preview. */
@@ -32,7 +34,8 @@ export interface EventDefinition {
     | 'job_assignment'
     | 'user'
     | 'file_version'
-    | 'material';
+    | 'material'
+    | 'order';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -277,6 +280,83 @@ export const EVENTS = {
         body:
           '{{ reason }}\n\nUntil a fresh feed price arrives, {{ material_name }} uses its last feed price or its ' +
           'fallback price. Check the fallback, or override the price by hand.',
+      },
+    },
+  },
+  // The customer's own orders (Orders spec, goal 16): never a partner, a cost or a margin.
+  'order.placed': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }} is placed',
+        body: 'Thank you: order {{ number }} is placed and in production. We will tell you when it ships.',
+      },
+    },
+  },
+  'order.shipped': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      courier: { sample: 'DHL' },
+      tracking: { sample: 'JD014600006281234567' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }} has shipped',
+        body: 'Order {{ number }} is on its way.\n\nCourier: {{ courier }}\nTracking: {{ tracking }}',
+      },
+    },
+  },
+  'order.delivered': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }} is delivered',
+        body: 'Order {{ number }} has been delivered. Thank you for ordering with us.',
+      },
+    },
+  },
+  // Only when staff cancel the whole order: a customer who cancels knows already.
+  'order.cancelled': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      reason: { sample: 'The material is no longer available' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }} is cancelled',
+        body: 'We have cancelled order {{ number }}.\n\nReason: {{ reason }}',
+      },
+    },
+  },
+  // Staff hear of each new order, from any channel.
+  'order.received': {
+    audience: { kind: 'permission', permission: 'order.read' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      customer_name: { sample: 'Luna Jewels' },
+    },
+    defaults: {
+      en: {
+        subject: 'New order {{ number }} from {{ customer_name }}',
+        body: '{{ customer_name }} placed order {{ number }}. Every line is in production.',
       },
     },
   },
