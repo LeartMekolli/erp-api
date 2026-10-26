@@ -14,6 +14,9 @@ export interface ApiError {
   status: number;
   detail?: string;
   errors?: { path: string; message: string }[];
+  /** Names a refusal clients act on, such as `price_changed`; its extension members come with it. */
+  code?: string;
+  [extension: string]: unknown;
 }
 
 const titles: Record<number, string> = {
@@ -64,6 +67,24 @@ function errorsOf(exception: HttpException): ApiError['errors'] {
 }
 
 /**
+ * A refusal with a `code` carries what the client needs to act on it as extension members (RFC 9457):
+ * `new ConflictException({ code: 'price_changed', message, lines })` answers `code` and `lines`.
+ * Without a `code`, nothing beyond `message` and `errors` is passed on.
+ */
+function extensionsOf(exception: HttpException): Record<string, unknown> {
+  const response: unknown = exception.getResponse();
+  if (typeof response !== 'object' || response === null) {
+    return {};
+  }
+  if (typeof (response as { code?: unknown }).code !== 'string') {
+    return {};
+  }
+  // Nest's own members and the problem's are never passed on as extensions.
+  const reserved = new Set(['message', 'errors', 'statusCode', 'error', 'type', 'title', 'status', 'detail']);
+  return Object.fromEntries(Object.entries(response).filter(([key]) => !reserved.has(key)));
+}
+
+/**
  * Converts anything thrown into an `ApiError`.
  *
  * Messages we wrote (Nest exceptions) are shown to the caller. Anything else is
@@ -87,6 +108,7 @@ export function toApiError(error: unknown): ApiError {
     const status = error.getStatus();
     const errors = errorsOf(error);
     return {
+      ...extensionsOf(error),
       type: 'about:blank',
       title: titleFor(status),
       status,

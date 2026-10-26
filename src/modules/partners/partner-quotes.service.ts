@@ -35,6 +35,8 @@ export class PartnerQuotesService implements OnModuleInit {
 
   onModuleInit(): void {
     this.workOrders.registerStartHook((tx, started) => this.startDirect(tx, started));
+    // A lapsed quote at a picked workshop is priced again with the same choice (Orders spec, goal 2).
+    this.quotes.registerRequoteChoice((partnerId) => this.choice(partnerId));
   }
 
   /** The workshops the customer may pick for the configuration, by name, each priced as a quote with it. */

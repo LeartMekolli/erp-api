@@ -28,6 +28,20 @@ describe('toApiError', () => {
     });
   });
 
+  it('passes on the extension members of a refusal with a code, and nothing else', () => {
+    const lines = [{ position: 0, previous_quote_id: 'q1', quote: null, reasons: [] }];
+
+    expect(toApiError(new ConflictException({ code: 'price_changed', message: 'Prices changed', lines, status: 200 }))).toEqual({
+      type: 'about:blank',
+      title: 'Conflict',
+      status: 409,
+      detail: 'Prices changed',
+      code: 'price_changed',
+      lines,
+    });
+    expect(toApiError(new ConflictException({ message: 'Some pieces cannot move', lines }))).not.toHaveProperty('lines');
+  });
+
   it('maps a validation failure to one entry per bad field', () => {
     const result = z.object({ name: z.string(), age: z.number() }).safeParse({ name: 123 });
     const apiError = toApiError(result.success ? new Error('unreachable') : result.error);

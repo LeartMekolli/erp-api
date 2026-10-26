@@ -10,7 +10,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { promisedDate } from '../src/modules/orders/dates';
-import { orderResponseSchema } from '../src/modules/orders/order-response';
+import { orderResponseSchema, priceChangedResponseSchema } from '../src/modules/orders/order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -197,6 +197,12 @@ describe('orders: placing an order', () => {
       assignments: await tx.jobAssignment.count(),
     }));
   const money = (value: Prisma.Decimal | string) => new Prisma.Decimal(value).toFixed(2);
+  const lapse = (tenant: Tenant, quoteId: string) =>
+    prisma.inTenant(tenant.id, (tx) => tx.quote.update({ where: { id: quoteId }, data: { expiresAt: new Date(Date.now() - 1000) } }));
+  interface PriceChanged {
+    code: string;
+    lines: { position: number; previous_quote_id: string; quote: Quote | null; reasons: { code: string }[] }[];
+  }
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -328,7 +334,7 @@ describe('orders: placing an order', () => {
     expect(await counts(tenant)).toMatchObject({ orders: 1, groups: 1 });
   });
 
-  it('refuses mixed delivery speeds, a shipping method that is off or unknown, a bad address and an expired quote', async () => {
+  it('refuses mixed delivery speeds, a shipping method that is off or unknown, and a bad address', async () => {
     const tenant = await freshTenant();
     const standard = await tenant.staffQuote();
     const rush = await tenant.staffQuote({ delivery_speed: 'rush' });
@@ -344,11 +350,66 @@ describe('orders: placing an order', () => {
     }
     await order(tenant, []).expect(400);
     await tenant.staff.post('/orders', { lines: [{ quote_id: standard.id }], address, shipping_method: 'courier' }).expect(400);
-
-    // Until a lapsed price is worked out again (Task 5), an expired quote can't be ordered.
-    await prisma.inTenant(tenant.id, (tx) => tx.quote.update({ where: { id: standard.id }, data: { expiresAt: new Date(Date.now() - 1000) } }));
-    await order(tenant, [standard.id]).expect(409);
     expect(await counts(tenant)).toEqual(before);
+  });
+
+  it('places an order with a lapsed quote whose price is unchanged, using a fresh quote', async () => {
+    const tenant = await freshTenant();
+    const lapsed = await tenant.staffQuote();
+    await lapse(tenant, lapsed.id);
+
+    const placed = await order(tenant, [lapsed.id]).expect(201);
+    const line = (placed.body as Order).lines[0];
+    expect(line.total).toBe(lapsed.total);
+    // A new quote, at the same price; the lapsed one stays unordered.
+    const ordered = await prisma.inTenant(tenant.id, (tx) => tx.orderLine.findUniqueOrThrow({ where: { id: line.id } }));
+    expect(ordered.quoteId).not.toBe(lapsed.id);
+    const [old, fresh] = await prisma.inTenant(tenant.id, (tx) =>
+      Promise.all([lapsed.id, ordered.quoteId].map((id) => tx.quote.findUniqueOrThrow({ where: { id }, include: { orderLine: true } }))),
+    );
+    // Priced from the same inputs, for the same customer.
+    expect(fresh).toMatchObject({ customerId: tenant.luna, productId: old.productId, quantity: old.quantity, inputs: old.inputs });
+    expect(fresh.total.equals(old.total)).toBe(true);
+    expect(fresh.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(old.orderLine).toBeNull();
+  });
+
+  it('refuses a lapsed quote whose price changed, with the new price to confirm', async () => {
+    const tenant = await freshTenant();
+    const lapsed = await tenant.staffQuote();
+    await lapse(tenant, lapsed.id);
+    // Silver costs more since the quote was shown.
+    await tenant.staff.put(`/catalog/materials/${tenant.cast.silver}/price-override`, { price: '1.25', reason: 'supplier' }).expect(200);
+    const before = await counts(tenant);
+
+    const refused = await order(tenant, [lapsed.id]).expect(409);
+    expectDocumented(priceChangedResponseSchema, refused.body);
+    const changed = refused.body as PriceChanged;
+    expect(changed.code).toBe('price_changed');
+    expect(changed.lines).toEqual([
+      expect.objectContaining({ position: 0, previous_quote_id: lapsed.id, reasons: [], quote: expect.objectContaining({ id: expect.any(String) }) }),
+    ]);
+    const confirmed = changed.lines[0].quote!;
+    expect(confirmed.total).not.toBe(lapsed.total);
+    // Nothing placed; the new quote was saved, so it can be ordered.
+    expect(await counts(tenant)).toEqual(before);
+
+    const placed = await order(tenant, [confirmed.id]).expect(201);
+    expect((placed.body as Order).lines_total).toBe(money(confirmed.total));
+  });
+
+  it('answers a lapsed picked-workshop quote the workshop can no longer take', async () => {
+    const tenant = await freshTenant();
+    await tenant.staff.patch(`/customers/${tenant.luna}`, { may_pick_partner: true }).expect(200);
+    const picked = await tenant.lunaQuote({ partner_id: tenant.metalworks });
+    await lapse(tenant, picked.id);
+    await tenant.staff.post(`/partners/${tenant.metalworks}/suspend`).expect(200);
+
+    const refused = await order(tenant, [picked.id]).expect(409);
+    const changed = refused.body as PriceChanged;
+    expect(changed.lines[0]).toMatchObject({ position: 0, previous_quote_id: picked.id, quote: null });
+    expect(changed.lines[0].reasons.map((reason) => reason.code)).toEqual(['partner_unavailable']);
+    expect(await counts(tenant)).toMatchObject({ orders: 0 });
   });
 
   it('lets staff who may order place and read orders, and keeps orders to the workspace', async () => {

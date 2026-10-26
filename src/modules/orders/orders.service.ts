@@ -9,6 +9,8 @@ import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
+import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
+import { QuotesService } from '../pricing/quotes.service';
 import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
 import { promisedDate } from './dates';
@@ -39,6 +41,7 @@ export class OrdersService {
     private readonly audit: AuditService,
     private readonly settings: SettingsService,
     private readonly workOrders: WorkOrdersService,
+    private readonly quotes: QuotesService,
     @Inject(TAX_CALCULATOR) private readonly tax: TaxCalculator,
   ) {}
 
@@ -48,6 +51,7 @@ export class OrdersService {
    * hook, which refuses (409, naming the line) when it can no longer take it.
    */
   async place(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, customerId: string, body: PlaceOrder, channel: Channel): Promise<OrderResponse> {
+    body = { ...body, lines: await this.refreshLapsed(auth, customerId, body.lines) };
     let afterCommit: (() => Promise<void>)[] = [];
     let placed: OrderResponse;
     try {
@@ -177,6 +181,47 @@ export class OrdersService {
   }
 
   /**
+   * Prices every lapsed line again, each in its own transaction (Orders spec, goal 2). Unchanged
+   * prices are swapped for their new quotes; any change or refusal refuses the order with every
+   * lapsed line's outcome, so the customer confirms the new prices first. Lines of other customers,
+   * already ordered or unknown, are left for `orderable` to refuse.
+   */
+  private async refreshLapsed(
+    auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
+    customerId: string,
+    lines: PlaceOrder['lines'],
+  ): Promise<PlaceOrder['lines']> {
+    const lapsed = await this.prisma.inTenant(auth.tenantId, (tx) =>
+      tx.quote.findMany({
+        where: { id: { in: lines.map((line) => line.quote_id) }, customerId, expiresAt: { lte: new Date() }, orderLine: null },
+      }),
+    );
+    if (lapsed.length === 0) return lines;
+
+    const outcomes = new Map<string, { quote: QuoteSummaryResponse | null; reasons: QuoteRefusal[]; same: boolean }>();
+    for (const quote of lapsed) {
+      const result = await this.quotes.requote(auth, quote.id);
+      outcomes.set(
+        quote.id,
+        result.accepted
+          ? { quote: result.quote, reasons: [], same: new Prisma.Decimal(result.quote.total).equals(quote.total) }
+          : { quote: null, reasons: result.reasons, same: false },
+      );
+    }
+    if ([...outcomes.values()].every((outcome) => outcome.same)) {
+      return lines.map((line) => ({ quote_id: outcomes.get(line.quote_id)?.quote?.id ?? line.quote_id }));
+    }
+    throw new ConflictException({
+      code: 'price_changed',
+      message: 'A price shown has changed since; confirm the new prices to order',
+      lines: lines.flatMap((line, position) => {
+        const outcome = outcomes.get(line.quote_id);
+        return outcome ? [{ position, previous_quote_id: line.quote_id, quote: outcome.quote, reasons: outcome.reasons }] : [];
+      }),
+    });
+  }
+
+  /**
    * The quotes of an order's lines, in line order: each the customer's, not ordered yet, and still
    * holding its price. Another customer's or an internal quote is not found.
    */
@@ -193,12 +238,8 @@ export class OrdersService {
           errors: [{ path: `lines.${index}`, message: 'this quote has already been ordered' }],
         });
       }
-      if (quote.expiresAt.getTime() <= Date.now()) {
-        throw new ConflictException({
-          message: 'The price shown has expired; price it again to order',
-          errors: [{ path: `lines.${index}`, message: 'the quote has expired' }],
-        });
-      }
+      // `refreshLapsed` replaced every lapsed quote; one that lapsed in the moments since still holds
+      // the price the customer confirmed, so it is ordered as is.
       quotes.push(quote);
     }
     return quotes;

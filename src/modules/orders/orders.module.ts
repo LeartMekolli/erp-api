@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
+import { PricingModule } from '../pricing/pricing.module';
 import { SettingsModule } from '../settings/settings.module';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { OrdersController } from './orders.controller';
@@ -15,7 +16,7 @@ import { TaxRatesService } from './tax-rates.service';
  * Partners.
  */
 @Module({
-  imports: [AuditModule, SettingsModule, WorkflowModule],
+  imports: [AuditModule, PricingModule, SettingsModule, WorkflowModule],
   controllers: [
     // First: its fixed paths (`/orders/shipping-methods`) must be matched before `/orders/:id`.
     OrderSetupController,

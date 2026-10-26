@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { toPage } from '../../common/pagination/page';
@@ -167,6 +167,13 @@ function namedMaterials(blocks: Block[]): string[] {
 /** Prices a configuration and saves it as a quote that holds until it expires (Pricing spec). */
 @Injectable()
 export class QuotesService {
+  /** Builds the picked workshop's choice when a lapsed quote is priced again; Partners registers it. */
+  private requoteChoice?: (partnerId: string) => PartnerChoice;
+
+  registerRequoteChoice(choice: (partnerId: string) => PartnerChoice): void {
+    this.requoteChoice = choice;
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -250,6 +257,31 @@ export class QuotesService {
         },
       };
     });
+  }
+
+  /**
+   * Prices a saved quote's inputs again and saves the result as a new quote for the same customer
+   * (Orders spec, goal 2). A picked workshop must still take the job, else `partner_unavailable`.
+   */
+  async requote(auth: Requester, quoteId: string): Promise<QuoteResultResponse> {
+    const quote = await this.prisma.inTenant(auth.tenantId, (tx) => this.find(tx, quoteId));
+    const inputs = quote.inputs as QuoteInputs;
+    const body = {
+      product_id: quote.productId,
+      quantity: quote.quantity,
+      options: inputs.options,
+      ...(inputs.size ? { size: inputs.size } : {}),
+      ...(inputs.file_version_id ? { file_version_id: inputs.file_version_id } : {}),
+      ...(inputs.delivery_speed ? { delivery_speed: inputs.delivery_speed } : {}),
+      // An internal quote keeps its group; a customer's gets the customer's own.
+      ...(!quote.customerId && inputs.customer_group ? { customer_group: inputs.customer_group } : {}),
+    } as CustomerQuoteRequest & { customer_group?: string };
+    const context: QuoteContext | undefined = quote.customerId ? { customerId: quote.customerId, audience: 'staff' } : undefined;
+    if (quote.partnerId && !this.requoteChoice) {
+      throw new InternalServerErrorException('This process cannot price a picked workshop again');
+    }
+    const partner = quote.partnerId ? this.requoteChoice!(quote.partnerId) : undefined;
+    return this.create(auth, body, context, partner);
   }
 
   /**

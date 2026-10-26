@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 
 // What clients receive for orders and their setup; checked against real responses in the e2e tests.
 
@@ -95,3 +96,25 @@ export const orderResponseSchema = z.strictObject({
   placed_at: z.iso.datetime(),
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
+
+/**
+ * 409 when a lapsed price changed or can't be worked out: nothing was placed (Orders spec, goal 2).
+ * A problem response whose `code` and `lines` are its extension members.
+ */
+export const priceChangedResponseSchema = z.strictObject({
+  type: z.string(),
+  title: z.string(),
+  status: z.literal(409),
+  detail: z.string(),
+  code: z.literal('price_changed'),
+  lines: z.array(
+    z.strictObject({
+      position: z.number().int(),
+      previous_quote_id: z.uuid(),
+      /** The new quote to order with; null when the line can't be priced now. */
+      quote: quoteSummaryResponseSchema.nullable(),
+      reasons: z.array(quoteRefusalSchema),
+    }),
+  ),
+});
+export type PriceChangedResponse = z.infer<typeof priceChangedResponseSchema>;
