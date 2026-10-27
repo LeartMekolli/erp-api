@@ -42,6 +42,8 @@ export class PartnerQuotesService implements OnModuleInit {
   /** The workshops the customer may pick for the configuration, by name, each priced as a quote with it. */
   async choices(auth: CustomerAuth, body: CustomerQuoteRequest): Promise<PartnerChoicesResponse> {
     await this.mayPick(auth);
+    // Refused whether or not any workshop could be offered (Orders spec, B4).
+    await this.quotes.refuseAssemblyPick(auth.tenantId, body.product_id);
     const { partners, scores } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const rows = await tx.partner.findMany({
         where: { status: 'approved', acceptsDirectOrders: true },

@@ -52,7 +52,8 @@ export class PortalQuotesController {
       'configuration that cannot be priced is a 200 with `accepted: false` and each reason in plain words. ' +
       "With `partner_id`, from the customer's workshop choices, the quote is at that workshop's price and the job " +
       "goes to it when it starts (403 unless the workspace lets the customer pick); a workshop that can't take " +
-      'the job is refused with `partner_unavailable`.',
+      'the job is refused with `partner_unavailable`. A product made of parts is quoted as one price; a workshop ' +
+      "can't be picked for it (400).",
     body: portalQuoteRequestSchema,
     response: portalQuoteResultSchema,
     errors: [400, 404],
@@ -76,7 +77,7 @@ export class PortalQuotesController {
     summary: 'The workshops the customer may pick for a configuration, each at the price the customer would pay with it.',
     description:
       'Only workshops that take direct orders and can take the job right now; nothing is saved. Quote with one by ' +
-      "sending its id as `partner_id`. 403 unless the workspace lets the customer pick.",
+      "sending its id as `partner_id`. 403 unless the workspace lets the customer pick; a product made of parts is a 400.",
     body: customerQuoteRequestSchema,
     response: partnerChoicesResponseSchema,
     errors: [400, 404],

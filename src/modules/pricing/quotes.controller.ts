@@ -29,7 +29,9 @@ export class QuotesController {
       "price holds until `expires_at`. A configuration that cannot be priced is a 200 with `accepted: false` and " +
       'every reason, and nothing is saved. An unknown `customer_group` or `delivery_speed` is a 400. ' +
       "With `customer_id`, the quote is for that customer: the customer's group applies (naming `customer_group` as " +
-      'well is a 400) and its people see the quote in the portal.',
+      'well is a 400) and its people see the quote in the portal. A product made of parts is priced as its own ' +
+      "steps plus a quote per part, at the options it shares with the part, the part's size and the quantity the " +
+      "line needs; any part that can't be priced refuses it, naming the part. `GET` shows the parts under `breakdown.parts`.",
     body: quoteRequestSchema,
     response: quoteResultResponseSchema,
     errors: [400, 404],

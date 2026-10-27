@@ -21,6 +21,8 @@ export const QUOTE_REFUSAL_CODES = [
   'workflow_step_missing',
   // The workshop the customer picked can't take the job right now (Partners spec, goal 12).
   'partner_unavailable',
+  // An assembly's quantity needs more of a part than one quote can hold (Orders spec, goal 6).
+  'quantity_too_large',
 ] as const;
 export type QuoteRefusalCode = (typeof QUOTE_REFUSAL_CODES)[number];
 
@@ -31,6 +33,8 @@ export const quoteRefusalSchema = z.strictObject({
   rule_id: z.uuid().optional(),
   /** The step that could not be priced, or that the product's workflow lacks, by key. */
   step: z.string().optional(),
+  /** For an assembly: the position of the part that refused. */
+  part: z.number().int().optional(),
 });
 export type QuoteRefusal = z.infer<typeof quoteRefusalSchema>;
 
@@ -104,6 +108,20 @@ export const breakdownSchema = z.strictObject({
   unit_price_exact: amount,
   unit_price: amount,
   total: amount,
+  /**
+   * An assembly's parts, each its own quote at the quantity the line needs; the figures above are
+   * the assembly's own steps, and the quote's price is theirs plus every part's. Empty otherwise.
+   */
+  parts: z.array(
+    z.strictObject({
+      position: z.number().int(),
+      product: z.strictObject({ id: z.uuid(), name: z.string() }),
+      quantity: z.number().int(),
+      quote_id: z.uuid(),
+      unit_price: amount,
+      total: amount,
+    }),
+  ),
 });
 export type BreakdownJson = z.infer<typeof breakdownSchema>;
 

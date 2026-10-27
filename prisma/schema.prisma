@@ -1039,11 +1039,17 @@ model Quote {
   // for the job (Partners spec, goal 12). Both null for a quote at the workspace's own prices.
   partnerId       String?  @map("partner_id") @db.Uuid
   partnerCost     Decimal? @map("partner_cost") @db.Decimal(18, 2)
+  // A part's quote within an assembly's, and the part's position; both null for any other quote
+  // (Orders spec, goal 6). Only the assembly's quote is listed, read by customers and ordered.
+  parentQuoteId   String?  @map("parent_quote_id") @db.Uuid
+  position        Int?
   createdAt       DateTime @default(now()) @map("created_at")
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   // A quoted product is kept: a saved quote outlives changes to the catalog.
   product  Product   @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+  parent   Quote?    @relation("QuoteParts", fields: [tenantId, parentQuoteId], references: [tenantId, id], onDelete: Cascade)
+  parts    Quote[]   @relation("QuoteParts")
   customer Customer? @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   partner  Partner?  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
   workOrderGroups WorkOrderGroup[]
@@ -1054,6 +1060,7 @@ model Quote {
   @@index([tenantId])
   @@index([tenantId, customerId])
   @@index([tenantId, partnerId])
+  @@index([tenantId, parentQuoteId])
   @@map("quote")
 }
 
