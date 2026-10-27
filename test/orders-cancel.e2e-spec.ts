@@ -97,6 +97,10 @@ describe('orders: state and cancelling', () => {
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     const sol = ((await staff.post('/customers', { name: 'Sol Studio' }).expect(201)).body as { id: string }).id;
+    // Pay later, so an order starts at once instead of waiting for payment.
+    for (const customer of [luna, sol]) {
+      await staff.put(`/customers/${customer}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    }
 
     /** A quote staff make for Luna. */
     const quote = async (extra: object = {}) =>

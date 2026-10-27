@@ -110,6 +110,8 @@ describe('orders: assemblies', () => {
     };
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    // Pay later, so an order starts at once instead of waiting for payment.
+    await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
     return {
       id: tenant.id,
       staff,

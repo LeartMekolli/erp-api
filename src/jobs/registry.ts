@@ -103,6 +103,9 @@ export const SCHEDULED_JOBS = {
   // Whether an offer can still be accepted is decided by its deadline, never by this having run.
   'partners.offers.expire': { queue: 'maintenance', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
   // Keeps each partner's load and capacity per step type for the day (Partners spec, D83).
+  // Cancels pay-first orders not paid by their deadline (Payments spec). Whether an order may still be
+  // paid is decided by its state under its lock, never by this having run.
+  'payments.unpaid.cancel': { queue: 'payments', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
   'partners.capacity.snapshot': {
     queue: 'maintenance',
     schedule: { pattern: '0 2 * * *', tz: 'UTC' },

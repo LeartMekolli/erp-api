@@ -115,6 +115,10 @@ describe('portal: customers order and follow their orders', () => {
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     const sol = ((await staff.post('/customers', { name: 'Sol Studio' }).expect(201)).body as { id: string }).id;
+    // Pay later, so an order starts at once instead of waiting for payment.
+    for (const customer of [luna, sol]) {
+      await staff.put(`/customers/${customer}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    }
     // Luna's own design: a customer may only quote with its own files.
     const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
 

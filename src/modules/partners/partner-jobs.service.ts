@@ -8,6 +8,7 @@ import { PrismaService } from '../../database/prisma.service';
 import type { JobAssignment, Prisma } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { PartnerAuth } from '../identity/auth-context';
+import { notWaitingForPayment } from '../orders/payment-hold';
 import { pathFor } from '../workflow/path';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { PARTNER_JOB_STATUSES } from './partner-response';
@@ -55,7 +56,12 @@ export class PartnerJobsService {
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const rows = await tx.jobAssignment.findMany({
-        where: { partnerId: auth.partnerId, ...statusWhere(query.status), ...(after ? { id: { lt: after.id } } : {}) },
+        where: {
+          partnerId: auth.partnerId,
+          ...statusWhere(query.status),
+          ...(after ? { id: { lt: after.id } } : {}),
+          AND: [{ group: notWaitingForPayment }],
+        },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
       });
@@ -101,9 +107,14 @@ export class PartnerJobsService {
     return this.files.downloadUrl(auth.tenantId, version.fileId, version.id);
   }
 
-  /** The partner's current row of the job; another partner's job, or one it declined or lost, is not found. */
+  /**
+   * The partner's current row of the job; another partner's job, one it declined or lost, or one of
+   * an order waiting for payment, is not found.
+   */
   private async find(tx: Tx, auth: PartnerAuth, groupId: string, statuses: string[]): Promise<JobAssignment> {
-    const row = await tx.jobAssignment.findFirst({ where: { groupId, partnerId: auth.partnerId, status: { in: statuses } } });
+    const row = await tx.jobAssignment.findFirst({
+      where: { groupId, partnerId: auth.partnerId, status: { in: statuses }, group: notWaitingForPayment },
+    });
     if (!row) {
       throw new NotFoundException('Job not found');
     }

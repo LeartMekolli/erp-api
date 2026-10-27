@@ -89,6 +89,7 @@ model Tenant {
   ledgerJournals  LedgerJournal[]
   paymentEvents   PaymentEvent[]
   customerPaymentTerms CustomerPaymentTerms[]
+  orderPayments   OrderPayment[]
 
   @@map("tenant")
 }
@@ -1722,6 +1723,7 @@ model Order {
   lines          OrderLine[]
   comments       OrderComment[]
   ledgerJournals LedgerJournal[]
+  payments       OrderPayment[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
@@ -1930,6 +1932,31 @@ model LedgerLine {
   @@index([tenantId, account, customerId])
   @@index([tenantId, account, partnerId])
   @@map("ledger_line")
+}
+
+// One checkout a pay-first order's customer may pay through (Payments spec). At most one is open per
+// order, kept by a trigger. The row is written first, so its id is the provider's idempotency key; the
+// provider's id and link arrive once it has answered.
+model OrderPayment {
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  tenantId           String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId            String   @map("order_id") @db.Uuid
+  providerCheckoutId String?  @map("provider_checkout_id")
+  url                String?
+  amount             Decimal  @db.Decimal(18, 2)
+  currency           String   @db.Char(3)
+  // open | complete | expired
+  status             String
+  expiresAt          DateTime @map("expires_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerCheckoutId])
+  @@index([tenantId, orderId])
+  @@map("order_payment")
 }
 
 // How a customer pays (Payments spec). No row means pay first, within 30 days, with no limit.

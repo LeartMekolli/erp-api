@@ -66,6 +66,10 @@ export function paymentTermsResponse(
   };
 }
 
+/** Where the customer pays for a waiting order. */
+export const payLinkResponseSchema = z.strictObject({ url: z.string() });
+export type PayLinkResponse = z.infer<typeof payLinkResponseSchema>;
+
 /** What a webhook answers once the event is stored (or was already). */
 export const webhookAckResponseSchema = z.strictObject({ received: z.literal(true) });
 export type WebhookAckResponse = z.infer<typeof webhookAckResponseSchema>;

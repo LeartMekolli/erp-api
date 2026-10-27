@@ -112,7 +112,12 @@ describe('orders: comments', () => {
     const castco = await workshop('CastCo', 'Carl');
     const metalworks = await workshop('MetalWorks', 'Mia');
 
-    const customer = async (name: string) => ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
+    /** Pays later, so an order starts at once instead of waiting for payment. */
+    const customer = async (name: string) => {
+      const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
+      await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
+      return id;
+    };
     const luna = await customer('Luna Jewels');
     const sol = await customer('Sol Studio');
 

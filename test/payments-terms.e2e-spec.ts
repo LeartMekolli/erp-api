@@ -200,16 +200,20 @@ describe('payments: terms and the payment state of an order', () => {
     }
   });
 
-  it('places an order of a customer without terms as pay first, started at once until Task 5', async () => {
+  it('places an order of a customer without terms as pay first, waiting for payment', async () => {
     const tenant = await freshTenant();
 
     const placed = await tenant.placeOrder();
 
-    // No terms yet: pay first, which until payment arrives (Task 5) also starts at once.
-    expect(placed.body).toMatchObject({ state: 'in_production', payment: { terms: 'pay_first' } });
+    // No payment keys in this workspace, so no checkout could be opened: the order waits without a link.
+    expect(placed.body).toMatchObject({
+      state: 'awaiting_payment',
+      payment: { terms: 'pay_first', state: 'awaiting_payment', pay_url: null },
+    });
     const row = await prisma.inTenant(tenant.id, (tx) =>
       tx.order.findUniqueOrThrow({ where: { id: (placed.body as { id: string }).id } }),
     );
-    expect(row.productionStartedAt).toBeInstanceOf(Date);
+    expect(row.productionStartedAt).toBeNull();
+    expect(row.payBy).toBeInstanceOf(Date);
   });
 });

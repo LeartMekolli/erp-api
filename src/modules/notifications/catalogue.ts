@@ -360,6 +360,40 @@ export const EVENTS = {
       },
     },
   },
+  // A pay-first order waits for its payment (Payments spec, goal 13).
+  'payment.requested': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      total: { sample: '119.00 EUR' },
+      pay_url: { sample: 'https://pay.example/checkout/1' },
+      pay_by: { sample: '2026-10-28T10:00:00.000Z' },
+    },
+    defaults: {
+      en: {
+        subject: 'Please pay for order {{ number }}',
+        body:
+          'Order {{ number }} is placed and starts as soon as it is paid: {{ total }}.\n\n' +
+          'Pay here: {{ pay_url }}\n\nIf it is not paid by {{ pay_by }}, it is cancelled.',
+      },
+    },
+  },
+  'order.unpaid_cancelled': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }} is cancelled',
+        body: 'Order {{ number }} was not paid in time, so we have cancelled it. You are welcome to order again.',
+      },
+    },
+  },
 } as const satisfies Record<string, EventDefinition>;
 
 export type EventKey = keyof typeof EVENTS;

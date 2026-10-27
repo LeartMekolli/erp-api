@@ -52,6 +52,13 @@ export const SETTING_KEYS = {
     onTime: z.number().int().min(0).max(10),
     rating: z.number().int().min(0).max(10),
   }),
+  // How a pay-first order is paid (Payments spec): within how many hours, and where the checkout
+  // returns to. Unset: 24 hours, and the customer site's order page.
+  'payments.collection': z.object({
+    payWithinHours: z.number().int().min(1).max(24).default(24),
+    checkoutSuccessUrl: z.url().optional(),
+    checkoutCancelUrl: z.url().optional(),
+  }),
   // The workspace's own Google OAuth client ids; Sign in with Google is off without it.
   'auth.google': z.object({
     clientIds: z.array(z.string().min(1).max(200)).min(1).max(5),

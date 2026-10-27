@@ -125,6 +125,8 @@ describe('orders: the walkthrough', () => {
     const me = (await ben.get('/portal/me').expect(200)).body as { user: { id: string }; customers: { id: string }[] };
     const luna = me.customers[0].id;
     const portal = `/portal/customers/${luna}`;
+    // Pay later, so orders start at once; waiting for payment is walked through in the payments suites.
+    await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
     const castDesign = (await measuredDesign(prisma, tenant.id, me.user.id, { customerId: luna })).versionId;
     const castQuote = async (extra: object = {}) =>
       ((

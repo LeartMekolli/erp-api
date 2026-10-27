@@ -98,6 +98,8 @@ describe('orders: the lines of one order and their partners', () => {
     const metalworks = await workshop('MetalWorks');
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    // Pay later, so an order starts at once instead of waiting for payment.
+    await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
     await staff.patch(`/customers/${luna}`, { may_pick_partner: true }).expect(200);
     // Luna's own design: a customer may only quote with its own files.
     const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;

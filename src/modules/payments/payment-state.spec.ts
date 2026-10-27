@@ -1,5 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
-import { paymentState } from './payment-state';
+import { billableTotals, paymentState } from './payment-state';
 import type { PaymentFacts } from './payment-state';
 
 const d = (value: string) => new Prisma.Decimal(value);
@@ -54,5 +54,24 @@ describe('paymentState', () => {
     expect(paymentState(facts())).toBe('not_billed');
     expect(paymentState(facts({ terms: 'pay_first' }))).toBe('not_billed');
     expect(paymentState(facts({ invoice: { status: 'void', dueOn: '2026-10-01' }, today: '2026-10-02' }))).toBe('not_billed');
+  });
+});
+
+describe('billableTotals', () => {
+  const order = { shippingPrice: d('9.90'), taxPercent: d('19') };
+
+  it('charges the live lines and shipping, with tax on both rounded half up once', () => {
+    // (100.00 + 18.05 + 9.90) × 19 % = 24.3105 → 24.31
+    const totals = billableTotals(order, [d('100.00'), d('18.05')]);
+    expect([totals.lines, totals.shipping, totals.tax, totals.total].map((value) => value.toFixed(2))).toEqual([
+      '118.05',
+      '9.90',
+      '24.31',
+      '152.26',
+    ]);
+  });
+
+  it('charges nothing, not even shipping, once no line is live', () => {
+    expect(billableTotals(order, []).total.toFixed(2)).toBe('0.00');
   });
 });

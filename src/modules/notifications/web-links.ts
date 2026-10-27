@@ -14,6 +14,19 @@ export function webLink(
 }
 
 /**
+ * Where a customer lands on an order of theirs, as after a checkout: the workspace's customer site
+ * when it has one, else the web app.
+ */
+export function customerOrderLink(
+  target: { webTemplate: string; slug: string; customerSiteOrigin: string | null },
+  orderId: string,
+  query = '',
+): string {
+  const base = target.customerSiteOrigin ?? target.webTemplate.replace('{tenant}', target.slug);
+  return `${base.replace(/\/+$/, '')}/orders/${orderId}${query}`;
+}
+
+/**
  * The link in an identity email. Customer people go to the workspace's
  * customer site when it has one (Customers spec, goal 13); staff, and
  * customers of a workspace without a site, go to the staff app.

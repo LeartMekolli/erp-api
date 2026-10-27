@@ -4,6 +4,7 @@ import { newId } from '../../common/ids/uuid';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
+import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
 import { keySchema } from '../pricing/decimals';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
@@ -127,6 +128,16 @@ export class MovesService {
       if (scope && pieces.some((piece) => partnerOf.get(piece.groupId) !== scope.partnerId)) {
         // Another partner's pieces, or a job not accepted yet, look like no pieces at all.
         throw new NotFoundException('Work order not found');
+      }
+      // Nothing of an order waiting for payment is made (Payments spec, B1).
+      const unpaid = await waitingGroupIds(tx, groupIds);
+      if (unpaid.size > 0) {
+        throw new ConflictException({
+          message: WAITING_FOR_PAYMENT,
+          errors: pieces.flatMap((piece, index) =>
+            unpaid.has(piece.groupId) ? [{ path: `work_order_ids.${index}`, message: `${label(piece)}: ${WAITING_FOR_PAYMENT}` }] : [],
+          ),
+        });
       }
 
       const replacements = body.kind === 'correction' ? await this.untouchedReplacements(tx, pieces) : new Map<string, ReplacementRow>();

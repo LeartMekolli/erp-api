@@ -1,4 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
+import { taxAmount } from '../orders/tax';
 
 // An order's payment state, derived from its frozen terms and the ledger, never stored (Payments spec).
 
@@ -43,6 +44,20 @@ export function paymentState(facts: PaymentFacts): PaymentState {
   if (invoice?.status === 'open') return invoice.dueOn < facts.today ? 'overdue' : 'invoiced';
   if (!facts.started) return 'awaiting_payment';
   return 'not_billed';
+}
+
+/**
+ * What the customer pays for the lines still live: shipping only while some line is, and tax on
+ * both at the order's frozen rate, rounded half up once (as when it was placed).
+ */
+export function billableTotals(
+  order: { shippingPrice: Prisma.Decimal; taxPercent: Prisma.Decimal },
+  liveLines: Prisma.Decimal[],
+): { lines: Prisma.Decimal; shipping: Prisma.Decimal; tax: Prisma.Decimal; total: Prisma.Decimal } {
+  const lines = liveLines.reduce((sum, line) => sum.add(line), new Prisma.Decimal(0));
+  const shipping = liveLines.length > 0 ? order.shippingPrice : new Prisma.Decimal(0);
+  const tax = taxAmount(order.taxPercent, lines, shipping);
+  return { lines, shipping, tax, total: lines.add(shipping).add(tax) };
 }
 
 /** Where money arrives and leaves: a payment debits one of them, a refund credits one. */

@@ -8,6 +8,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
+import type { AuditInput } from '../audit/audit.service';
 import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -15,6 +16,7 @@ import { paidAndRefunded, paymentState } from '../payments/payment-state';
 import type { PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
+import { parseSetting } from '../settings/setting-keys';
 import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
 import { localDate, promisedDate } from './dates';
@@ -80,10 +82,26 @@ const NOT_GIVEN = '—';
 /** Jobs that hold a line: offered or accepted. */
 const HOLDING = ['offered', 'accepted'];
 
+export const NOT_PAID_IN_TIME = 'Not paid in time';
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * What Payments does when an order waits for payment, registered by Payments so Orders never
+ * depends on it. Each runs after the order's change has committed; a failure is logged.
+ */
+export interface OrderPaymentHooks {
+  /** A pay-first order was placed: open its checkout and ask the customer to pay. */
+  placed(tenantId: string, orderId: string): Promise<void>;
+  /** Lines of a waiting order, or all of it, were cancelled: the open checkout is for the old amount. */
+  cancelled(tenantId: string, orderId: string): Promise<void>;
+}
+
 /** Placing orders and reading them (Orders spec, goals 1–4, 7, 8, 10, 11, 15, 17). */
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
+  private paymentHooks: OrderPaymentHooks | undefined;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -95,6 +113,10 @@ export class OrdersService {
     private readonly notifications: NotificationsService,
     @Inject(TAX_CALCULATOR) private readonly tax: TaxCalculator,
   ) {}
+
+  registerPaymentHooks(hooks: OrderPaymentHooks): void {
+    this.paymentHooks = hooks;
+  }
 
   /**
    * Places an order and starts every line, in one transaction: all of it, or nothing. A line whose
@@ -140,8 +162,12 @@ export class OrdersService {
           shipping: method.price,
         });
         const { linesTotal, total } = orderTotals(lineTotals, method.price, tax.amount);
-        // The customer's terms as they are now; changing them later leaves this order as placed.
-        const terms = await tx.customerPaymentTerms.findUnique({ where: { customerId }, select: { terms: true } });
+        // The customer's terms as they are now; changing them later leaves this order as placed. A
+        // pay-first order waits for its payment: its groups and a picked workshop's job are created
+        // now, so the capacity is held, but nothing starts until it is paid (Payments spec, B1).
+        const terms = (await tx.customerPaymentTerms.findUnique({ where: { customerId }, select: { terms: true } }))?.terms ?? 'pay_first';
+        const payFirst = terms === 'pay_first';
+        const collection = parseSetting('payments.collection', (await this.settings.list(tx))['payments.collection'] ?? {});
 
         const order = await tx.order.create({
           data: {
@@ -162,9 +188,9 @@ export class OrdersService {
             note: body.note ?? null,
             placedByUserId: auth.userId,
             placedAt,
-            paymentTerms: terms?.terms ?? 'pay_first',
-            // Every order starts at once for now; a pay-first order will wait for its payment.
-            productionStartedAt: placedAt,
+            paymentTerms: terms,
+            productionStartedAt: payFirst ? null : placedAt,
+            payBy: payFirst ? new Date(placedAt.getTime() + collection.payWithinHours * HOUR_MS) : null,
           },
         });
 
@@ -182,7 +208,8 @@ export class OrdersService {
           });
           const started = await this.startLine(tx, auth, quote, line.id, position);
           await tx.orderLine.update({ where: { id: line.id }, data: { groupId: started.group.id } });
-          afterCommit = [...afterCommit, ...started.afterCommit];
+          // A waiting order's workshop hears of its job once the order is paid, not now.
+          if (!payFirst) afterCommit = [...afterCommit, ...started.afterCommit];
 
           // An assembly's parts, each started from its own quote under the line's group (Orders spec, goal 6).
           for (const partQuote of await tx.quote.findMany({ where: { parentQuoteId: quote.id }, orderBy: { position: 'asc' } })) {
@@ -199,7 +226,7 @@ export class OrdersService {
             });
             const partStarted = await this.startLine(tx, auth, partQuote, part.id, position, started.group.id);
             await tx.orderLinePart.update({ where: { id: part.id }, data: { groupId: partStarted.group.id } });
-            afterCommit = [...afterCommit, ...partStarted.afterCommit];
+            if (!payFirst) afterCommit = [...afterCommit, ...partStarted.afterCommit];
           }
         }
 
@@ -234,7 +261,12 @@ export class OrdersService {
     for (const after of afterCommit) {
       await this.afterCommit(placed.id, after);
     }
-    return placed;
+    if (placed.payment.state !== 'awaiting_payment') return placed;
+    // Waiting for payment: the checkout is opened now, outside the transaction, and read back.
+    await this.afterCommit(placed.id, async () => {
+      await this.paymentHooks?.placed(auth.tenantId, placed.id);
+    });
+    return this.get(auth.tenantId, placed.id);
   }
 
   /**
@@ -282,10 +314,16 @@ export class OrdersService {
   }
 
   /** Audits a change to an order and answers it as staff see it now. */
-  private async recordChange(tx: Tx, auth: Pick<TenantAuth, 'userId'>, before: OrderResponse, updated: Order): Promise<OrderResponse> {
+  private async recordChange(
+    tx: Tx,
+    auth: Pick<TenantAuth, 'userId'>,
+    before: OrderResponse,
+    updated: Order,
+    actor: AuditInput['actor'] = { type: 'user', id: auth.userId },
+  ): Promise<OrderResponse> {
     const after = (await this.views(tx, [updated]))[0];
     await this.audit.record(tx, {
-      actor: { type: 'user', id: auth.userId },
+      actor,
       action: 'order.changed',
       subject: { type: 'order', id: updated.id },
       before,
@@ -364,6 +402,7 @@ export class OrdersService {
       const order = await this.lockOrder(tx, id);
       return this.cancelLines(tx, auth, order, body);
     });
+    await this.afterPaymentChange(auth.tenantId, id);
     // The customer hears of it once the whole order is cancelled; cancelling some lines leaves it open.
     if (cancelled.state === 'cancelled') {
       await this.afterCommit(id, async () => {
@@ -378,7 +417,7 @@ export class OrdersService {
 
   /** The customer cancels the whole order, only while no piece of it has been worked on (goal 12). */
   async customerCancel(auth: CustomerAuth, id: string, body: CustomerCancelOrder): Promise<CustomerOrderResponse> {
-    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const cancelled = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await this.customerOrder(tx, auth.customerId, id);
       const order = await this.lockOrder(tx, id);
       if (order.cancelledAt) {
@@ -391,8 +430,35 @@ export class OrdersService {
       if (await tx.transition.findFirst({ where: { workOrder: { groupId: { in: groupIds } } }, select: { id: true } })) {
         throw new ConflictException('Production has started on this order: please contact us to cancel it');
       }
-      const cancelled = await this.cancelLines(tx, auth, order, { reason: body.reason });
-      return (await this.customerViews(tx, [await tx.order.findUniqueOrThrow({ where: { id: cancelled.id } })]))[0];
+      await this.cancelLines(tx, auth, order, { reason: body.reason });
+    });
+    await this.afterPaymentChange(auth.tenantId, id);
+    return this.customerGet(auth.tenantId, auth.customerId, id);
+  }
+
+  /**
+   * Cancels a pay-first order not paid by its deadline, as the system (Payments spec): only while it
+   * still waits, is past `pay_by` and is not cancelled; anything else is left as it is and answers
+   * false. Its pieces' cancellations name the person who placed it, as every transition names a user.
+   */
+  async cancelUnpaid(tenantId: string, orderId: string): Promise<boolean> {
+    const cancelled = await this.prisma.inTenant(tenantId, async (tx) => {
+      const order = await this.lockOrder(tx, orderId);
+      if (order.cancelledAt || order.productionStartedAt || !order.payBy || order.payBy > new Date()) return null;
+      return this.cancelLines(tx, { tenantId, userId: order.placedByUserId }, order, { reason: NOT_PAID_IN_TIME }, { type: 'system' });
+    });
+    if (!cancelled) return false;
+    await this.afterPaymentChange(tenantId, orderId);
+    await this.afterCommit(orderId, async () => {
+      await this.notifications.raise(tenantId, 'order.unpaid_cancelled', { type: 'order', id: orderId }, { number: String(cancelled.number) });
+    });
+    return true;
+  }
+
+  /** Lets Payments know a waiting order changed, after commit; a failure is logged. */
+  private async afterPaymentChange(tenantId: string, orderId: string): Promise<void> {
+    await this.afterCommit(orderId, async () => {
+      await this.paymentHooks?.cancelled(tenantId, orderId);
     });
   }
 
@@ -406,7 +472,13 @@ export class OrdersService {
   }
 
   /** Cancels the chosen lines of a locked order, then the order once no line is left, and audits it. */
-  private async cancelLines(tx: Tx, auth: Pick<TenantAuth, 'tenantId' | 'userId'>, order: Order, body: CancelOrder): Promise<OrderResponse> {
+  private async cancelLines(
+    tx: Tx,
+    auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
+    order: Order,
+    body: CancelOrder,
+    actor?: AuditInput['actor'],
+  ): Promise<OrderResponse> {
     if (order.shippedAt) {
       throw new ConflictException('A shipped order cannot be cancelled');
     }
@@ -457,7 +529,7 @@ export class OrdersService {
     await tx.orderLine.updateMany({ where: { id: { in: chosen.map((line) => line.id) } }, data: { cancelledAt: now } });
     const left = lines.length - lines.filter((line) => line.cancelledAt).length - chosen.length;
     const updated = left === 0 ? await tx.order.update({ where: { id: order.id }, data: { cancelledAt: now, cancelReason: body.reason } }) : order;
-    return this.recordChange(tx, auth, before, updated);
+    return this.recordChange(tx, auth, before, updated, actor);
   }
 
   private async customerOrder(tx: Tx, customerId: string, id: string): Promise<Order> {
@@ -690,6 +762,11 @@ export class OrdersService {
       select: { id: true, name: true },
     });
     const today = localDate(new Date(), await this.timezone(tx, orders[0].tenantId));
+    // A waiting order's open checkout, once the provider has given it a link.
+    const openCheckouts = await tx.orderPayment.findMany({
+      where: { orderId: { in: ids }, status: 'open', url: { not: null } },
+      select: { orderId: true, url: true },
+    });
 
     return orders.map((order) => {
       const method = methods.find((one) => one.id === order.shippingMethodId)!;
@@ -753,7 +830,7 @@ export class OrdersService {
             started: order.productionStartedAt !== null,
             paid,
             refunded,
-            // Invoices and pay links arrive with later payment tasks.
+            // Invoices arrive with a later payment task.
             invoice: null,
             today,
           }),
@@ -762,7 +839,7 @@ export class OrdersService {
           released: releaser && order.releaseReason ? { by: releaser, reason: order.releaseReason } : null,
           paid: paid.toFixed(2),
           refunded: refunded.toFixed(2),
-          pay_url: null,
+          pay_url: openCheckouts.find((checkout) => checkout.orderId === order.id)?.url ?? null,
           invoice: null,
         },
       };

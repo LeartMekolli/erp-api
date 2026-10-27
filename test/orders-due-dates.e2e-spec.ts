@@ -109,6 +109,8 @@ describe('orders: due dates on partner jobs', () => {
     };
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    // Pay later, so an order starts at once instead of waiting for payment.
+    await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
     await staff.patch(`/customers/${luna}`, { may_pick_partner: true }).expect(200);
     const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     return {

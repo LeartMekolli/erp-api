@@ -116,6 +116,8 @@ describe('orders demo seed', () => {
     const me = (await ben.get('/portal/me').expect(200)).body as { user: { id: string }; customers: { id: string }[] };
     const luna = me.customers[0].id;
     const portal = `/portal/customers/${luna}`;
+    // Pay later, so the order starts at once instead of waiting for payment.
+    await tenant.staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
 
     const methods = ((await ben.get(`${portal}/shipping-methods`).expect(200)).body as { data: { key: string }[] }).data;
     expect(methods.map((method) => method.key)).toEqual(['collect', 'courier']);

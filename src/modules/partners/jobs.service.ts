@@ -11,6 +11,7 @@ import type { AuditInput } from '../audit/audit.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ONE_PARTNER, defaultDueOn, lockOrderOfGroup, otherLinePartners, workspaceToday } from '../orders/order-lines';
+import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
 import { WorkOrdersService } from '../workflow/work-orders.service';
@@ -93,6 +94,13 @@ async function lockGroup(tx: Tx, id: string): Promise<void> {
   }
 }
 
+/** A job of an order waiting for payment is neither offered nor moved (Payments spec, B1). */
+async function refuseWaiting(tx: Tx, groupId: string): Promise<void> {
+  if ((await waitingGroupIds(tx, [groupId])).size > 0) {
+    throw new ConflictException(WAITING_FOR_PAYMENT);
+  }
+}
+
 function refused(name: string, verdict: Extract<Verdict, { ok: false }>): ConflictException {
   return new ConflictException({
     message: `${name} cannot take this job`,
@@ -149,6 +157,7 @@ export class JobsService implements OnModuleInit {
     const { row, job, expired } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockOrderOfGroup(tx, groupId);
       await lockGroup(tx, groupId);
+      await refuseWaiting(tx, groupId);
       // An offer past its deadline lets go of the job now, not when the minute run comes by.
       const expired = await this.expireLapsed(tx, { type: 'user', id: auth.userId }, groupId);
       await this.refuseOpen(tx, groupId);
@@ -212,6 +221,7 @@ export class JobsService implements OnModuleInit {
     const { row, job } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockOrderOfGroup(tx, groupId);
       await lockGroup(tx, groupId);
+      await refuseWaiting(tx, groupId);
       const current = await tx.jobAssignment.findFirst({ where: { groupId, status: 'accepted' } });
       if (!current) {
         throw new ConflictException('Only a job a partner has accepted can be moved');
@@ -367,6 +377,10 @@ export class JobsService implements OnModuleInit {
   private async answer(auth: PartnerAuth, groupId: string, status: 'accepted' | 'declined'): Promise<{ row: Row; job: JobLabel }> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockGroup(tx, groupId);
+      // A job of an order waiting for payment isn't there for any partner yet.
+      if ((await waitingGroupIds(tx, [groupId])).size > 0) {
+        throw new NotFoundException('Job not found');
+      }
       // A job never offered to this partner isn't there for it.
       const latest = await tx.jobAssignment.findFirst({
         where: { groupId, partnerId: auth.partnerId },
