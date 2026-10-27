@@ -48,12 +48,17 @@ export const cancelOrderSchema = z.strictObject({
     .array(
       z.strictObject({
         position: z.number().int().min(0),
+        /** For an assembly line: the part whose partner is owed; omitted: the line's own partner. */
+        part: z.number().int().min(0).optional(),
         amount: z.string().regex(/^\d{1,16}(\.\d{1,2})?$/, 'must be an amount with at most 2 places, such as 25.00'),
         reason: reasonSchema,
       }),
     )
     .max(50)
-    .refine((owed) => new Set(owed.map((entry) => entry.position)).size === owed.length, 'one amount per line')
+    .refine(
+      (owed) => new Set(owed.map((entry) => `${entry.position}:${entry.part ?? ''}`)).size === owed.length,
+      'one amount per line or part',
+    )
     .optional(),
 });
 export type CancelOrder = z.infer<typeof cancelOrderSchema>;
@@ -171,6 +176,24 @@ export class OrdersService {
           const started = await this.startLine(tx, auth, quote, line.id, position);
           await tx.orderLine.update({ where: { id: line.id }, data: { groupId: started.group.id } });
           afterCommit = [...afterCommit, ...started.afterCommit];
+
+          // An assembly's parts, each started from its own quote under the line's group (Orders spec, goal 6).
+          for (const partQuote of await tx.quote.findMany({ where: { parentQuoteId: quote.id }, orderBy: { position: 'asc' } })) {
+            const part = await tx.orderLinePart.create({
+              data: {
+                lineId: line.id,
+                position: partQuote.position!,
+                quoteId: partQuote.id,
+                productId: partQuote.productId,
+                quantity: partQuote.quantity,
+                unitPrice: partQuote.unitPrice,
+                total: partQuote.total,
+              },
+            });
+            const partStarted = await this.startLine(tx, auth, partQuote, part.id, position, started.group.id);
+            await tx.orderLinePart.update({ where: { id: part.id }, data: { groupId: partStarted.group.id } });
+            afterCommit = [...afterCommit, ...partStarted.afterCommit];
+          }
         }
 
         const response = (await this.views(tx, [order]))[0];
@@ -354,9 +377,9 @@ export class OrdersService {
       if (order.cancelledAt) {
         throw new ConflictException('The order is already cancelled');
       }
-      const groupIds = (await tx.orderLine.findMany({ where: { orderId: id }, select: { groupId: true } })).flatMap((line) =>
-        line.groupId ? [line.groupId] : [],
-      );
+      const lines = await tx.orderLine.findMany({ where: { orderId: id }, select: { groupId: true, parts: { select: { groupId: true } } } });
+      // An assembly's parts count: work on any of them is work on the order.
+      const groupIds = lines.flatMap((line) => [line.groupId, ...line.parts.map((part) => part.groupId)]).flatMap((groupId) => (groupId ? [groupId] : []));
       // Any transition at all: a piece has passed or failed a step, or staff corrected one.
       if (await tx.transition.findFirst({ where: { workOrder: { groupId: { in: groupIds } } }, select: { id: true } })) {
         throw new ConflictException('Production has started on this order: please contact us to cancel it');
@@ -380,7 +403,7 @@ export class OrdersService {
     if (order.shippedAt) {
       throw new ConflictException('A shipped order cannot be cancelled');
     }
-    const lines = await tx.orderLine.findMany({ where: { orderId: order.id }, orderBy: { position: 'asc' } });
+    const lines = await tx.orderLine.findMany({ where: { orderId: order.id }, orderBy: { position: 'asc' }, include: { parts: true } });
     for (const [index, position] of (body.lines ?? []).entries()) {
       if (!lines.some((line) => line.position === position)) {
         throw new BadRequestException({ message: 'The order has no such line', errors: [{ path: `lines.${index}`, message: `no line ${position}` }] });
@@ -393,23 +416,34 @@ export class OrdersService {
     }
     const owed = body.partner_owed ?? [];
     for (const [index, entry] of owed.entries()) {
-      if (!chosen.some((line) => line.position === entry.position)) {
+      const line = chosen.find((one) => one.position === entry.position);
+      if (!line) {
         throw new BadRequestException({
           message: 'A partner is owed only for a line being cancelled',
           errors: [{ path: `partner_owed.${index}.position`, message: `line ${entry.position} is not being cancelled` }],
+        });
+      }
+      if (entry.part !== undefined && !line.parts.some((part) => part.position === entry.part)) {
+        throw new BadRequestException({
+          message: 'The line has no such part',
+          errors: [{ path: `partner_owed.${index}.part`, message: `line ${entry.position} has no part ${entry.part}` }],
         });
       }
     }
 
     const before = (await this.views(tx, [order]))[0];
     const now = new Date();
+    const owedFor = (position: number, part: number | undefined) => {
+      const entry = owed.find((one) => one.position === position && one.part === part);
+      return entry && { amount: entry.amount, reason: entry.reason };
+    };
+    // A line's own group and its parts' (Orders spec, goal 6), each letting go of its own partner.
     await this.workOrders.cancelGroups(
       tx,
-      chosen.flatMap((line) => {
-        if (!line.groupId) return [];
-        const forPartner = owed.find((entry) => entry.position === line.position);
-        return [{ id: line.groupId, partnerOwed: forPartner && { amount: forPartner.amount, reason: forPartner.reason } }];
-      }),
+      chosen.flatMap((line) => [
+        ...(line.groupId ? [{ id: line.groupId, partnerOwed: owedFor(line.position, undefined) }] : []),
+        ...line.parts.flatMap((part) => (part.groupId ? [{ id: part.groupId, partnerOwed: owedFor(line.position, part.position) }] : [])),
+      ]),
       auth.userId,
       body.reason,
     );
@@ -442,7 +476,7 @@ export class OrdersService {
   ): Promise<PlaceOrder['lines']> {
     const lapsed = await this.prisma.inTenant(auth.tenantId, (tx) =>
       tx.quote.findMany({
-        where: { id: { in: lines.map((line) => line.quote_id) }, customerId, expiresAt: { lte: new Date() }, orderLine: null },
+        where: { id: { in: lines.map((line) => line.quote_id) }, customerId, parentQuoteId: null, expiresAt: { lte: new Date() }, orderLine: null },
       }),
     );
     if (lapsed.length === 0) return lines;
@@ -477,7 +511,8 @@ export class OrdersService {
   private async orderable(tx: Tx, customerId: string, quoteIds: string[]): Promise<Quote[]> {
     const quotes: Quote[] = [];
     for (const [index, quoteId] of quoteIds.entries()) {
-      const quote = await tx.quote.findFirst({ where: { id: quoteId, customerId } });
+      // A part's quote is ordered only with its assembly's.
+      const quote = await tx.quote.findFirst({ where: { id: quoteId, customerId, parentQuoteId: null } });
       if (!quote) {
         throw new NotFoundException({ message: 'Quote not found', errors: [{ path: `lines.${index}.quote_id`, message: 'not found' }] });
       }
@@ -511,10 +546,20 @@ export class OrdersService {
     }
   }
 
-  /** Starts a line from its quote; a refusal names the line, so the customer knows which to change. */
-  private async startLine(tx: Tx, auth: Pick<TenantAuth, 'tenantId' | 'userId'>, quote: Quote, lineId: string, position: number) {
+  /**
+   * Starts a line, or a part of one under the line's group, from its quote; a refusal names the
+   * line, so the customer knows which to change.
+   */
+  private async startLine(
+    tx: Tx,
+    auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
+    quote: Quote,
+    lineId: string,
+    position: number,
+    parentGroupId?: string,
+  ) {
     try {
-      return await this.workOrders.startQuoted(tx, auth, quote, { type: 'order_line', id: lineId });
+      return await this.workOrders.startQuoted(tx, auth, quote, { type: 'order_line', id: lineId }, { parentGroupId });
     } catch (error) {
       if (error instanceof HttpException && error.getStatus() === 409) {
         const response = error.getResponse();
@@ -546,14 +591,22 @@ export class OrdersService {
    */
   private async customerViews(tx: Tx, orders: Order[]): Promise<CustomerOrderResponse[]> {
     const views = await this.views(tx, orders);
-    const groups = await tx.workOrderGroup.findMany({
-      where: { id: { in: views.flatMap((view) => view.lines.flatMap((line) => (line.group_id ? [line.group_id] : []))) } },
-    });
+    const groupIds = views.flatMap((view) =>
+      view.lines.flatMap((line) => [line.group_id, ...line.parts.map((part) => part.group_id)]).flatMap((id) => (id ? [id] : [])),
+    );
+    const groups = await tx.workOrderGroup.findMany({ where: { id: { in: groupIds } } });
+    const progress = async (groupId: string | null) => {
+      const group = groups.find((one) => one.id === groupId);
+      return group ? await this.workOrders.customerProgress(tx, group) : { pieces: [] };
+    };
     const responses: CustomerOrderResponse[] = [];
     for (const view of views) {
       const lines: CustomerOrderLineResponse[] = [];
       for (const line of view.lines) {
-        const group = groups.find((one) => one.id === line.group_id);
+        const parts: CustomerOrderLineResponse['parts'] = [];
+        for (const part of line.parts) {
+          parts.push({ position: part.position, product: part.product, quantity: part.quantity, state: part.state, progress: await progress(part.group_id) });
+        }
         lines.push({
           id: line.id,
           position: line.position,
@@ -562,7 +615,8 @@ export class OrdersService {
           unit_price: line.unit_price,
           total: line.total,
           state: line.state,
-          progress: group ? await this.workOrders.customerProgress(tx, group) : { pieces: [] },
+          progress: await progress(line.group_id),
+          parts,
         });
       }
       responses.push({
@@ -597,9 +651,14 @@ export class OrdersService {
     const lines = await tx.orderLine.findMany({
       where: { orderId: { in: ids } },
       orderBy: [{ orderId: 'asc' }, { position: 'asc' }],
-      include: { product: { select: { id: true, name: true } } },
+      include: {
+        product: { select: { id: true, name: true } },
+        parts: { orderBy: { position: 'asc' }, include: { product: { select: { id: true, name: true } } } },
+      },
     });
-    const groupIds = lines.flatMap((line) => (line.groupId ? [line.groupId] : []));
+    const groupIds = lines
+      .flatMap((line) => [line.groupId, ...line.parts.map((part) => part.groupId)])
+      .flatMap((groupId) => (groupId ? [groupId] : []));
     const holding = await tx.jobAssignment.findMany({
       where: { groupId: { in: groupIds }, status: { in: HOLDING } },
       include: { partner: { select: { id: true, name: true } } },
@@ -621,6 +680,18 @@ export class OrdersService {
           state: lineState(pieces.filter((piece) => piece.groupId === line.groupId), line.cancelledAt),
           group_id: line.groupId,
           partner: line.groupId ? (partnerOf.get(line.groupId) ?? null) : null,
+          parts: line.parts.map((part) => ({
+            id: part.id,
+            position: part.position,
+            product: part.product,
+            quantity: part.quantity,
+            unit_price: part.unitPrice.toFixed(2),
+            total: part.total.toFixed(2),
+            // A cancelled line's parts are cancelled with it.
+            state: lineState(pieces.filter((piece) => piece.groupId === part.groupId), line.cancelledAt),
+            group_id: part.groupId,
+            partner: part.groupId ? (partnerOf.get(part.groupId) ?? null) : null,
+          })),
         }));
       return {
         id: order.id,

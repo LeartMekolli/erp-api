@@ -77,6 +77,8 @@ export interface StartInput {
   productId?: string | null;
   fileVersionId?: string | null;
   customerId?: string | null;
+  /** The assembly's group, for a part's: its pieces wait for every part (Orders spec, goal 6). */
+  parentGroupId?: string | null;
   createdByUserId: string;
 }
 
@@ -215,6 +217,7 @@ export class WorkOrdersService {
     auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
     quote: Quote,
     source: { type: 'quote' | 'order_line'; id: string },
+    options: { parentGroupId?: string } = {},
   ): Promise<{ group: GroupResponse; afterCommit: (() => Promise<void>)[] }> {
     // A picked workshop's job is handed over by a start hook; without one it would silently be made in-house.
     if (quote.partnerId && this.startHooks.length === 0) {
@@ -259,6 +262,7 @@ export class WorkOrdersService {
       productId: quote.productId,
       fileVersionId: inputs.file_version_id,
       customerId: quote.customerId,
+      parentGroupId: options.parentGroupId ?? null,
       createdByUserId: auth.userId,
     });
     const afterCommit: (() => Promise<void>)[] = [];
@@ -287,6 +291,7 @@ export class WorkOrdersService {
         customerId: input.customerId ?? null,
         quantity: input.quantity,
         chainStepTypeIds: input.chainStepTypeIds ?? Prisma.DbNull,
+        parentGroupId: input.parentGroupId ?? null,
         createdByUserId: input.createdByUserId,
       },
     });

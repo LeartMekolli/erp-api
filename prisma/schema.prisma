@@ -82,6 +82,7 @@ model Tenant {
   taxRates        TaxRate[]
   orders          Order[]
   orderLines      OrderLine[]
+  orderLineParts  OrderLinePart[]
   orderCounter    OrderCounter?
 
   @@map("tenant")
@@ -725,6 +726,7 @@ model Product {
   quotes       Quote[]
   workOrderGroups WorkOrderGroup[]
   orderLines   OrderLine[]
+  orderLineParts OrderLinePart[]
   steps        ProductStep[]
   margin       MarginOverride?
   // An assembly's parts, and the assemblies a product is a part of (Orders spec, goal 6).
@@ -1054,6 +1056,7 @@ model Quote {
   partner  Partner?  @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
   workOrderGroups WorkOrderGroup[]
   orderLine       OrderLine?
+  orderLinePart   OrderLinePart?
 
   // For tenant-scoped foreign keys to a quote (work order groups, order lines).
   @@unique([tenantId, id])
@@ -1232,6 +1235,7 @@ model WorkOrderGroup {
   quantity          Int
   // The step types the source priced, which decide the priced steps on the path; null: every step runs.
   chainStepTypeIds  Json?    @map("chain_step_type_ids")
+  parentGroupId     String?  @map("parent_group_id") @db.Uuid
   createdByUserId   String   @map("created_by_user_id") @db.Uuid
   createdAt         DateTime @default(now()) @map("created_at")
 
@@ -1245,6 +1249,10 @@ model WorkOrderGroup {
   assignments     JobAssignment[]
   rating          JobRating?
   orderLine       OrderLine?
+  orderLinePart   OrderLinePart?
+  // A part's group names its assembly's, whose pieces wait for every part (Orders spec, goal 6).
+  parent          WorkOrderGroup?  @relation("GroupParts", fields: [tenantId, parentGroupId], references: [tenantId, id], onDelete: NoAction)
+  children        WorkOrderGroup[] @relation("GroupParts")
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
@@ -1714,12 +1722,44 @@ model OrderLine {
   quote   Quote           @relation(fields: [tenantId, quoteId], references: [tenantId, id], onDelete: NoAction)
   product Product         @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
   group   WorkOrderGroup? @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: NoAction)
+  parts   OrderLinePart[]
 
   @@unique([tenantId, quoteId])
   @@unique([tenantId, groupId])
   @@unique([orderId, position])
   @@unique([tenantId, id])
   @@map("order_line")
+}
+
+// One part of an assembly line, a sub-line: priced by its part's quote and made as its own work
+// order group, under the line's (Orders spec, goal 6). Never a line of its own: states, cancelling
+// and the one-partner rule go by the order's lines.
+model OrderLinePart {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  tenantId  String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  lineId    String  @map("line_id") @db.Uuid
+  // The part's position in its assembly.
+  position  Int
+  quoteId   String  @map("quote_id") @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  // The line's quantity times how many go into one.
+  quantity  Int
+  unitPrice Decimal @map("unit_price") @db.Decimal(18, 2)
+  total     Decimal @db.Decimal(18, 2)
+  // Set as soon as the part starts, in the transaction that places the order.
+  groupId   String? @map("group_id") @db.Uuid
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  line    OrderLine       @relation(fields: [tenantId, lineId], references: [tenantId, id], onDelete: Cascade)
+  quote   Quote           @relation(fields: [tenantId, quoteId], references: [tenantId, id], onDelete: NoAction)
+  product Product         @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
+  group   WorkOrderGroup? @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, quoteId])
+  @@unique([tenantId, groupId])
+  @@unique([lineId, position])
+  @@index([tenantId])
+  @@map("order_line_part")
 }
 
 // The last order number a workspace gave out; one row per workspace, raised under its row lock.

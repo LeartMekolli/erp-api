@@ -38,6 +38,9 @@ export type Verdict =
 
 type Tx = Prisma.TransactionClient;
 
+/** Why no partner can take an assembly's own group. */
+const ASSEMBLED_IN_HOUSE = 'An assembly is put together in-house';
+
 /** The step ids of a group's path, from its workflow version's steps (Workflow/QC F12). */
 async function pathsOf(tx: Tx, groups: WorkOrderGroup[]) {
   const steps = await tx.workflowStep.findMany({
@@ -186,6 +189,10 @@ export class EligibilityService {
    * assignment never counts against the room it needs, so a job can be judged again while it is being moved.
    */
   async judge(tx: Tx, job: Job, partnerIds: string[]): Promise<Map<string, Verdict>> {
+    // An assembly's own group: its parts come together at the workspace, so no partner takes it (Orders spec, B5).
+    if (await tx.workOrderGroup.findFirst({ where: { parentGroupId: job.group.id }, select: { id: true } })) {
+      return new Map(partnerIds.map((partnerId): [string, Verdict] => [partnerId, { ok: false, reasons: [ASSEMBLED_IN_HOUSE] }]));
+    }
     const verdicts = await this.judgeFacts(tx, job.facts, partnerIds, job.group.id);
     const costed = new Map<string, Verdict>();
     for (const [partnerId, verdict] of verdicts) {

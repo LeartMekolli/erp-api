@@ -61,6 +61,25 @@ export const orderLineResponseSchema = z.strictObject({
   group_id: z.uuid().nullable(),
   /** The partner holding the line, offered or accepted; null while it is made in-house. */
   partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+  /**
+   * An assembly's parts, each made as its own group under the line's and priced inside the line's
+   * price; empty for any other line (Orders spec, goal 6).
+   */
+  parts: z.array(
+    z.strictObject({
+      id: z.uuid(),
+      /** The part's position in its assembly. */
+      position: z.number().int(),
+      product: z.strictObject({ id: z.uuid(), name: z.string() }),
+      /** The line's quantity times how many go into one. */
+      quantity: z.number().int(),
+      unit_price: z.string(),
+      total: z.string(),
+      state: z.enum(LINE_STATES),
+      group_id: z.uuid().nullable(),
+      partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+    }),
+  ),
 });
 export type OrderLineResponse = z.infer<typeof orderLineResponseSchema>;
 
@@ -107,6 +126,16 @@ export type PortalShippingMethodsResponse = z.infer<typeof portalShippingMethods
 /** A line as its customer sees it: no partner and no work order group, with the stages the customer may see. */
 export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ group_id: true, partner: true }).extend({
   progress: customerViewResponseSchema,
+  /** What an assembly is made of, and how far each part is; never a part's price or who makes it. */
+  parts: z.array(
+    z.strictObject({
+      position: z.number().int(),
+      product: z.strictObject({ id: z.uuid(), name: z.string() }),
+      quantity: z.number().int(),
+      state: z.enum(LINE_STATES),
+      progress: customerViewResponseSchema,
+    }),
+  ),
 });
 export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponseSchema>;
 
