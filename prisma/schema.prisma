@@ -82,6 +82,7 @@ model Tenant {
   taxRates        TaxRate[]
   orders          Order[]
   orderLines      OrderLine[]
+  orderComments   OrderComment[]
   orderLineParts  OrderLinePart[]
   orderCounter    OrderCounter?
 
@@ -130,6 +131,7 @@ model User {
   fileVersions   FileVersion[]
   externalIdentities ExternalIdentity[]
   transitions    Transition[]
+  orderComments  OrderComment[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -498,6 +500,7 @@ model FileVersion {
   workOrderGroups WorkOrderGroup[]
   transitionPhotos TransitionPhoto[]
   partnerAgreements Partner[]
+  commentAttachments OrderCommentAttachment[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -1404,6 +1407,7 @@ model Partner {
   quotes           Quote[]
   ratings          JobRating[]
   capacitySnapshots PartnerCapacitySnapshot[]
+  comments         OrderComment[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1693,12 +1697,62 @@ model Order {
   customer       Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   shippingMethod ShippingMethod @relation(fields: [tenantId, shippingMethodId], references: [tenantId, id], onDelete: NoAction)
   lines          OrderLine[]
+  comments       OrderComment[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
   @@unique([tenantId, id])
   @@index([tenantId, customerId])
   @@map("order")
+}
+
+// A comment on an order or one of its lines, by staff, the customer's people or the partner holding the
+// line (Orders spec, goal 13). Who reads it is decided by `authorKind` and `forPartner`, never by the
+// reader's own choice. No edit or delete in this version.
+model OrderComment {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId      String   @map("order_id") @db.Uuid
+  // An order line or a sub-line of it, checked when written; null for the order as a whole.
+  lineId       String?  @map("line_id") @db.Uuid
+  authorUserId String   @map("author_user_id") @db.Uuid
+  // staff | customer | partner
+  authorKind   String   @map("author_kind")
+  // Set exactly when the author is a partner.
+  partnerId    String?  @map("partner_id") @db.Uuid
+  // Staff only, and only on a line: the partner holding the line reads it.
+  forPartner   Boolean  @default(false) @map("for_partner")
+  body         String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Direct to the tenant as well: the author is deleted with the tenant, and the cascade through the
+  // order alone is not guaranteed to remove the comment first.
+  tenant      Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order       Order                    @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  author     User                     @relation(fields: [tenantId, authorUserId], references: [tenantId, id], onDelete: NoAction)
+  partner     Partner?                 @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+  attachments OrderCommentAttachment[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, orderId, id])
+  @@map("order_comment")
+}
+
+// At most 10 per comment (CHECK in the migration).
+model OrderCommentAttachment {
+  id            String @id @default(uuid(7)) @db.Uuid
+  tenantId      String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  commentId     String @map("comment_id") @db.Uuid
+  fileVersionId String @map("file_version_id") @db.Uuid
+  position      Int
+
+  comment     OrderComment @relation(fields: [tenantId, commentId], references: [tenantId, id], onDelete: Cascade)
+  fileVersion FileVersion  @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([commentId, position])
+  @@unique([commentId, fileVersionId])
+  @@index([tenantId, fileVersionId])
+  @@map("order_comment_attachment")
 }
 
 // One configured product of an order, priced by its quote and made as one work order group

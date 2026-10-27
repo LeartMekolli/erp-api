@@ -354,3 +354,14 @@ export const partnerMeResponseSchema = z.strictObject({
   ),
 });
 export type PartnerMeResponse = z.infer<typeof partnerMeResponseSchema>;
+
+/** A comment on a job the partner holds: what staff sent it and what it wrote, never the customer or the order. */
+export const partnerJobCommentResponseSchema = z.strictObject({
+  id: z.uuid(),
+  body: z.string(),
+  /** The workspace is never named; the partner's own people are. */
+  author: z.strictObject({ kind: z.enum(['workspace', 'partner']), name: z.string().nullable() }),
+  attachments: z.array(z.strictObject({ file_version_id: z.uuid(), name: z.string() })),
+  created_at: z.string(),
+});
+export type PartnerJobCommentResponse = z.infer<typeof partnerJobCommentResponseSchema>;

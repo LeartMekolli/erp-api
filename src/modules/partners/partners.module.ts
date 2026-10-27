@@ -4,11 +4,13 @@ import { GoogleModule } from '../auth/google.module';
 import { FilesModule } from '../files/files.module';
 import { IdentityNotifierModule } from '../identity/identity-notifier';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { OrdersModule } from '../orders/orders.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { SettingsModule } from '../settings/settings.module';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { CapacitySnapshotHandler } from './capacity-snapshot.handler';
 import { EligibilityService } from './eligibility.service';
+import { JobCommentsController } from './job-comments.controller';
 import { JobsController, PortalJobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
 import { OfferExpiryHandler } from './offer-expiry.handler';
@@ -38,6 +40,7 @@ import { SetupService } from './setup.service';
     PricingModule,
     SettingsModule,
     FilesModule,
+    OrdersModule,
     WorkflowModule,
   ],
   controllers: [
@@ -51,6 +54,7 @@ import { SetupService } from './setup.service';
     PortalPricesController,
     PortalJobsController,
     PartnerJobsController,
+    JobCommentsController,
     RatingsController,
     PortalRatingsController,
     PartnerScoreController,

@@ -166,3 +166,32 @@ export const priceChangedResponseSchema = z.strictObject({
   ),
 });
 export type PriceChangedResponse = z.infer<typeof priceChangedResponseSchema>;
+
+export const COMMENT_MAX_LENGTH = 5000;
+export const COMMENT_MAX_ATTACHMENTS = 10;
+
+const commentAttachmentResponseSchema = z.strictObject({ file_version_id: z.uuid(), name: z.string() });
+
+/** A comment as staff read it: who wrote it, and whether the partner holding the line reads it too. */
+export const orderCommentResponseSchema = z.strictObject({
+  id: z.uuid(),
+  /** A line or sub-line of the order; null for the order as a whole. */
+  line_id: z.uuid().nullable(),
+  author: z.strictObject({ kind: z.enum(['staff', 'customer', 'partner']), id: z.uuid(), name: z.string() }),
+  for_partner: z.boolean(),
+  body: z.string(),
+  attachments: z.array(commentAttachmentResponseSchema),
+  created_at: z.string(),
+});
+export type OrderCommentResponse = z.infer<typeof orderCommentResponseSchema>;
+
+/** A comment as the customer reads it: no partner's, none sent to a partner, and no staff-only flag. */
+export const customerOrderCommentResponseSchema = z.strictObject({
+  id: z.uuid(),
+  line_id: z.uuid().nullable(),
+  author: z.strictObject({ kind: z.enum(['staff', 'customer']), name: z.string() }),
+  body: z.string(),
+  attachments: z.array(commentAttachmentResponseSchema),
+  created_at: z.string(),
+});
+export type CustomerOrderCommentResponse = z.infer<typeof customerOrderCommentResponseSchema>;
