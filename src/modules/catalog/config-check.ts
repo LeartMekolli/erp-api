@@ -4,7 +4,7 @@ import type { REFUSAL_CODES } from './check-response';
 import type { Rule } from './options.service';
 import type { ProductForCheck } from './products.service';
 import { scaleMeasures } from './scaling';
-import type { ScalableMeasure } from './scaling';
+import type { ScalableMeasure, Sizing } from './scaling';
 import { FILES_UNIT_TO_CATALOG } from './units';
 
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
@@ -104,10 +104,10 @@ export function checkConfiguration(input: CheckInput): CheckResult {
   }
 
   // 4. Size (B8): range bounds are inclusive; no size means the design as it is.
-  const scale = resolveScale(product, input.size, reasons);
+  const scale = resolveScale(product.sizing, input.size, reasons);
 
-  // 5. The design file (B2).
-  const file = input.file;
+  // 5. The design file (B2). An assembly has none: its parts carry their own (Orders spec, B6).
+  const file: CheckInput['file'] = product.kind === 'assembly' ? { status: 'measured', measures: [] } : input.file;
   if (!file) {
     reasons.push({ code: 'file_required', message: 'A measured design file is required' });
   } else if (file.status !== 'measured') {
@@ -151,8 +151,8 @@ export function checkConfiguration(input: CheckInput): CheckResult {
   };
 }
 
-function resolveScale(product: ProductForCheck, size: CheckInput['size'], reasons: Refusal[]): Prisma.Decimal | null {
-  const sizing = product.sizing;
+/** The scale a size gives under a sizing, or null with the reason added; no size means the design as it is. */
+export function resolveScale(sizing: Sizing, size: CheckInput['size'], reasons: Refusal[]): Prisma.Decimal | null {
   if (!size) {
     if (sizing.mode === 'range' && (ONE.lessThan(sizing.min) || ONE.greaterThan(sizing.max))) {
       reasons.push({ code: 'size_out_of_range', message: `Choose a scale from ${sizing.min} to ${sizing.max}` });

@@ -44,6 +44,7 @@ model Tenant {
   products        Product[]
   productOptionGroups ProductOptionGroup[]
   productOptionValues ProductOptionValue[]
+  assemblyParts   AssemblyPart[]
   stepTypes       StepType[]
   pricingProfile  PricingProfile?
   categorySteps   CategoryStep[]
@@ -726,11 +727,36 @@ model Product {
   orderLines   OrderLine[]
   steps        ProductStep[]
   margin       MarginOverride?
+  // An assembly's parts, and the assemblies a product is a part of (Orders spec, goal 6).
+  parts        AssemblyPart[] @relation("AssemblyParts")
+  partOf       AssemblyPart[] @relation("PartOf")
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
   @@index([tenantId, customerId])
   @@map("product")
+}
+
+// A ready-made product an assembly is made of, how many per assembly, and the size it is made at
+// (Orders spec, goal 6; B6). One level only: a part is never an assembly.
+model AssemblyPart {
+  id         String @id @default(uuid(7)) @db.Uuid
+  tenantId   String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  assemblyId String @map("assembly_id") @db.Uuid
+  partId     String @map("part_id") @db.Uuid
+  position   Int
+  quantity   Int
+  // { scale } | { named }; null: the part as it is.
+  size       Json?
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assembly Product @relation("AssemblyParts", fields: [tenantId, assemblyId], references: [tenantId, id], onDelete: Cascade)
+  // A part in use is kept: deleting it would silently change what the assembly is made of.
+  part     Product @relation("PartOf", fields: [tenantId, partId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, assemblyId, partId])
+  @@index([tenantId])
+  @@map("assembly_part")
 }
 
 // An option group a product offers, whether it must be answered, and its default (C4, B10).

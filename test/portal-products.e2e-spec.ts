@@ -163,6 +163,7 @@ describe("portal: save a quote as the customer's own product", () => {
         },
       ],
       design_file: { version_id: w.lunaVersion },
+      parts: [],
     });
     const productId = (saved.body as PortalProduct).id;
     expect(await catalog(w.anna, w.luna)).toEqual(['Custom cast part', 'Luna Moon Ring']);

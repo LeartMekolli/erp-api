@@ -17,6 +17,7 @@ const portalInclude = {
     orderBy: { valueId: 'asc' },
     include: { value: { select: { groupId: true, key: true, name: true } } },
   },
+  parts: { orderBy: { position: 'asc' }, include: { part: { select: { name: true } } } },
 } satisfies Prisma.ProductInclude;
 type PortalRow = Prisma.ProductGetPayload<{ include: typeof portalInclude }>;
 
@@ -37,6 +38,7 @@ function toPortalProduct(row: PortalRow): PortalProduct {
         .map((offer) => ({ key: offer.value.key, name: offer.value.name })),
     })),
     design_file: row.fileVersion ? { version_id: row.fileVersion.id } : null,
+    parts: row.parts.map((part) => ({ name: part.part.name, quantity: part.quantity })),
   };
 }
 

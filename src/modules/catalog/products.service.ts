@@ -10,6 +10,9 @@ import { Prisma } from '../../generated/prisma/client';
 import type { Category } from '../../generated/prisma/client';
 import { MEASURE_TYPES } from '../files/measurers';
 import type { MeasureType } from '../files/measurers';
+import { resolveScale } from './config-check';
+import type { Refusal } from './config-check';
+import { PRODUCT_KINDS, partSizeSchema } from './product-response';
 import type { CategoryResponse, ProductResponse } from './product-response';
 import { sizingSchema } from './scaling';
 import type { ScalableMeasure, Sizing } from './scaling';
@@ -35,7 +38,7 @@ export const createProductSchema = z.object({
   category_id: z.uuid(),
   key: keySchema,
   name: nameSchema,
-  kind: z.enum(['custom', 'ready_made']),
+  kind: z.enum(PRODUCT_KINDS),
   sizing: sizingSchema.default({ mode: 'none' }),
   material_id: z.uuid().optional(),
   /** Customers see a product only once it is published. */
@@ -74,11 +77,27 @@ export const productOptionsInputSchema = z.object({
 
 export const designFileSchema = z.object({ file_version_id: z.uuid() });
 
+export const assemblyPartsSchema = z.object({
+  parts: z
+    .array(
+      z.strictObject({
+        product_id: z.uuid(),
+        /** How many go into one assembly. */
+        quantity: z.number().int().min(1).max(100),
+        /** The size the part is made at; omitted: the part as it is. */
+        size: partSizeSchema.optional(),
+      }),
+    )
+    .min(1)
+    .max(20)
+    .refine((parts) => new Set(parts.map((part) => part.product_id)).size === parts.length, 'a part must not repeat'),
+});
+
 /** What the configuration check needs to know about a product (Catalog plan, Task 7). */
 export interface ProductForCheck {
   id: string;
   key: string;
-  kind: 'custom' | 'ready_made';
+  kind: (typeof PRODUCT_KINDS)[number];
   sizing: Sizing;
   materialId: string | null;
   requiredMeasures: MeasureType[];
@@ -98,6 +117,7 @@ const productInclude = {
   fileVersion: { select: { id: true, fileId: true } },
   optionGroups: { orderBy: { position: 'asc' } },
   optionValues: { include: { value: { select: { groupId: true } } } },
+  parts: { orderBy: { position: 'asc' }, include: { part: { select: { id: true, name: true } } } },
 } satisfies Prisma.ProductInclude;
 type ProductRow = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
 
@@ -124,7 +144,23 @@ function toProduct(row: ProductRow): ProductResponse {
     })),
     published: row.published,
     customer_id: row.customerId,
+    parts: row.parts.map((part) => ({
+      product: { id: part.part.id, name: part.part.name },
+      quantity: part.quantity,
+      size: (part.size as ProductResponse['parts'][number]['size']) ?? null,
+    })),
   };
+}
+
+/** An assembly has no sizing of its own and is never a customer's private product (Orders spec, B6). */
+function refuseAssemblyShape(kind: string, sizing: Sizing | undefined, customerId: string | null | undefined): void {
+  if (kind !== 'assembly') return;
+  if (sizing && sizing.mode !== 'none') {
+    throw new BadRequestException('sizing: an assembly has no sizing of its own; its parts are made at theirs');
+  }
+  if (customerId) {
+    throw new BadRequestException('customer_id: an assembly is part of the shared catalog');
+  }
 }
 
 function conflict(error: unknown, message: string): never {
@@ -160,6 +196,7 @@ export class ProductsService {
   }
 
   async create(tenantId: string, input: z.infer<typeof createProductSchema>): Promise<ProductResponse> {
+    refuseAssemblyShape(input.kind, input.sizing, input.customer_id);
     try {
       return await this.prisma.inTenant(tenantId, async (tx) => {
         await this.findCategory(tx, input.category_id);
@@ -207,6 +244,7 @@ export class ProductsService {
   async update(tenantId: string, id: string, patch: z.infer<typeof updateProductSchema>): Promise<ProductResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       const current = await this.find(tx, id);
+      refuseAssemblyShape(current.kind, patch.sizing, patch.customer_id);
       if (patch.category_id && patch.category_id !== current.categoryId) {
         const category = await this.findCategory(tx, patch.category_id);
         // A pinned design file must still have every measure the new category asks for (B1).
@@ -267,6 +305,57 @@ export class ProductsService {
         })),
       });
       await tx.productOptionValue.createMany({ data: valueIds.map((valueId) => ({ productId: id, valueId })) });
+      return toProduct(await this.find(tx, id));
+    });
+  }
+
+  /**
+   * Replaces an assembly's parts (Orders spec, goal 6; B6): each a shared ready-made product, so
+   * never an assembly itself (one level), with a size its sizing offers.
+   */
+  async setParts(tenantId: string, id: string, input: z.infer<typeof assemblyPartsSchema>): Promise<ProductResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const assembly = await this.find(tx, id);
+      if (assembly.kind !== 'assembly') {
+        throw new BadRequestException('Only an assembly has parts');
+      }
+      // Two replacements at once would both delete, then collide on insert; the second waits here instead.
+      await tx.$queryRaw`SELECT id FROM product WHERE id = ${id}::uuid FOR UPDATE`;
+      const ids = input.parts.map((part) => part.product_id);
+      // Row-level security hides other tenants' products, so a foreign id is simply not found.
+      const found = new Map((await tx.product.findMany({ where: { id: { in: ids } } })).map((row) => [row.id, row]));
+      for (const [index, part] of input.parts.entries()) {
+        const product = found.get(part.product_id);
+        if (!product) {
+          throw new NotFoundException({ message: 'Product not found', errors: [{ path: `parts.${index}.product_id`, message: 'not found' }] });
+        }
+        const why =
+          product.kind !== 'ready_made'
+            ? 'must be a ready-made product'
+            : product.customerId !== null
+              ? "must be a shared product, not a customer's own"
+              : null;
+        if (why) {
+          throw new BadRequestException({ message: 'Every part is a shared ready-made product', errors: [{ path: `parts.${index}.product_id`, message: why }] });
+        }
+        const reasons: Refusal[] = [];
+        const size = part.size && ('scale' in part.size ? { scale: new Prisma.Decimal(part.size.scale) } : part.size);
+        resolveScale(product.sizing as Sizing, size, reasons);
+        if (reasons.length > 0) {
+          throw new BadRequestException({ message: 'A part is made at a size it offers', errors: [{ path: `parts.${index}.size`, message: reasons[0].message }] });
+        }
+      }
+
+      await tx.assemblyPart.deleteMany({ where: { assemblyId: id } });
+      await tx.assemblyPart.createMany({
+        data: input.parts.map((part, position) => ({
+          assemblyId: id,
+          partId: part.product_id,
+          position,
+          quantity: part.quantity,
+          size: part.size ?? Prisma.DbNull,
+        })),
+      });
       return toProduct(await this.find(tx, id));
     });
   }

@@ -241,4 +241,18 @@ describe('checkConfiguration', () => {
     );
     expect(result.accepted && result.measures.map((m) => m.unit)).toEqual(['mm3', 'mm2', 'mm', 'piece']);
   });
+
+  describe('an assembly (Orders spec, goal 6)', () => {
+    const assembly = () => product({ id: 'p-set', key: 'pendant_set', kind: 'assembly', sizing: { mode: 'none' }, requiredMeasures: [] });
+
+    it('accepts an assembly without a design file, with no measures', () => {
+      const result = checkConfiguration(input({ product: assembly(), options: { material: 'silver_925', finish: 'polished' }, file: null }));
+      expect(result).toMatchObject({ accepted: true, materialId: MAT_SILVER, scale: dec('1'), measures: [] });
+    });
+
+    it('still refuses an assembly whose options break a rule', () => {
+      const result = checkConfiguration(input({ product: assembly(), options: { material: 'brass', finish: 'polished' }, file: null }));
+      expect(codes(result)).toEqual(['rule_excludes']);
+    });
+  });
 });

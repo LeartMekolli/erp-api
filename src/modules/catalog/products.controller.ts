@@ -10,6 +10,7 @@ import { categoryResponseSchema, productResponseSchema } from './product-respons
 import type { CategoryResponse, ProductResponse } from './product-response';
 import {
   ProductsService,
+  assemblyPartsSchema,
   createCategorySchema,
   createProductSchema,
   designFileSchema,
@@ -51,10 +52,11 @@ export class ProductsController {
   }
 
   @ApiDoc({
-    summary: 'Create a custom or ready-made product with how it can be sized.',
+    summary: 'Create a custom, ready-made or assembly product with how it can be sized.',
     description:
       '`custom`: the customer brings the design file. `ready_made`: the product pins its own measured file through ' +
-      '`PUT /catalog/products/{id}/design-file`. `sizing` is `none`, a `range` of scale factors (`min` < `max`), or ' +
+      '`PUT /catalog/products/{id}/design-file`. `assembly`: made of ready-made parts (`PUT /catalog/products/{id}/parts`), ' +
+      'with no design file and `sizing: none`, never a customer\'s own. `sizing` is `none`, a `range` of scale factors (`min` < `max`), or ' +
       '`named` sizes each with a scale; scales are decimal strings from 0.01 to 100. `material_id` fixes the material; ' +
       'without it, an option value selects one. A key already in use is a 409.',
     body: createProductSchema,
@@ -132,6 +134,26 @@ export class ProductsController {
     @Body(new ZodValidationPipe(productOptionsInputSchema)) body: z.infer<typeof productOptionsInputSchema>,
   ): Promise<ProductResponse> {
     return this.products.setOptions(tenantId, id, body);
+  }
+
+  @ApiDoc({
+    summary: "Replace an assembly's parts, each with how many go into one assembly and the size it is made at.",
+    description:
+      'Every part is a shared ready-made product, so never an assembly itself (one level only), listed once, at a ' +
+      'size its sizing offers; omit `size` for the part as it is. The options chosen on the assembly pass to every ' +
+      'part offering the same option group. A product that is not an assembly is a 400.',
+    body: assemblyPartsSchema,
+    response: productResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('catalog.write')
+  @Put('products/:id/parts')
+  setParts(
+    @CurrentTenant() tenantId: string,
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @Body(new ZodValidationPipe(assemblyPartsSchema)) body: z.infer<typeof assemblyPartsSchema>,
+  ): Promise<ProductResponse> {
+    return this.products.setParts(tenantId, id, body);
   }
 
   @ApiDoc({

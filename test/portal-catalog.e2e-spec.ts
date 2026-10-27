@@ -173,6 +173,7 @@ describe('portal: what customers see of the catalog', () => {
         },
       ],
       design_file: null,
+      parts: [],
     });
     expect(byName.get('Ring model 12')).toMatchObject({ kind: 'ready_made', design_file: { version_id: w.designVersionId } });
     expect(byName.get('Luna signet')).toMatchObject({ id: w.signet, private: true });

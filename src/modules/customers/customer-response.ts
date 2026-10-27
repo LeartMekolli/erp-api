@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PRODUCT_KINDS } from '../catalog/product-response';
 import { sizingSchema } from '../catalog/scaling';
 import { CUSTOMER_ROLES } from './customer-roles';
 
@@ -56,7 +57,7 @@ export type PortalMeResponse = z.infer<typeof portalMeResponseSchema>;
 export const portalProductSchema = z.strictObject({
   id: z.uuid(),
   name: z.string(),
-  kind: z.enum(['custom', 'ready_made']),
+  kind: z.enum(PRODUCT_KINDS),
   /** True for a product that belongs to this customer alone. */
   private: z.boolean(),
   sizing: sizingSchema,
@@ -72,5 +73,7 @@ export const portalProductSchema = z.strictObject({
   ),
   /** The design file version a ready-made product is made from. */
   design_file: z.strictObject({ version_id: z.uuid() }).nullable(),
+  /** What an assembly is made of, by name, with how many of each; empty for every other kind. */
+  parts: z.array(z.strictObject({ name: z.string(), quantity: z.number().int() })),
 });
 export type PortalProduct = z.infer<typeof portalProductSchema>;

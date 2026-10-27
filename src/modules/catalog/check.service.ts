@@ -116,12 +116,21 @@ export class CheckService {
     };
   }
 
-  /** A ready-made product's own version, or the customer's for a custom product (B1, B2). */
+  /**
+   * A ready-made product's own version, or the customer's for a custom product (B1, B2); an assembly
+   * has none, its parts carry their own (Orders spec, B6).
+   */
   private async designFile(
     tx: Prisma.TransactionClient,
     product: ProductForCheck,
     versionId: string | undefined,
   ): Promise<CheckInput['file']> {
+    if (product.kind === 'assembly') {
+      if (versionId) {
+        throw new BadRequestException('An assembly has no design file of its own; omit file_version_id');
+      }
+      return null;
+    }
     if (product.kind === 'ready_made') {
       if (versionId) {
         throw new BadRequestException('A ready-made product is checked with its own design file; omit file_version_id');
