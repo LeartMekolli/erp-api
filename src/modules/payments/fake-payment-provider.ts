@@ -88,6 +88,9 @@ export class FakePaymentProvider implements PaymentProvider {
     } catch {
       throw new InvalidSignatureError('Unreadable event');
     }
+    if (typeof parsed.id !== 'string' || typeof parsed.type !== 'string' || typeof parsed.data?.object?.id !== 'string') {
+      throw new InvalidSignatureError('Unreadable event');
+    }
     return {
       id: parsed.id,
       type: parsed.type,

@@ -67,9 +67,15 @@ export class PaymentAccountService {
 
   /** For a request that holds a transaction. 409 when the workspace has no keys. */
   async keys(tx: Prisma.TransactionClient): Promise<AccountKeys> {
+    const keys = await this.find(tx);
+    if (!keys) throw new ConflictException('Payments are not set up for this workspace');
+    return keys;
+  }
+
+  /** The keys, or null when the workspace has none. */
+  async find(tx: Prisma.TransactionClient): Promise<AccountKeys | null> {
     const row = await tx.paymentAccount.findFirst();
-    if (!row) throw new ConflictException('Payments are not set up for this workspace');
-    return this.unseal(row);
+    return row ? this.unseal(row) : null;
   }
 
   /** For jobs and webhooks, which have no transaction yet. */

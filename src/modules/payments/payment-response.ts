@@ -30,6 +30,10 @@ export const paymentAccountResponseSchema = z.strictObject({
 });
 export type PaymentAccountResponse = z.infer<typeof paymentAccountResponseSchema>;
 
+/** What a webhook answers once the event is stored (or was already). */
+export const webhookAckResponseSchema = z.strictObject({ received: z.literal(true) });
+export type WebhookAckResponse = z.infer<typeof webhookAckResponseSchema>;
+
 export const ledgerQuerySchema = paginationQuerySchema.extend({
   order_id: z.uuid().optional(),
   customer_id: z.uuid().optional(),

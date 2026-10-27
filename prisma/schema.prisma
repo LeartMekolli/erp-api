@@ -87,6 +87,7 @@ model Tenant {
   orderCounter    OrderCounter?
   paymentAccount  PaymentAccount?
   ledgerJournals  LedgerJournal[]
+  paymentEvents   PaymentEvent[]
 
   @@map("tenant")
 }
@@ -1914,4 +1915,28 @@ model LedgerLine {
   @@index([tenantId, account, customerId])
   @@index([tenantId, account, partnerId])
   @@map("ledger_line")
+}
+
+// One webhook event from the payment provider, stored once by its id and applied once by the
+// `payments.event` job. Only the facts needed to find the object are kept, never the payload: a
+// handler reads the object's current state from the provider.
+model PaymentEvent {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  tenantId           String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  providerEventId    String    @map("provider_event_id")
+  type               String
+  objectId           String    @map("object_id")
+  // The partner's connected account, for Connect events.
+  connectedAccountId String?   @map("connected_account_id")
+  // payments | connect: the endpoint it arrived on.
+  endpoint           String
+  receivedAt         DateTime  @default(now()) @map("received_at")
+  appliedAt          DateTime? @map("applied_at")
+  // The last handler failure; cleared once applied.
+  error              String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, providerEventId])
+  @@map("payment_event")
 }

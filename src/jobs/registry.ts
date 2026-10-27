@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-export const QUEUES = ['notifications', 'maintenance', 'files'] as const;
+export const QUEUES = ['notifications', 'maintenance', 'files', 'payments'] as const;
 export type QueueName = (typeof QUEUES)[number];
 
 const DEFAULT_ATTEMPTS = 5;
@@ -75,6 +75,12 @@ export const JOBS = {
     queue: 'files',
     payload: z.object({ tenantId: z.uuid(), fileId: z.uuid(), versionId: z.uuid() }),
     jobId: (p) => [p.versionId],
+  }),
+  // Applies one stored payment webhook event by its type (Payments spec, goal 10).
+  'payments.event': defineJob({
+    queue: 'payments',
+    payload: z.object({ tenantId: z.uuid(), eventId: z.uuid() }),
+    jobId: (p) => [p.eventId],
   }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 
