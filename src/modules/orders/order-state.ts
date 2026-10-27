@@ -12,11 +12,20 @@ export function lineState(pieces: { status: string }[], cancelledAt: Date | null
   return groupReady(pieces) ? 'ready' : 'in_production';
 }
 
-/** Delivered, then shipped; else from the lines: every one cancelled, or every one ready or cancelled with one ready. */
-export function orderState(lines: LineState[], shippedAt: Date | null, deliveredAt: Date | null): OrderState {
+/**
+ * Delivered, then shipped; cancelled when every line is; awaiting payment until production starts;
+ * else from the lines: every one ready or cancelled with one ready, or in production.
+ */
+export function orderState(
+  lines: LineState[],
+  shippedAt: Date | null,
+  deliveredAt: Date | null,
+  productionStartedAt: Date | null,
+): OrderState {
   if (deliveredAt) return 'delivered';
   if (shippedAt) return 'shipped';
   if (lines.every((line) => line === 'cancelled')) return 'cancelled';
+  if (!productionStartedAt) return 'awaiting_payment';
   if (lines.every((line) => line !== 'in_production')) return 'ready';
   return 'in_production';
 }

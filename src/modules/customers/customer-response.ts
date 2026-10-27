@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { PRODUCT_KINDS } from '../catalog/product-response';
 import { sizingSchema } from '../catalog/scaling';
+import { paymentTermsResponseSchema } from '../payments/payment-response';
 import { CUSTOMER_ROLES } from './customer-roles';
 
 // What staff receive for customer organisations; checked against real responses in the e2e tests.
@@ -15,6 +16,8 @@ export const customerResponseSchema = z.strictObject({
   member_count: z.number().int(),
   /** Its people may pick the workshop that makes their quote. */
   may_pick_partner: z.boolean(),
+  /** How the customer pays (Payments spec); set with PUT /customers/:id/payment-terms. */
+  payment_terms: paymentTermsResponseSchema,
   created_at: z.string(),
 });
 export type CustomerResponse = z.infer<typeof customerResponseSchema>;

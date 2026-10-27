@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { paginationQuerySchema } from '../../common/pagination/page';
+import type { Prisma } from '../../generated/prisma/client';
 import { ACCOUNTS, JOURNAL_KINDS } from './ledger';
+import { PAYMENT_TERMS } from './payment-state';
 
 const prefixed = (prefixes: string[]) =>
   z
@@ -29,6 +31,40 @@ export const paymentAccountResponseSchema = z.strictObject({
   }),
 });
 export type PaymentAccountResponse = z.infer<typeof paymentAccountResponseSchema>;
+
+export const DEFAULT_DAYS_TO_PAY = 30;
+
+export const setPaymentTermsSchema = z.strictObject({
+  terms: z.enum(PAYMENT_TERMS),
+  /** Days an invoice gives to pay. */
+  days_to_pay: z.number().int().min(1).max(120).default(DEFAULT_DAYS_TO_PAY),
+  /** What a pay-later customer may owe at once; left out or null: no limit. */
+  credit_limit: z
+    .string()
+    .regex(/^\d{1,16}(\.\d{1,2})?$/, 'must be an amount of zero or more with at most 2 places, such as 5000.00')
+    .nullable()
+    .default(null),
+});
+export type SetPaymentTerms = z.infer<typeof setPaymentTermsSchema>;
+
+/** A customer's payment terms, as staff see them; never shown to the customer. */
+export const paymentTermsResponseSchema = z.strictObject({
+  terms: z.enum(PAYMENT_TERMS),
+  days_to_pay: z.number().int(),
+  credit_limit: z.string().nullable(),
+});
+export type PaymentTermsResponse = z.infer<typeof paymentTermsResponseSchema>;
+
+/** A customer without a row pays first, within the default days, with no limit. */
+export function paymentTermsResponse(
+  row: { terms: string; daysToPay: number; creditLimit: Prisma.Decimal | null } | null,
+): PaymentTermsResponse {
+  return {
+    terms: (row?.terms ?? 'pay_first') as PaymentTermsResponse['terms'],
+    days_to_pay: row?.daysToPay ?? DEFAULT_DAYS_TO_PAY,
+    credit_limit: row?.creditLimit?.toFixed(2) ?? null,
+  };
+}
 
 /** What a webhook answers once the event is stored (or was already). */
 export const webhookAckResponseSchema = z.strictObject({ received: z.literal(true) });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { INVOICE_STATUSES, PAYMENT_STATES, PAYMENT_TERMS } from '../payments/payment-state';
 import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 import { customerViewResponseSchema } from '../workflow/work-order-response';
 
@@ -45,7 +46,47 @@ export const taxRatesResponseSchema = z.strictObject({ data: z.array(taxRateResp
 export type TaxRatesResponse = z.infer<typeof taxRatesResponseSchema>;
 
 export const LINE_STATES = ['in_production', 'ready', 'cancelled'] as const;
-export const ORDER_STATES = ['in_production', 'ready', 'shipped', 'delivered', 'cancelled'] as const;
+export const ORDER_STATES = ['awaiting_payment', 'in_production', 'ready', 'shipped', 'delivered', 'cancelled'] as const;
+
+const money = z.string().describe('In the order currency, with two decimals.');
+
+/** An order's invoice, once it has one (pay later). */
+const invoiceSchema = z.strictObject({
+  url: z.string(),
+  due_on: z.iso.date(),
+  status: z.enum(INVOICE_STATUSES),
+});
+
+/** How the order is paid, as staff see it (Payments spec). */
+export const orderPaymentResponseSchema = z.strictObject({
+  /** Frozen from the customer's terms when the order was placed. */
+  terms: z.enum(PAYMENT_TERMS),
+  state: z.enum(PAYMENT_STATES),
+  /** A pay-first order is cancelled if not paid by then. */
+  pay_by: z.iso.datetime().nullable(),
+  /** Waiting because the customer is past its credit limit. */
+  held_for_credit: z.boolean(),
+  /** Who let it start past the credit limit, and why. */
+  released: z.strictObject({ by: z.strictObject({ id: z.uuid(), name: z.string() }), reason: z.string() }).nullable(),
+  paid: money,
+  /** Refunds that succeeded. */
+  refunded: money,
+  /** Where the customer pays while the order waits for payment. */
+  pay_url: z.string().nullable(),
+  invoice: invoiceSchema.nullable(),
+});
+export type OrderPaymentResponse = z.infer<typeof orderPaymentResponseSchema>;
+
+/** How the order is paid, as its customer sees it: no terms, credit hold or release. */
+export const customerOrderPaymentResponseSchema = orderPaymentResponseSchema.pick({
+  state: true,
+  pay_by: true,
+  pay_url: true,
+  invoice: true,
+  paid: true,
+  refunded: true,
+});
+export type CustomerOrderPaymentResponse = z.infer<typeof customerOrderPaymentResponseSchema>;
 
 export const orderLineResponseSchema = z.strictObject({
   id: z.uuid(),
@@ -114,6 +155,7 @@ export const orderResponseSchema = z.strictObject({
   currency: z.string(),
   note: z.string().nullable(),
   placed_at: z.iso.datetime(),
+  payment: orderPaymentResponseSchema,
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
 
@@ -142,6 +184,7 @@ export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponse
 /** An order as its customer sees it (Global Constraints): never a partner, a partner's cost or a margin. */
 export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true }).extend({
   lines: z.array(customerOrderLineResponseSchema),
+  payment: customerOrderPaymentResponseSchema,
 });
 export type CustomerOrderResponse = z.infer<typeof customerOrderResponseSchema>;
 

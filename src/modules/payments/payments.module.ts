@@ -10,16 +10,19 @@ import { PaymentEventHandler } from './payment-event.handler';
 import { PaymentEventsService } from './payment-events.service';
 import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
+import { PaymentTermsController } from './payment-terms.controller';
+import { PaymentTermsService } from './payment-terms.service';
 import { StripePaymentProvider } from './stripe-payment-provider';
 import { WebhooksController } from './webhooks.controller';
 
 /** Customers pay, partners are paid, and every movement of money is recorded (Payments spec). */
 @Module({
   imports: [AuditModule],
-  controllers: [PaymentAccountController, LedgerController, WebhooksController],
+  controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController],
   providers: [
     PaymentAccountService,
     LedgerService,
+    PaymentTermsService,
     PaymentEventsService,
     PaymentEventHandler,
     {

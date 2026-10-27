@@ -5,7 +5,8 @@ import { toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { Customer, CustomerGroup, Prisma } from '../../generated/prisma/client';
+import type { Customer, CustomerGroup, CustomerPaymentTerms, Prisma } from '../../generated/prisma/client';
+import { paymentTermsResponse } from '../payments/payment-response';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import type { CustomerMemberResponse, CustomerResponse } from './customer-response';
@@ -34,9 +35,9 @@ export const updateMemberSchema = z.object({
   status: z.enum(['active', 'deactivated']).optional(),
 });
 
-type CustomerRow = Customer & { customerGroup: CustomerGroup | null };
+type CustomerRow = Customer & { customerGroup: CustomerGroup | null; paymentTerms: CustomerPaymentTerms | null };
 
-const include = { customerGroup: true } as const;
+const include = { customerGroup: true, paymentTerms: true } as const;
 
 export const memberInclude = { user: { select: { id: true, name: true, email: true, status: true } } } as const;
 
@@ -232,6 +233,7 @@ export class CustomersService {
         : null,
       member_count: memberCount,
       may_pick_partner: row.mayPickPartner,
+      payment_terms: paymentTermsResponse(row.paymentTerms),
       created_at: row.createdAt.toISOString(),
     };
   }

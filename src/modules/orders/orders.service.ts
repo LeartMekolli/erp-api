@@ -11,11 +11,13 @@ import { AuditService } from '../audit/audit.service';
 import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { paidAndRefunded, paymentState } from '../payments/payment-state';
+import type { PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
 import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
-import { promisedDate } from './dates';
+import { localDate, promisedDate } from './dates';
 import type { BusinessCalendar } from './dates';
 import type {
   Address,
@@ -138,6 +140,8 @@ export class OrdersService {
           shipping: method.price,
         });
         const { linesTotal, total } = orderTotals(lineTotals, method.price, tax.amount);
+        // The customer's terms as they are now; changing them later leaves this order as placed.
+        const terms = await tx.customerPaymentTerms.findUnique({ where: { customerId }, select: { terms: true } });
 
         const order = await tx.order.create({
           data: {
@@ -158,6 +162,9 @@ export class OrdersService {
             note: body.note ?? null,
             placedByUserId: auth.userId,
             placedAt,
+            paymentTerms: terms?.terms ?? 'pay_first',
+            // Every order starts at once for now; a pay-first order will wait for its payment.
+            productionStartedAt: placedAt,
           },
         });
 
@@ -634,6 +641,14 @@ export class OrdersService {
         currency: view.currency,
         note: view.note,
         placed_at: view.placed_at,
+        payment: {
+          state: view.payment.state,
+          pay_by: view.payment.pay_by,
+          pay_url: view.payment.pay_url,
+          invoice: view.payment.invoice,
+          paid: view.payment.paid,
+          refunded: view.payment.refunded,
+        },
       });
     }
     return responses;
@@ -665,6 +680,16 @@ export class OrdersService {
     });
     const partnerOf = new Map(holding.map((row) => [row.groupId, row.partner]));
     const pieces = await tx.workOrder.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, status: true } });
+    // What was paid and refunded comes from the ledger (Payments spec).
+    const journals = await tx.ledgerJournal.findMany({
+      where: { orderId: { in: ids }, kind: { in: ['payment_received', 'refund'] } },
+      select: { orderId: true, kind: true, lines: { select: { account: true, amount: true } } },
+    });
+    const releasers = await tx.user.findMany({
+      where: { id: { in: orders.flatMap((order) => (order.releasedByUserId ? [order.releasedByUserId] : [])) } },
+      select: { id: true, name: true },
+    });
+    const today = localDate(new Date(), await this.timezone(tx, orders[0].tenantId));
 
     return orders.map((order) => {
       const method = methods.find((one) => one.id === order.shippingMethodId)!;
@@ -693,12 +718,15 @@ export class OrdersService {
             partner: part.groupId ? (partnerOf.get(part.groupId) ?? null) : null,
           })),
         }));
+      const { paid, refunded } = paidAndRefunded(journals.filter((journal) => journal.orderId === order.id));
+      const releaser = releasers.find((user) => user.id === order.releasedByUserId);
+      const terms = order.paymentTerms as PaymentTerms;
       return {
         id: order.id,
         number: order.number,
         customer: customers.find((customer) => customer.id === order.customerId)!,
         channel: order.channel as Channel,
-        state: orderState(orderLines.map((line) => line.state), order.shippedAt, order.deliveredAt),
+        state: orderState(orderLines.map((line) => line.state), order.shippedAt, order.deliveredAt, order.productionStartedAt),
         promised_on: order.promisedOn.toISOString().slice(0, 10),
         delivery_speed: order.deliverySpeedKey,
         address: order.address as Address,
@@ -717,6 +745,26 @@ export class OrdersService {
         currency: order.currency,
         note: order.note,
         placed_at: order.placedAt.toISOString(),
+        payment: {
+          terms,
+          state: paymentState({
+            terms,
+            cancelled: order.cancelledAt !== null,
+            started: order.productionStartedAt !== null,
+            paid,
+            refunded,
+            // Invoices and pay links arrive with later payment tasks.
+            invoice: null,
+            today,
+          }),
+          pay_by: order.payBy?.toISOString() ?? null,
+          held_for_credit: order.heldForCredit,
+          released: releaser && order.releaseReason ? { by: releaser, reason: order.releaseReason } : null,
+          paid: paid.toFixed(2),
+          refunded: refunded.toFixed(2),
+          pay_url: null,
+          invoice: null,
+        },
       };
     });
   }

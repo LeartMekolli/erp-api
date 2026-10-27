@@ -88,6 +88,7 @@ model Tenant {
   paymentAccount  PaymentAccount?
   ledgerJournals  LedgerJournal[]
   paymentEvents   PaymentEvent[]
+  customerPaymentTerms CustomerPaymentTerms[]
 
   @@map("tenant")
 }
@@ -136,6 +137,7 @@ model User {
   transitions    Transition[]
   orderComments  OrderComment[]
   ledgerJournals LedgerJournal[]
+  releasedOrders Order[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1096,6 +1098,7 @@ model Customer {
   orders        Order[]
   ledgerJournals LedgerJournal[]
   ledgerLines   LedgerLine[]
+  paymentTerms  CustomerPaymentTerms?
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -1700,10 +1703,22 @@ model Order {
   // Set, with the reason, once every line is cancelled (goal 12).
   cancelledAt      DateTime? @map("cancelled_at")
   cancelReason     String?   @map("cancel_reason")
+  // pay_first | pay_later: the customer's terms, frozen when the order was placed (Payments spec).
+  paymentTerms     String    @map("payment_terms")
+  // Waiting because the customer is past its credit limit.
+  heldForCredit    Boolean   @default(false) @map("held_for_credit")
+  // A pay-first order not paid by then is cancelled.
+  payBy            DateTime? @map("pay_by")
+  // Null while the order waits for payment or credit: nothing of it is made, its workshop's job is held.
+  productionStartedAt DateTime? @map("production_started_at")
+  // Who let it start past the credit limit, and why.
+  releasedByUserId String?   @map("released_by_user_id") @db.Uuid
+  releaseReason    String?   @map("release_reason")
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer       Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
   shippingMethod ShippingMethod @relation(fields: [tenantId, shippingMethodId], references: [tenantId, id], onDelete: NoAction)
+  releasedBy     User?          @relation(fields: [tenantId, releasedByUserId], references: [tenantId, id], onDelete: NoAction)
   lines          OrderLine[]
   comments       OrderComment[]
   ledgerJournals LedgerJournal[]
@@ -1915,6 +1930,27 @@ model LedgerLine {
   @@index([tenantId, account, customerId])
   @@index([tenantId, account, partnerId])
   @@map("ledger_line")
+}
+
+// How a customer pays (Payments spec). No row means pay first, within 30 days, with no limit.
+model CustomerPaymentTerms {
+  customerId         String   @id @map("customer_id") @db.Uuid
+  tenantId           String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // pay_first | pay_later
+  terms              String
+  // For an invoice: 1–120.
+  daysToPay          Int      @default(30) @map("days_to_pay")
+  // Null means no limit.
+  creditLimit        Decimal? @map("credit_limit") @db.Decimal(18, 2)
+  // The customer at the payment provider, made with its first invoice.
+  providerCustomerId String?  @map("provider_customer_id")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, customerId])
+  @@map("customer_payment_terms")
 }
 
 // One webhook event from the payment provider, stored once by its id and applied once by the
