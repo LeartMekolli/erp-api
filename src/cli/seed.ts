@@ -5,7 +5,7 @@ import type { CreateTenantInput } from '../platform/tenant-input';
 import { TenantService } from '../platform/tenant.service';
 import { createPlatformAdmin } from './platform-admins';
 import { runCli } from './run-cli';
-import { seedCatalog } from './seed-catalog';
+import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
 import { seedCustomers } from './seed-customers';
 import { seedOrders } from './seed-orders';
 import { seedPartners } from './seed-partners';
@@ -74,7 +74,17 @@ void runCli(async (app) => {
   // The demo workspace gets an example catalog for made-to-order 3D objects.
   const prisma = app.get(PrismaService);
   const demo = await prisma.tenant.findUniqueOrThrow({ where: { slug: 'demo' }, select: { id: true } });
-  const created = await seedCatalog(prisma, demo.id);
+  // The placeholder design of the demo's ready-made parts is a file, so it has an uploader: a staff user
+  // that can't sign in (its password hash matches nothing), since the owner only exists once invited.
+  const uploaderEmail = 'catalog@demo.example.test';
+  const uploader = await prisma.inTenant(demo.id, async (tx) => {
+    const found = await tx.user.findFirst({ where: { email: uploaderEmail } });
+    if (found) return found;
+    const { defaultLocale } = await tx.tenant.findUniqueOrThrow({ where: { id: demo.id }, select: { defaultLocale: true } });
+    return tx.user.create({ data: { email: uploaderEmail, name: 'Demo catalog', passwordHash: '!', locale: defaultLocale, kind: 'staff' } });
+  });
+  const partVersionId = await seedPlaceholderDesign(prisma, demo.id, uploader.id);
+  const created = await seedCatalog(prisma, demo.id, { partVersionId });
   process.stdout.write(
     `catalog for demo: created ${created.categories} categories, ${created.materials} materials, ` +
       `${created.optionGroups} option groups, ${created.optionValues} option values, ${created.optionRules} rules, ` +
@@ -110,6 +120,7 @@ void runCli(async (app) => {
   process.stdout.write(
     `orders for demo: created ${orders.shippingMethods} shipping methods, ${orders.taxRates} tax rates` +
       (orders.calendar ? ', the business calendar' : '') +
+      (orders.scheduling ? ', the job due dates' : '') +
       '\n',
   );
 });

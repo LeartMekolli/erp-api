@@ -17,11 +17,14 @@ const STEP_TYPES: { key: string; name: string; position: number; group: SummaryG
   { key: 'print', name: 'Print', position: 10, group: 'making' },
   { key: 'cure', name: 'Cure', position: 20, group: 'making' },
   { key: 'finish', name: 'Finish', position: 40, group: 'finishing' },
+  { key: 'assembly', name: 'Assembly', position: 70, group: 'finishing' },
 ];
 
 const CHAINS: Record<string, string[]> = {
   cast_metal: ['print_pattern', 'casting_tree', 'casting', 'polishing'],
   printed_parts: ['print', 'cure', 'finish'],
+  // The parts are priced by their own chains; the set only adds putting them together.
+  assemblies: ['assembly'],
 };
 
 /** Option value key → steps it adds or removes. */
@@ -96,6 +99,16 @@ const PRICES: { step: string; material: string | null; failure: string; blocks: 
     material: null,
     failure: '0',
     blocks: [{ kind: 'labour', base_minutes: '5', per: { measure: 'surface_area', unit: 'cm2', minutes: '0.5' }, hourly_rate: '25' }],
+  },
+  // Putting a set together: labour, and one bought chain per set.
+  {
+    step: 'assembly',
+    material: null,
+    failure: '0',
+    blocks: [
+      { kind: 'labour', base_minutes: '10', hourly_rate: '30' },
+      { kind: 'material', source: { material_key: 'chain' }, basis: 'piece', loss_percent: '0' },
+    ],
   },
 ];
 

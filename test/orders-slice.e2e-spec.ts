@@ -3,7 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
-import { seedCatalog } from '../src/cli/seed-catalog';
+import { seedCatalog, seedPlaceholderDesign } from '../src/cli/seed-catalog';
 import { seedCustomers } from '../src/cli/seed-customers';
 import { seedOrders } from '../src/cli/seed-orders';
 import { seedPartners } from '../src/cli/seed-partners';
@@ -12,7 +12,7 @@ import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { promisedDate } from '../src/modules/orders/dates';
+import { promisedDate, workingDaysBefore } from '../src/modules/orders/dates';
 import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
@@ -31,15 +31,16 @@ interface Order {
   promised_on: string;
   placed_at: string;
   shipping: { price: string; courier: string | null; tracking: string | null };
-  lines: { position: number; state: string; group_id?: string; partner?: { id: string } | null }[];
+  lines: { id: string; position: number; state: string; group_id?: string; partner?: { id: string } | null; parts?: { group_id: string }[] }[];
   lines_total: string;
   tax: { percent: string; amount: string };
   total: string;
 }
 
 /**
- * The Orders spec's "Done when" 1, 2, 3, 4 (an offer, without a due date until Orders 2), 5, 7 and 9,
- * end to end over HTTP on the demo data, as staff, Luna's buyer Ben and Northcast's owner.
+ * The Orders spec's "Done when" 1 to 10, end to end over HTTP on the demo data, as staff, Luna's buyer
+ * Ben and Northcast's owner. The parts of a pendant set are finished in the database: how a part is made
+ * is the workflow's own tests; here only that the set waits for them.
  */
 describe('orders: the walkthrough', () => {
   let app: INestApplication;
@@ -72,18 +73,19 @@ describe('orders: the walkthrough', () => {
   it('runs from setting up to a delivered order, with lapsed prices, cancelling and picked workshops', async () => {
     const tenant = await createTestTenant(prisma);
     createdTenants.push(tenant.id);
-    await seedCatalog(prisma, tenant.id);
+    const staffUser = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
+    await seedCatalog(prisma, tenant.id, { partVersionId: await seedPlaceholderDesign(prisma, tenant.id, staffUser.id) });
     await seedPricing(prisma, tenant.id);
     await seedWorkflows(prisma, tenant.id);
     await seedCustomers(prisma, tenant.id, { password: PASSWORD });
     await seedPartners(prisma, tenant.id, { password: PASSWORD });
     await seedOrders(prisma, tenant.id);
-    const staffUser = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, staffUser.id)).accessToken);
 
     const ids = await prisma.inTenant(tenant.id, async (tx) => ({
       castPart: (await tx.product.findFirstOrThrow({ where: { key: 'custom_cast_part' } })).id,
       resinPrint: (await tx.product.findFirstOrThrow({ where: { key: 'custom_resin_print' } })).id,
+      pendantSet: (await tx.product.findFirstOrThrow({ where: { key: 'pendant_set' } })).id,
       northcast: (await tx.partner.findFirstOrThrow({ where: { name: 'Northcast Foundry' } })).id,
       layerline: (await tx.partner.findFirstOrThrow({ where: { name: 'Layerline Prints' } })).id,
       timezone: (await tx.tenant.findUniqueOrThrow({ where: { id: tenant.id } })).timezone,
@@ -188,7 +190,11 @@ describe('orders: the walkthrough', () => {
     await staff.post(`/partners/jobs/${secondLine.group_id}/offer`, { partner_id: ids.northcast }).expect(201);
     const nora = await login('owner@northcast.example.test');
     const jobs = await nora.get(`/partner-portal/partners/${ids.northcast}/jobs`).expect(200);
-    expect((jobs.body as { data: { id: string; status: string }[] }).data).toEqual([expect.objectContaining({ id: secondLine.group_id, status: 'offered' })]);
+    // The offer carries the default due date, the promised date less the buffer (2 working days), and Northcast sees it.
+    const dueOn = workingDaysBefore(second.promised_on, 2, CALENDAR);
+    expect((jobs.body as { data: { id: string; status: string; due_on: string }[] }).data).toEqual([
+      expect.objectContaining({ id: secondLine.group_id, status: 'offered', due_on: dueOn }),
+    ]);
     for (const secret of [luna, 'Luna', second.id, old.id, second.total]) {
       expect({ secret, found: jobs.text.includes(secret) }).toEqual({ secret, found: false });
     }
@@ -223,6 +229,59 @@ describe('orders: the walkthrough', () => {
     const seen = (await ben.get(`${portal}/orders/${first.id}`).expect(200)).body as Order;
     expect(seen).toMatchObject({ state: 'shipped', shipping: { courier: 'Parcel Express', tracking: 'PX123456' } });
     expect(((await staff.post(`/orders/${first.id}/deliver`).expect(200)).body as Order).state).toBe('delivered');
+
+    // 6. Ben orders 2 pendant sets: one line with a part each for the pendant and the bail. The set can't
+    // pass its first step until both parts are finished; then it passes and the order is ready.
+    const setQuote = (
+      (
+        await ben
+          .post(`${portal}/quotes`, { product_id: ids.pendantSet, options: { material: 'brass', finish: 'polished' }, quantity: 2, delivery_speed: 'standard' })
+          .expect(201)
+      ).body as { quote: Quote }
+    ).quote;
+    const setOrder = (await order([setQuote.id]).expect(201)).body as Order;
+    const setLine = (await staffView(setOrder.id)).lines[0];
+    expect(setLine.parts).toHaveLength(2);
+    const setPieces = await pieceIds(setLine.group_id!);
+    expect(setPieces).toHaveLength(2);
+    await staff.post('/workflow/moves', { work_order_ids: setPieces, kind: 'pass', at_step: 'assembly' }).expect(409);
+    for (const part of setLine.parts!) {
+      await prisma.inTenant(tenant.id, (tx) =>
+        tx.workOrder.updateMany({ where: { groupId: part.group_id, status: 'active' }, data: { status: 'finished', currentStepId: null } }),
+      );
+    }
+    for (const at_step of ['assembly', 'final_qc', 'packing']) {
+      await staff.post('/workflow/moves', { work_order_ids: setPieces, kind: 'pass', at_step, ...(answers[at_step] ?? {}) }).expect(200);
+    }
+    expect((await staffView(setOrder.id)).state).toBe('ready');
+
+    // 8 and 10. Northcast takes a new order's line and talks about it with staff, never with Luna; it
+    // finishes the pieces by their due date, and the on-time part of its score shows.
+    const fourth = (await order([(await castQuote()).id]).expect(201)).body as Order;
+    const fourthLine = (await staffView(fourth.id)).lines[0];
+    await staff.post(`/partners/jobs/${fourthLine.group_id}/offer`, { partner_id: ids.northcast }).expect(201);
+    const job = `/partner-portal/partners/${ids.northcast}/jobs/${fourthLine.group_id}`;
+    await nora.post(`${job}/accept`).expect(200);
+
+    const bodies = async (client: typeof staff, path: string) =>
+      ((await client.get(path).expect(200)).body as { data: { body: string }[] }).data.map((comment) => comment.body);
+    await ben.post(`${portal}/orders/${fourth.id}/comments`, { body: 'Can this be ready early?' }).expect(201);
+    await staff.post(`/orders/${fourth.id}/comments`, { body: 'We will try', line_id: fourthLine.id }).expect(201);
+    await staff.post(`/orders/${fourth.id}/comments`, { body: 'Polish the back harder', line_id: fourthLine.id, for_partner: true }).expect(201);
+    expect(await bodies(staff, `/orders/${fourth.id}/comments`)).toEqual(['Can this be ready early?', 'We will try', 'Polish the back harder']);
+    expect(await bodies(ben, `${portal}/orders/${fourth.id}/comments`)).toEqual(['Can this be ready early?', 'We will try']);
+    const noraSees = await nora.get(`${job}/comments`).expect(200);
+    expect(await bodies(nora, `${job}/comments`)).toEqual(['Polish the back harder']);
+    for (const secret of ['Luna', fourth.id, fourthLine.id, 'ready early', 'We will try']) {
+      expect({ secret, found: noraSees.text.includes(secret) }).toEqual({ secret, found: false });
+    }
+
+    const fourthPieces = await pieceIds(fourthLine.group_id!);
+    for (const at_step of ['print_pattern', 'casting_tree', 'casting', 'polishing', 'final_qc', 'packing']) {
+      await nora.post(`/partner-portal/partners/${ids.northcast}/moves`, { work_order_ids: fourthPieces, kind: 'pass', at_step, ...(answers[at_step] ?? {}) }).expect(200);
+    }
+    const score = (await nora.get(`/partner-portal/partners/${ids.northcast}/score`).expect(200)).body as { score: { parts: { on_time: number | null } } };
+    expect(score.score.parts.on_time).toBe(1);
 
     // 5 (last, as it suspends Northcast). Luna, allowed to pick, orders two lines at Northcast: both
     // are Northcast's direct jobs at once.

@@ -56,8 +56,13 @@ describe('orders demo seed', () => {
   it('creates two shipping methods, two tax rates and the calendar once, and a second run creates nothing', async () => {
     const tenant = await seededTenant();
 
-    expect(await seedOrders(prisma, tenant.id)).toEqual({ shippingMethods: 2, taxRates: 2, calendar: 1 });
-    expect(await seedOrders(prisma, tenant.id)).toEqual({ shippingMethods: 0, taxRates: 0, calendar: 0 });
+    expect(await seedOrders(prisma, tenant.id)).toEqual({ shippingMethods: 2, taxRates: 2, calendar: 1, scheduling: 1 });
+    expect(await seedOrders(prisma, tenant.id)).toEqual({ shippingMethods: 0, taxRates: 0, calendar: 0, scheduling: 0 });
+    // Due dates count back 2 working days from the promised date, 1 more for a part of an assembly.
+    expect(((await tenant.staff.get('/settings').expect(200)).body as { data: Record<string, unknown> }).data['orders.scheduling']).toEqual({
+      bufferDays: 2,
+      assemblyAllowanceDays: 1,
+    });
 
     const methods = ((await tenant.staff.get('/orders/shipping-methods').expect(200)).body as {
       data: { key: string; price: string; active: boolean }[];
@@ -79,10 +84,11 @@ describe('orders demo seed', () => {
     const tenant = await seededTenant();
     const own = { workingDays: [1, 2, 3, 4], startHour: 8, endHour: 16, closedDates: ['2026-12-25'] };
     await tenant.staff.put('/settings/business.calendar', own).expect(200);
+    await tenant.staff.put('/settings/orders.scheduling', { bufferDays: 5, assemblyAllowanceDays: 0 }).expect(200);
     await tenant.staff.post('/orders/shipping-methods', { key: 'courier', name: 'Our courier', price: '12.00' }).expect(201);
     await tenant.staff.put('/orders/tax-rates', { rates: [{ country: 'DE', region: null, percent: '7' }] }).expect(200);
 
-    expect(await seedOrders(prisma, tenant.id)).toEqual({ shippingMethods: 1, taxRates: 1, calendar: 0 });
+    expect(await seedOrders(prisma, tenant.id)).toEqual({ shippingMethods: 1, taxRates: 1, calendar: 0, scheduling: 0 });
 
     const methods = ((await tenant.staff.get('/orders/shipping-methods').expect(200)).body as { data: { key: string; price: string }[] }).data;
     expect(methods.map((method) => [method.key, method.price])).toEqual([
@@ -95,7 +101,9 @@ describe('orders demo seed', () => {
         { country: 'DE', region: null, percent: '7' },
       ],
     });
-    expect(((await tenant.staff.get('/settings').expect(200)).body as { data: Record<string, unknown> }).data['business.calendar']).toEqual(own);
+    const settings = ((await tenant.staff.get('/settings').expect(200)).body as { data: Record<string, unknown> }).data;
+    expect(settings['business.calendar']).toEqual(own);
+    expect(settings['orders.scheduling']).toEqual({ bufferDays: 5, assemblyAllowanceDays: 0 });
   });
 
   it('lets Ben order the demo cast part with courier shipping, taxed for Germany', async () => {

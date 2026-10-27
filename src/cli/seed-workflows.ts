@@ -97,6 +97,21 @@ const WORKFLOWS: Record<string, { key: string; name: string; steps: Record<strin
       { key: 'packing', name: 'Packing' },
     ],
   },
+  // A set is put together once every part is ready (held by Workflow); a crack scraps the set.
+  assemblies: {
+    key: 'assemblies',
+    name: 'Assemblies',
+    steps: [
+      {
+        key: 'assembly',
+        name: 'Assembly',
+        defects: [{ defect: 'crack', outcome: 'scrap' }],
+        customer: { visible: true, name: 'Assembly' },
+      },
+      { ...finalQc, defects: [], rework_targets: [] },
+      { key: 'packing', name: 'Packing' },
+    ],
+  },
 };
 
 export interface WorkflowSeedCounts {
