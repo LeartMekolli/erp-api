@@ -1,4 +1,4 @@
-import { customerView, groupProgress, inRework } from './progress';
+import { customerView, groupProgress, groupReady, inRework } from './progress';
 
 const pass = (fromStepId: string) => ({ kind: 'pass', outcome: null, fromStepId });
 const fail = (fromStepId: string, outcome: 'rework' | 'scrap' | 'continue') => ({ kind: 'fail', outcome, fromStepId });
@@ -32,6 +32,26 @@ describe('in rework', () => {
 
   it('is not opened by a scrap', () => {
     expect(inRework([pass('print'), fail('casting', 'scrap')])).toBeNull();
+  });
+});
+
+describe('a group being ready', () => {
+  const pieces = (...statuses: string[]) => statuses.map((status) => ({ status }));
+
+  it('is every live piece finished, with at least one', () => {
+    expect(groupReady(pieces('finished', 'finished'))).toBe(true);
+    expect(groupReady(pieces('finished', 'scrapped', 'cancelled'))).toBe(true);
+  });
+
+  it('is not while a piece is active, or a scrapped piece has not been remade yet', () => {
+    expect(groupReady(pieces('finished', 'active'))).toBe(false);
+    expect(groupReady(pieces('finished', 'scrapped', 'active'))).toBe(false);
+    expect(groupReady(pieces('scrapped'))).toBe(false);
+  });
+
+  it('is not for a group with no live piece', () => {
+    expect(groupReady(pieces('cancelled', 'cancelled'))).toBe(false);
+    expect(groupReady([])).toBe(false);
   });
 });
 

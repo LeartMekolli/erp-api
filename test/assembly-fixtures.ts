@@ -16,7 +16,7 @@ export interface AssemblyStaffClient extends StaffClient {
  *   at 6/h) on a "Printed parts" workflow print → final QC → packing.
  * - Pendant set: an assembly offering material and finish, made of the pendant ×1 at M and the bail ×2, on an
  *   "Assemblies" workflow assembly → packing. Its own `assembly` step is labour (10 min at 30/h) plus one
- *   bought chain per set (`chain`, 3.00 a piece, by hand).
+ *   bought chain per set (`chain`, 3.00 a piece, by hand). A crack scraps a set at its assembly step.
  */
 export async function pricedAssembly(
   staff: AssemblyStaffClient,
@@ -99,7 +99,7 @@ export async function pricedAssembly(
   await staff
     .put(`/workflow/workflows/${assemblyWorkflow}/steps`, {
       steps: [
-        { key: 'assembly', name: 'Assembly', step_type_id: assembly },
+        { key: 'assembly', name: 'Assembly', step_type_id: assembly, defects: [{ defect_id: cast.workflow.defects.crack, outcome: 'scrap' }] },
         { key: 'packing', name: 'Packing', step_type_id: packing },
       ],
     })

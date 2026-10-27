@@ -26,6 +26,12 @@ export function inRework(history: TransitionFacts[]): { failedAtStepId: string }
   return open === null ? null : { failedAtStepId: open };
 }
 
+/** Ready once every live piece (active or finished) is finished and there is one; scrapped and cancelled pieces are gone. */
+export function groupReady(pieces: { status: string }[]): boolean {
+  const live = pieces.filter((piece) => piece.status === 'active' || piece.status === 'finished');
+  return live.length > 0 && live.every((piece) => piece.status === 'finished');
+}
+
 export interface GroupProgress {
   pieces: { active: number; finished: number; scrapped: number };
   steps: { key: string; name: string; count: number; in_rework: number }[];

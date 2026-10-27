@@ -7,6 +7,7 @@ import type { TenantAuth } from '../identity/auth-context';
 import { keySchema } from '../pricing/decimals';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
+import { groupReady } from './progress';
 import { MAX_TEXT, MOVE_KINDS, checkMove, judge } from './qc-gate';
 import type { GateStep, MoveProblem } from './qc-gate';
 import type { MoveResponse, WorkOrderStatus } from './work-order-response';
@@ -219,6 +220,8 @@ export class MovesService {
         throw new BadRequestException({ message: 'Some pieces cannot go there', errors: refusals });
       }
 
+      await this.holdForParts(tx, pieces, landings as Landing[], pathOf, label);
+
       // A move counts for the step it is made at; reopening a finished piece, for the step it reopens at.
       const credited = pieces.map((piece, index) =>
         creditFor(piece.groupId, piece.currentStepId ?? (landings[index] as Landing).stepId),
@@ -266,6 +269,47 @@ export class MovesService {
       const movedById = new Map(moved.map((row) => [row.id, row]));
       return { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) };
     });
+  }
+
+  /**
+   * An assembly's pieces stay at the first step until every part is ready (Orders 2 plan, Task 4): a move that
+   * would take one off it is refused. The parts' groups are read under FOR SHARE, after the pieces' own groups
+   * (lock order), so a part's pieces can't change between this check and the move.
+   */
+  private async holdForParts<P extends { groupId: string }>(
+    tx: Prisma.TransactionClient,
+    pieces: P[],
+    landings: Landing[],
+    pathOf: (piece: P) => string[],
+    label: (piece: P) => string,
+  ): Promise<void> {
+    const leaving = pieces.filter((piece, index) => landings[index].stepId !== pathOf(piece)[0]);
+    if (leaving.length === 0) {
+      return;
+    }
+    const parentIds = [...new Set(leaving.map((piece) => piece.groupId))].sort();
+    const children = await tx.workOrderGroup.findMany({ where: { parentGroupId: { in: parentIds } }, select: { id: true, parentGroupId: true } });
+    if (children.length === 0) {
+      return;
+    }
+    const childIds = children.map((child) => child.id).sort();
+    await tx.$queryRaw`
+      SELECT id FROM work_order_group WHERE id IN (${Prisma.join(childIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR SHARE`;
+    const parts = await tx.workOrder.findMany({ where: { groupId: { in: childIds } }, select: { groupId: true, status: true } });
+    const waiting = new Set(
+      children
+        .filter((child) => !groupReady(parts.filter((part) => part.groupId === child.id)))
+        .map((child) => child.parentGroupId!),
+    );
+    const held: MoveProblem[] = [];
+    pieces.forEach((piece, index) => {
+      if (waiting.has(piece.groupId) && landings[index].stepId !== pathOf(piece)[0]) {
+        held.push({ path: `work_order_ids.${index}`, message: `${label(piece)} waits for its parts` });
+      }
+    });
+    if (held.length > 0) {
+      throw new ConflictException({ message: 'The parts are not ready yet', errors: held });
+    }
   }
 
   /**

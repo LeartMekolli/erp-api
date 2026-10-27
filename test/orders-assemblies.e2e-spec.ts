@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { customerOrderResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
@@ -288,6 +289,61 @@ describe('orders: assemblies', () => {
     await tenant.staff.post(`/partners/jobs/${plain.group_id}/offer`, { partner_id: tenant.castco.id }).expect(201);
     const view = await staffView(tenant, placed.id);
     expect(view.lines[0].parts.map((part) => part.partner?.id)).toEqual([tenant.metalworks.id, tenant.castco.id]);
+  });
+
+  /** Parts of a set are made elsewhere in the workflow; the tests only need them in a state, so they are set directly. */
+  const finish = (tenant: Tenant, groupId: string) =>
+    prisma.inTenant(tenant.id, (tx) => tx.workOrder.updateMany({ where: { groupId, status: 'active' }, data: { status: 'finished', currentStepId: null } }));
+  const refused = (body: unknown) => body as { detail: string; errors: { path: string; message: string }[] };
+
+  it('holds the set at its first step until every part is ready', async () => {
+    const tenant = await freshTenant();
+    const placed = (await order(tenant, [(await setQuote(tenant)).id]).expect(201)).body as Order;
+    const [line] = placed.lines;
+    const [piece, ...others] = (await group(tenant, line.group_id)).workOrders;
+    const ids = [piece.id, others[0].id];
+    const crack = tenant.cast.workflow.defects.crack;
+
+    // With the parts at their first steps: a pass, a scrap and a correction to a later step are all held.
+    const pass = await tenant.staff.post('/workflow/moves', { work_order_ids: ids, at_step: 'assembly', kind: 'pass' }).expect(409);
+    expect(refused(pass.body)).toMatchObject({ detail: 'The parts are not ready yet', errors: [{ path: 'work_order_ids.0' }, { path: 'work_order_ids.1' }] });
+    await tenant.staff.post('/workflow/moves', { work_order_ids: [piece.id], at_step: 'assembly', kind: 'fail', defect_id: crack }).expect(409);
+    await tenant.staff.post('/workflow/moves', { work_order_ids: [piece.id], kind: 'correction', to_step: 'packing', comment: 'Skip ahead' }).expect(409);
+
+    // A piece that stays at the first step isn't held: one found at packing goes back to assembly.
+    const { workflowVersionId } = await group(tenant, line.group_id);
+    const packing = (await prisma.inTenant(tenant.id, (tx) => tx.workflowStep.findFirstOrThrow({ where: { key: 'packing', versionId: workflowVersionId } }))).id;
+    await prisma.inTenant(tenant.id, (tx) => tx.workOrder.update({ where: { id: piece.id }, data: { currentStepId: packing } }));
+    await tenant.staff.post('/workflow/moves', { work_order_ids: [piece.id], kind: 'correction', to_step: 'assembly', comment: 'Back to assembly' }).expect(200);
+
+    // The pendant ready, the bail not: still held.
+    await finish(tenant, line.parts[0].group_id);
+    await tenant.staff.post('/workflow/moves', { work_order_ids: ids, at_step: 'assembly', kind: 'pass' }).expect(409);
+    expect((await group(tenant, line.group_id)).workOrders.every((row) => row.currentStep?.key === 'assembly')).toBe(true);
+  });
+
+  it('releases the hold once every part is ready, a remade piece included', async () => {
+    const tenant = await freshTenant();
+    const placed = (await order(tenant, [(await setQuote(tenant)).id]).expect(201)).body as Order;
+    const [line] = placed.lines;
+    const setPieces = (await group(tenant, line.group_id)).workOrders.map((piece) => piece.id);
+    await finish(tenant, line.parts[0].group_id);
+
+    // One bail piece is scrapped and remade, the rest finished: the remade piece keeps the hold.
+    const [scrapped] = (await group(tenant, line.parts[1].group_id)).workOrders;
+    await prisma.inTenant(tenant.id, async (tx) => {
+      await tx.workOrder.update({ where: { id: scrapped.id }, data: { status: 'scrapped', currentStepId: null } });
+      await tx.workOrder.create({
+        data: { id: newId(), groupId: scrapped.groupId, number: scrapped.number, replacesId: scrapped.id, currentStepId: scrapped.currentStepId },
+      });
+      await tx.workOrder.updateMany({ where: { groupId: scrapped.groupId, status: 'active', replacesId: null }, data: { status: 'finished', currentStepId: null } });
+    });
+    await tenant.staff.post('/workflow/moves', { work_order_ids: setPieces, at_step: 'assembly', kind: 'pass' }).expect(409);
+
+    await finish(tenant, line.parts[1].group_id);
+    await tenant.staff.post('/workflow/moves', { work_order_ids: setPieces, at_step: 'assembly', kind: 'pass' }).expect(200);
+    await tenant.staff.post('/workflow/moves', { work_order_ids: setPieces, at_step: 'packing', kind: 'pass' }).expect(200);
+    expect((await staffView(tenant, placed.id)).state).toBe('ready');
   });
 
   it('prices a lapsed set again whole, and orders it at the price confirmed', async () => {

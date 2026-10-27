@@ -109,7 +109,8 @@ export class WorkOrdersController {
       `required answer passing plus the step's pass photos and comment; a fail needs a defect the step records and ` +
       `its fail evidence, and follows the defect's outcome unless \`outcome\` or \`rework_to\` overrides it with ` +
       `\`override_reason\`. A correction puts the pieces at \`to_step\` of their path, reopening finished ones, and ` +
-      `needs a comment. Gate problems are a 400 listing each one. At most ${MAX_PIECES_PER_MOVE} pieces and ` +
+      `needs a comment. Pieces of an assembly can't leave its first step until every part is ready: that move is a ` +
+      `409. Gate problems are a 400 listing each one. At most ${MAX_PIECES_PER_MOVE} pieces and ` +
       `${MAX_PHOTOS_PER_MOVE} photos per move.`,
     body: moveSchema,
     response: moveResponseSchema,
