@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { raw } from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule } from '@nestjs/swagger';
 import type { Logger } from 'pino';
@@ -41,6 +42,10 @@ export function configureApp(app: INestApplication): void {
     credentials: false,
     maxAge: 600,
   });
+
+  // Webhook signatures cover the exact bytes sent, so these routes get the raw body (a Buffer),
+  // before Nest's JSON parser, which skips a request that is already parsed.
+  app.use('/webhooks/payments', raw({ type: '*/*', limit: '1mb' }));
 
   // Order matters: the request logger reads the context the first one creates.
   app.use(requestIdMiddleware);

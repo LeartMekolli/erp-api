@@ -185,6 +185,7 @@ describe('users and roles administration', () => {
         'order.read',
         'order.write',
         'partner.read',
+        'payment.read',
         'quote.create',
         'role.read',
         'settings.read',

@@ -11,6 +11,7 @@ describe('permissions', () => {
   });
 
   it('keeps the member to reading, plus requesting quotes, placing orders and moving pieces', () => {
+    // Reading includes payment.read, never the payment actions.
     expect([...SYSTEM_ROLES.member].sort()).toEqual([
       'catalog.read',
       'customer.read',
@@ -18,6 +19,7 @@ describe('permissions', () => {
       'order.read',
       'order.write',
       'partner.read',
+      'payment.read',
       'quote.create',
       'role.read',
       'settings.read',

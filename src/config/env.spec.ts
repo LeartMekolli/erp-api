@@ -107,6 +107,15 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
   });
 
+  it('defaults PAYMENT_PROVIDER to fake and reads stripe', () => {
+    expect(loadEnv({ ...valid }).PAYMENT_PROVIDER).toBe('fake');
+    expect(loadEnv({ ...valid, PAYMENT_PROVIDER: 'stripe' }).PAYMENT_PROVIDER).toBe('stripe');
+  });
+
+  it('rejects PAYMENT_PROVIDER=other', () => {
+    expect(() => loadEnv({ ...valid, PAYMENT_PROVIDER: 'other' })).toThrow(/PAYMENT_PROVIDER/);
+  });
+
   it('defaults API_DOCS to false and reads true', () => {
     expect(loadEnv({ ...valid }).API_DOCS).toBe(false);
     expect(loadEnv({ ...valid, API_DOCS: 'true' }).API_DOCS).toBe(true);

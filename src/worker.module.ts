@@ -10,6 +10,7 @@ import { FilesModule } from './modules/files/files.module';
 import { IdempotencyModule } from './modules/idempotency/idempotency.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { PartnersModule } from './modules/partners/partners.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
 
@@ -32,6 +33,7 @@ import { StorageModule } from './storage/storage.module';
     FilesModule,
     CatalogModule,
     PartnersModule,
+    PaymentsModule,
   ],
 })
 export class WorkerModule {}

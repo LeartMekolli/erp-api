@@ -41,6 +41,15 @@ export const TENANT_PERMISSIONS = [
   'order.read',
   'order.write',
   'order.ship',
+  // Payments (Payments spec): reading the ledger and payment state, then the sensitive actions.
+  'payment.read',
+  // Sets the workspace's Stripe keys.
+  'payment.setup',
+  // Payment terms, release past the credit limit, paid by hand.
+  'payment.write',
+  'payment.refund',
+  // Pays partners what they are owed.
+  'payment.payout',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */
@@ -77,6 +86,7 @@ export const SYSTEM_ROLES = {
     'partner.read',
     'order.read',
     'order.write',
+    'payment.read',
   ],
 } as const satisfies Record<string, readonly TenantPermission[]>;
 

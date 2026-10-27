@@ -23,7 +23,8 @@ export type AuditAction =
   | 'partner.changed'
   | 'partner.member_changed'
   | 'partner.job'
-  | 'order.changed';
+  | 'order.changed'
+  | 'payment.account.changed';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };

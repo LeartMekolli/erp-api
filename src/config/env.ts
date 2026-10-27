@@ -101,6 +101,8 @@ const envSchema = z
     METAL_PRICE_MAX_CURRENCIES: z.coerce.number().int().min(1).max(10).default(3),
     // A feed price older than this is flagged stale and staff are told (spec B6).
     METAL_PRICE_STALE_HOURS: z.coerce.number().int().min(1).max(720).default(48),
+    // Where money moves (Payments spec). `fake` is in memory, for local work and tests; no test calls Stripe.
+    PAYMENT_PROVIDER: z.enum(['fake', 'stripe']).default('fake'),
   })
   .superRefine((env, ctx) => {
     // One leaked secret must not compromise both cursors and access tokens.

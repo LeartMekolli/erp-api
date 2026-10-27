@@ -85,6 +85,7 @@ model Tenant {
   orderComments   OrderComment[]
   orderLineParts  OrderLinePart[]
   orderCounter    OrderCounter?
+  paymentAccount  PaymentAccount?
 
   @@map("tenant")
 }
@@ -1826,4 +1827,22 @@ model OrderCounter {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("order_counter")
+}
+
+// ---------------------------------------------------------------------------
+// Payments (Payments spec). A workspace's own payment provider account: one row per workspace.
+// The keys are sealed with deriveKey(APP_SECRET, 'payment-keys'); they never leave in a response,
+// a log or an audit entry.
+// ---------------------------------------------------------------------------
+model PaymentAccount {
+  tenantId            String   @id @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  secretKey           Bytes    @map("secret_key")
+  webhookSecret       Bytes    @map("webhook_secret")
+  connectWebhookSecret Bytes   @map("connect_webhook_secret")
+  publishableKey      String   @map("publishable_key")
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("payment_account")
 }

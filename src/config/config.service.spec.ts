@@ -71,6 +71,7 @@ describe('ConfigService', () => {
       METAL_PRICE_PROVIDER: 'fake',
       METAL_PRICE_MAX_CURRENCIES: 3,
       METAL_PRICE_STALE_HOURS: 48,
+      PAYMENT_PROVIDER: 'fake',
       SENTRY_DSN: undefined,
       SENTRY_ENVIRONMENT: undefined,
     });
