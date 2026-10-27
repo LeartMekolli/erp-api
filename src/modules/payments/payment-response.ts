@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import type { Prisma } from '../../generated/prisma/client';
+import { orderPaymentResponseSchema } from '../orders/order-response';
 import { ACCOUNTS, JOURNAL_KINDS } from './ledger';
 import { PAYMENT_TERMS } from './payment-state';
 
@@ -106,3 +107,26 @@ export const ledgerJournalResponseSchema = z.strictObject({
   ),
 });
 export type LedgerJournalResponse = z.infer<typeof ledgerJournalResponseSchema>;
+
+/** One checkout of a pay-first order, as staff see it. */
+export const checkoutResponseSchema = z.strictObject({
+  id: z.uuid(),
+  status: z.enum(['open', 'complete', 'expired']),
+  amount: z.string(),
+  currency: z.string().length(3),
+  /** Null until the provider has answered, or when it never did. */
+  url: z.string().nullable(),
+  expires_at: z.iso.datetime(),
+  created_at: z.iso.datetime(),
+});
+export type CheckoutResponse = z.infer<typeof checkoutResponseSchema>;
+
+/** Everything about how an order is paid, for staff: its state, its checkouts and its journals. */
+export const orderPaymentsResponseSchema = z.strictObject({
+  payment: orderPaymentResponseSchema,
+  /** Oldest first. */
+  checkouts: z.array(checkoutResponseSchema),
+  /** Newest first, each with its lines. */
+  journals: z.array(ledgerJournalResponseSchema),
+});
+export type OrderPaymentsResponse = z.infer<typeof orderPaymentsResponseSchema>;

@@ -30,7 +30,8 @@ describe('FakePaymentProvider', () => {
 
   it('reports a completed checkout as paid, with a fee of 2.9% + 0.30', async () => {
     const provider = new FakePaymentProvider();
-    const { id } = await provider.createCheckout(keys, checkoutInput('k1'));
+    // Every instance shares one store, so each test uses keys of its own.
+    const { id } = await provider.createCheckout(keys, checkoutInput('k3'));
 
     expect(await provider.getCheckout(keys, id)).toMatchObject({ status: 'open', paid: false });
 
@@ -46,7 +47,7 @@ describe('FakePaymentProvider', () => {
 
   it('expires a checkout, and expiring a finished one is not an error', async () => {
     const provider = new FakePaymentProvider();
-    const { id } = await provider.createCheckout(keys, checkoutInput('k1'));
+    const { id } = await provider.createCheckout(keys, checkoutInput('k4'));
 
     await provider.expireCheckout(keys, id);
     await provider.expireCheckout(keys, id);
@@ -94,7 +95,7 @@ describe('FakePaymentProvider', () => {
 
     provider.failNextTransfer('balance_insufficient');
 
-    await expect(provider.transfer(keys, input('p1'))).rejects.toThrow(ProviderRefusedError);
-    await expect(provider.transfer(keys, input('p1'))).resolves.toMatchObject({ id: expect.stringMatching(/^fake_transfer_/) });
+    await expect(provider.transfer(keys, input('t1'))).rejects.toThrow(ProviderRefusedError);
+    await expect(provider.transfer(keys, input('t1'))).resolves.toMatchObject({ id: expect.stringMatching(/^fake_transfer_/) });
   });
 });

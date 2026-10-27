@@ -21,20 +21,33 @@ const fee = (amount: Prisma.Decimal): Prisma.Decimal =>
   amount.mul('0.029').add('0.30').toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
 /**
+ * The fake provider's account, one per process, as Stripe's is one for every caller: the API and an
+ * in-process worker each build their own provider, and both must see the same checkouts.
+ */
+const store = {
+  counter: 0,
+  transferFailure: null as string | null,
+  byKey: new Map<string, unknown>(),
+  checkouts: new Map<string, FakeCheckout>(),
+  invoices: new Map<string, FakeInvoice>(),
+  accounts: new Map<string, PartnerAccountState>(),
+  refunds: new Map<string, 'pending' | 'succeeded' | 'failed'>(),
+};
+
+/**
  * In memory and deterministic: for tests and local work, so nothing calls Stripe. Ids are
  * `fake_<kind>_<n>`, the fee is 2.9% + 0.30, and the same idempotency key gives the same
  * object. The `sign` method and the test controls stand in for what Stripe does on its own.
+ * Every instance shares one store, so ids never repeat within a process.
  */
 export class FakePaymentProvider implements PaymentProvider {
   readonly name = 'fake';
 
-  private counter = 0;
-  private readonly byKey = new Map<string, unknown>();
-  private readonly checkouts = new Map<string, FakeCheckout>();
-  private readonly invoices = new Map<string, FakeInvoice>();
-  private readonly accounts = new Map<string, PartnerAccountState>();
-  private readonly refunds = new Map<string, 'pending' | 'succeeded' | 'failed'>();
-  private transferFailure: string | null = null;
+  private readonly byKey = store.byKey;
+  private readonly checkouts = store.checkouts;
+  private readonly invoices = store.invoices;
+  private readonly accounts = store.accounts;
+  private readonly refunds = store.refunds;
 
   // --- test controls -------------------------------------------------------------------------
 
@@ -56,7 +69,7 @@ export class FakePaymentProvider implements PaymentProvider {
   }
 
   failNextTransfer(message: string): void {
-    this.transferFailure = message;
+    store.transferFailure = message;
   }
 
   setPartnerAccountState(id: string, state: PartnerAccountState): void {
@@ -213,9 +226,9 @@ export class FakePaymentProvider implements PaymentProvider {
     _keys: ProviderKeys,
     input: Parameters<PaymentProvider['transfer']>[1],
   ): Promise<{ id: string }> {
-    if (this.transferFailure !== null) {
-      const message = this.transferFailure;
-      this.transferFailure = null;
+    if (store.transferFailure !== null) {
+      const message = store.transferFailure;
+      store.transferFailure = null;
       return Promise.reject(new ProviderRefusedError(message));
     }
     return Promise.resolve(this.once(input.idempotencyKey, () => ({ id: this.nextId('transfer') })));
@@ -224,8 +237,8 @@ export class FakePaymentProvider implements PaymentProvider {
   // --- helpers -------------------------------------------------------------------------------
 
   private nextId(kind: string): string {
-    this.counter += 1;
-    return `fake_${kind}_${this.counter}`;
+    store.counter += 1;
+    return `fake_${kind}_${store.counter}`;
   }
 
   private once<T>(key: string, make: () => T): T {

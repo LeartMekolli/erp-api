@@ -150,6 +150,56 @@ export class JobsService implements OnModuleInit {
   }
 
   /**
+   * A paid order has started (Payments spec): each job its workshop held while it waited is due by the
+   * new promised date, or, when the workshop has been suspended since, withdrawn, which leaves the line
+   * in-house. In the caller's transaction, after the order's lock. Answers the jobs to tell their
+   * workshops of, and the groups that lost theirs, with the workshop's name.
+   */
+  async startHeldJobs(
+    tx: Tx,
+    tenantId: string,
+    groupIds: string[],
+    actor: AuditInput['actor'],
+  ): Promise<{ handedOver: string[]; lost: { groupId: string; partnerName: string }[] }> {
+    const held = await tx.jobAssignment.findMany({
+      where: { groupId: { in: groupIds }, status: 'accepted' },
+      orderBy: { groupId: 'asc' },
+      include: { partner: { select: { id: true, name: true, status: true } } },
+    });
+    const settings = await this.settings.list(tx);
+    const today = await workspaceToday(tx, tenantId);
+    const handedOver: string[] = [];
+    const lost: { groupId: string; partnerName: string }[] = [];
+    for (const job of held) {
+      await lockGroup(tx, job.groupId);
+      if (job.partner.status === 'suspended') {
+        const row = await tx.jobAssignment.update({ where: { id: job.id }, data: { status: 'withdrawn' }, include });
+        await this.audit.record(tx, { actor, action: 'partner.job', subject: { type: 'job_assignment', id: row.id }, after: toAssignment(row) });
+        lost.push({ groupId: job.groupId, partnerName: job.partner.name });
+        continue;
+      }
+      const due = await defaultDueOn(tx, job.groupId, settings, today);
+      const row = await tx.jobAssignment.update({ where: { id: job.id }, data: { dueOn: due ? asDate(due) : null }, include });
+      await this.audit.record(tx, { actor, action: 'partner.job', subject: { type: 'job_assignment', id: row.id }, after: toAssignment(row) });
+      handedOver.push(row.id);
+    }
+    return { handedOver, lost };
+  }
+
+  /** Tells each workshop of a job it has had since its order was placed, now the order has started; after commit. */
+  async notifyDirect(tenantId: string, assignmentIds: string[]): Promise<void> {
+    for (const id of assignmentIds) {
+      const label = await this.prisma.inTenant(tenantId, async (tx) =>
+        jobLabel(tx, (await tx.jobAssignment.findUniqueOrThrow({ where: { id }, select: { groupId: true } })).groupId),
+      );
+      await this.notifications.raise(tenantId, 'partner.job.direct', { type: 'job_assignment', id }, {
+        product_name: label.productName,
+        quantity: String(label.quantity),
+      });
+    }
+  }
+
+  /**
    * Offers the job to a partner that can take it, open until the workspace's deadline. Refused while
    * the job is offered or accepted already.
    */

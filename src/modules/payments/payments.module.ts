@@ -3,8 +3,10 @@ import { ConfigService } from '../../config/config.service';
 import { AuditModule } from '../audit/audit.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OrdersModule } from '../orders/orders.module';
+import { PartnersModule } from '../partners/partners.module';
 import { SettingsModule } from '../settings/settings.module';
 import { CheckoutController } from './checkout.controller';
+import { CheckoutEvents } from './checkout-events';
 import { CheckoutService } from './checkout.service';
 import { FakePaymentProvider } from './fake-payment-provider';
 import { LedgerController } from './ledger.controller';
@@ -26,7 +28,7 @@ import { WebhooksController } from './webhooks.controller';
  * never depends on Payments: Payments registers its hooks on OrdersService.
  */
 @Module({
-  imports: [AuditModule, NotificationsModule, OrdersModule, SettingsModule],
+  imports: [AuditModule, NotificationsModule, OrdersModule, PartnersModule, SettingsModule],
   controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController, CheckoutController],
   providers: [
     PaymentAccountService,
@@ -35,6 +37,7 @@ import { WebhooksController } from './webhooks.controller';
     PaymentEventsService,
     PaymentEventHandler,
     CheckoutService,
+    CheckoutEvents,
     UnpaidOrdersHandler,
     {
       provide: PAYMENT_PROVIDER,

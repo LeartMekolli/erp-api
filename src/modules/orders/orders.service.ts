@@ -455,6 +455,41 @@ export class OrdersService {
     return true;
   }
 
+  /**
+   * Starts a waiting order once it is paid (Payments spec), in the caller's transaction: its
+   * production starts at `at`, and its promised date is counted from `at` as when it was placed.
+   * Answers the groups of its live lines and parts, whose held jobs the caller hands over; null when
+   * the order has started already, or is cancelled.
+   */
+  async startProduction(
+    tx: Tx,
+    orderId: string,
+    at: Date,
+    actor: AuditInput['actor'],
+  ): Promise<{ number: number; lines: { position: number; groupIds: string[] }[] } | null> {
+    const order = await this.lockOrder(tx, orderId);
+    if (order.productionStartedAt || order.cancelledAt) return null;
+    const before = (await this.views(tx, [order]))[0];
+    const promisedOn = promisedDate(at, await this.workingDays(tx, order.deliverySpeedKey), await this.calendar(tx), await this.timezone(tx, order.tenantId));
+    const updated = await tx.order.update({
+      where: { id: orderId },
+      data: { productionStartedAt: at, promisedOn: new Date(`${promisedOn}T00:00:00Z`) },
+    });
+    await this.recordChange(tx, { userId: actor.id ?? '' }, before, updated, actor);
+    const lines = await tx.orderLine.findMany({
+      where: { orderId, cancelledAt: null },
+      orderBy: { position: 'asc' },
+      select: { position: true, groupId: true, parts: { select: { groupId: true } } },
+    });
+    return {
+      number: order.number,
+      lines: lines.map((line) => ({
+        position: line.position,
+        groupIds: [line.groupId, ...line.parts.map((part) => part.groupId)].flatMap((id) => (id ? [id] : [])),
+      })),
+    };
+  }
+
   /** Lets Payments know a waiting order changed, after commit; a failure is logged. */
   private async afterPaymentChange(tenantId: string, orderId: string): Promise<void> {
     await this.afterCommit(orderId, async () => {

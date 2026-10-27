@@ -380,6 +380,40 @@ export const EVENTS = {
       },
     },
   },
+  'payment.received': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      amount: { sample: '119.00 EUR' },
+    },
+    defaults: {
+      en: {
+        subject: 'Payment received for order {{ number }}',
+        body: 'Thank you: we have received {{ amount }} for order {{ number }}, and it is now in production.',
+      },
+    },
+  },
+  // The workshop the customer picked was suspended while the order waited for payment.
+  'order.partner_lost': {
+    audience: { kind: 'permission', permission: 'partner.assign' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      line: { sample: '1' },
+      partner_name: { sample: 'MetalWorks Ltd' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }}: line {{ line }} needs a partner',
+        body:
+          'Order {{ number }} is paid and in production, but {{ partner_name }} is suspended, so line {{ line }} ' +
+          'is no longer with it. Offer it to another partner, or make it in-house.',
+      },
+    },
+  },
   'order.unpaid_cancelled': {
     audience: { kind: 'customer' },
     channels: ['email', 'feed'],

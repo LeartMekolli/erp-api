@@ -157,6 +157,12 @@ export class LedgerService {
     });
   }
 
+  /** Every journal of one order, newest first, each with its lines. */
+  async forOrder(tx: Prisma.TransactionClient, orderId: string): Promise<LedgerJournalResponse[]> {
+    const rows = await tx.ledgerJournal.findMany({ where: { orderId }, include: withLines, orderBy: { id: 'desc' } });
+    return rows.map(toResponse);
+  }
+
   /** Serialises two writers of the same provider fact or the same reversal within the workspace. */
   private async lock(tx: Prisma.TransactionClient, key: string): Promise<void> {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(current_setting('app.current_tenant_id') || ':' || ${key}, 0))`;

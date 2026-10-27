@@ -1,4 +1,4 @@
-import { Controller, HttpCode, Param, Post } from '@nestjs/common';
+import { Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -6,8 +6,8 @@ import { CurrentCustomer, CurrentTenant } from '../identity/auth-context';
 import type { CustomerAuth } from '../identity/auth-context';
 import { CustomerAccess, RequirePermission } from '../identity/route-markers';
 import { CheckoutService } from './checkout.service';
-import { payLinkResponseSchema } from './payment-response';
-import type { PayLinkResponse } from './payment-response';
+import { orderPaymentsResponseSchema, payLinkResponseSchema } from './payment-response';
+import type { OrderPaymentsResponse, PayLinkResponse } from './payment-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -45,5 +45,16 @@ export class CheckoutController {
   @HttpCode(200)
   async payLink(@CurrentTenant() tenantId: string, @Param('id', idParam) id: string): Promise<PayLinkResponse> {
     return { url: (await this.checkout.open(tenantId, id)).url };
+  }
+
+  @ApiDoc({
+    summary: 'How an order is paid: its payment state, its checkouts and the ledger journals behind it.',
+    response: orderPaymentsResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('payment.read')
+  @Get('orders/:id/payments')
+  payments(@CurrentTenant() tenantId: string, @Param('id', idParam) id: string): Promise<OrderPaymentsResponse> {
+    return this.checkout.overview(tenantId, id);
   }
 }

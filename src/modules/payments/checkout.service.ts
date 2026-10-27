@@ -7,9 +7,11 @@ import { customerOrderLink } from '../notifications/web-links';
 import { OrdersService } from '../orders/orders.service';
 import { parseSetting } from '../settings/setting-keys';
 import { SettingsService } from '../settings/settings.service';
+import { LedgerService } from './ledger.service';
 import { PaymentAccountService } from './payment-account.service';
 import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
+import type { OrderPaymentsResponse } from './payment-response';
 import { billableTotals, paidAndRefunded } from './payment-state';
 
 const HOUR_MS = 3_600_000;
@@ -33,6 +35,7 @@ export class CheckoutService implements OnModuleInit {
     private readonly accounts: PaymentAccountService,
     private readonly notifications: NotificationsService,
     private readonly orders: OrdersService,
+    private readonly ledger: LedgerService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
 
@@ -128,6 +131,27 @@ export class CheckoutService implements OnModuleInit {
       total: `${row.amount.toFixed(2)} ${row.currency}`,
       payBy: order.payBy!.toISOString(),
     };
+  }
+
+  /** How the order is paid, its checkouts and its journals, for staff. */
+  async overview(tenantId: string, orderId: string): Promise<OrderPaymentsResponse> {
+    const { payment } = await this.orders.get(tenantId, orderId);
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const checkouts = await tx.orderPayment.findMany({ where: { orderId }, orderBy: { id: 'asc' } });
+      return {
+        payment,
+        checkouts: checkouts.map((row) => ({
+          id: row.id,
+          status: row.status as OrderPaymentsResponse['checkouts'][number]['status'],
+          amount: row.amount.toFixed(2),
+          currency: row.currency,
+          url: row.url,
+          expires_at: row.expiresAt.toISOString(),
+          created_at: row.createdAt.toISOString(),
+        })),
+        journals: await this.ledger.forOrder(tx, orderId),
+      };
+    });
   }
 
   /** The order's open checkout, if any, can no longer be paid: after a line or the order is cancelled. */
