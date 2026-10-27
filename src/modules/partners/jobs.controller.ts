@@ -61,7 +61,8 @@ export class JobsController {
   @ApiDoc({
     summary: "Offer a job to a partner who can take it, until the workspace's deadline.",
     description:
-      "Refused with 409 while the job is offered or accepted already, or when the partner can't take it, with the reasons in `errors`.",
+      "Refused with 409 while the job is offered or accepted already, or when the partner can't take it, with the reasons in `errors`. " +
+      "Unless the workspace's `partners.routing.splitOrderLines` is on, an order line goes only to the partner holding the order's other lines (409).",
     body: offerSchema,
     response: jobAssignmentResponseSchema,
     errors: [400, 404, 409],
@@ -93,7 +94,8 @@ export class JobsController {
     description:
       "For when the partner can't finish it; staff arrange it with the new partner first, who must be able to take the job. " +
       'The partner it is taken from is owed `previous_owed`, else nothing; the new partner is told. A job whose ' +
-      'pieces are all past the payout step is a 409: set what each partner is owed instead.',
+      'pieces are all past the payout step is a 409: set what each partner is owed instead. Unless the workspace lets ' +
+      "one order's lines go to different partners, an order line moves only to the partner holding its other lines (409).",
     body: reassignSchema,
     response: jobAssignmentResponseSchema,
     errors: [400, 404, 409],

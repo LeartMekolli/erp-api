@@ -10,6 +10,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuditInput } from '../audit/audit.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { ONE_PARTNER, lockOrderOfGroup, otherLinePartners } from '../orders/order-lines';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
 import { WorkOrdersService } from '../workflow/work-orders.service';
@@ -51,7 +52,8 @@ const DEFAULT_OFFER_HOURS = 24;
 const HOUR_MS = 3_600_000;
 
 type Tx = Prisma.TransactionClient;
-type Row = JobAssignment & { partner: { id: string; name: string } };
+type Routing = { offerHours: number; splitOrderLines: boolean };
+type Row =JobAssignment & { partner: { id: string; name: string } };
 
 export function toAssignment(row: Row): JobAssignmentResponse {
   return {
@@ -138,14 +140,16 @@ export class JobsService implements OnModuleInit {
    */
   async offer(auth: TenantAuth, groupId: string, partnerId: string): Promise<JobAssignmentResponse> {
     const { row, job, expired } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await lockOrderOfGroup(tx, groupId);
       await lockGroup(tx, groupId);
       // An offer past its deadline lets go of the job now, not when the minute run comes by.
       const expired = await this.expireLapsed(tx, { type: 'user', id: auth.userId }, groupId);
       await this.refuseOpen(tx, groupId);
+      const routing = await this.routing(tx);
+      await this.keepWithOrder(tx, routing, groupId, partnerId);
       // The partner's room and open jobs are judged once at a time (Review Focus 1 of the fixes).
       await lockPartner(tx, partnerId);
       const { job, cost } = await this.able(tx, groupId, partnerId);
-      const routing = (await this.settings.list(tx))['partners.routing'] as { offerHours: number } | undefined;
       const now = new Date();
       const created = await tx.jobAssignment.create({
         data: {
@@ -192,6 +196,7 @@ export class JobsService implements OnModuleInit {
    */
   async reassign(auth: TenantAuth, groupId: string, input: z.infer<typeof reassignSchema>): Promise<JobAssignmentResponse> {
     const { row, job } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await lockOrderOfGroup(tx, groupId);
       await lockGroup(tx, groupId);
       const current = await tx.jobAssignment.findFirst({ where: { groupId, status: 'accepted' } });
       if (!current) {
@@ -204,6 +209,7 @@ export class JobsService implements OnModuleInit {
       if (await jobPastPayout(tx, groupId)) {
         throw new ConflictException('Every piece is past the payout step: set what each partner is owed instead of moving the job');
       }
+      await this.keepWithOrder(tx, await this.routing(tx), groupId, input.partner_id);
       await lockPartner(tx, input.partner_id);
       const { job, cost } = await this.able(tx, groupId, input.partner_id);
       const replaced = await tx.jobAssignment.update({
@@ -379,6 +385,22 @@ export class JobsService implements OnModuleInit {
       throw refused(partner.name, verdict);
     }
     return { job: await jobLabel(tx, groupId), cost: verdict.cost };
+  }
+
+  private async routing(tx: Tx): Promise<Routing | undefined> {
+    return (await this.settings.list(tx))['partners.routing'] as Routing | undefined;
+  }
+
+  /**
+   * Unless the workspace lets one order's lines go to different partners, the job goes only to the
+   * partner holding the order's other lines (Orders spec, goal 3). Under the order lock the caller holds.
+   */
+  private async keepWithOrder(tx: Tx, routing: Routing | undefined, groupId: string, partnerId: string): Promise<void> {
+    // A workspace that never set it may split, as before the setting was enforced.
+    if (routing?.splitOrderLines !== false) return;
+    if ((await otherLinePartners(tx, groupId)).some((other) => other !== partnerId)) {
+      throw new ConflictException(ONE_PARTNER);
+    }
   }
 
   private async refuseOpen(tx: Tx, groupId: string): Promise<void> {

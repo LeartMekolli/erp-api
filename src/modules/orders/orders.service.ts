@@ -24,6 +24,7 @@ import type {
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
+import { ONE_PARTNER } from './order-lines';
 import { lineState, orderState } from './order-state';
 import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
@@ -104,6 +105,7 @@ export class OrdersService {
           throw new NotFoundException('Customer not found');
         }
         const quotes = await this.orderable(tx, customerId, body.lines.map((line) => line.quote_id));
+        await this.onePartner(tx, quotes);
 
         const speed = commonSpeed(quotes.map((quote) => (quote.inputs as { delivery_speed: string | null }).delivery_speed));
         if (!speed.ok) {
@@ -490,6 +492,23 @@ export class OrdersService {
       quotes.push(quote);
     }
     return quotes;
+  }
+
+  /**
+   * Unless the workspace lets one order's lines go to different partners, every line at a workshop
+   * the customer picked names the same one; lines at the workspace's own prices don't count (Orders
+   * spec, goal 3). A workspace that never set it may split.
+   */
+  private async onePartner(tx: Tx, quotes: Quote[]): Promise<void> {
+    const routing = (await this.settings.list(tx))['partners.routing'] as { splitOrderLines: boolean } | undefined;
+    if (routing?.splitOrderLines !== false) return;
+    const first = quotes.find((quote) => quote.partnerId !== null)?.partnerId;
+    const errors = quotes.flatMap((quote, position) =>
+      quote.partnerId !== null && quote.partnerId !== first ? [{ path: `lines.${position}`, message: ONE_PARTNER }] : [],
+    );
+    if (errors.length > 0) {
+      throw new ConflictException({ message: ONE_PARTNER, errors });
+    }
   }
 
   /** Starts a line from its quote; a refusal names the line, so the customer knows which to change. */

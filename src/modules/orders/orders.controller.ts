@@ -27,7 +27,8 @@ export class OrdersController {
       'Each line is a quote of the customer, ordered once, at its price. The totals, tax and promised date are frozen ' +
       "now. A line whose quote names a workshop the customer picked starts as that workshop's job; if the workshop can " +
       'no longer take it, the whole order is refused (409, naming the line) and nothing is created. Other lines start ' +
-      'with no partner. A quote of another customer is not found; one already ordered is a 409. A quote past its ' +
+      "with no partner. Unless the workspace's `partners.routing.splitOrderLines` is on, lines picked at different " +
+      'workshops are a 409 naming each line that differs from the first. A quote of another customer is not found; one already ordered is a 409. A quote past its ' +
       'hold is priced again: unchanged, the order uses the new quote; changed or refused, nothing is placed and the ' +
       "409 has `code: 'price_changed'` with each such line's new quote to order with.",
     body: staffPlaceOrderSchema,

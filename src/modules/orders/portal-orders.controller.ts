@@ -43,7 +43,8 @@ export class PortalOrdersController {
       'ordered is a 409. The totals, tax and promised date are frozen now. A quote past its hold is priced again: ' +
       "unchanged, the order uses the new quote; changed or refused, nothing is placed and the 409 has `code: 'price_changed'` " +
       "with each such line's new quote to order with, or why it can't be priced in plain words. A line at a workshop the " +
-      'customer picked that can no longer take it refuses the whole order (409, naming the line).',
+      'customer picked that can no longer take it refuses the whole order (409, naming the line); so do lines picked at ' +
+      'different workshops, unless the workspace allows it.',
     body: placeOrderSchema,
     response: customerOrderResponseSchema,
     errors: [400, 404, 409],
