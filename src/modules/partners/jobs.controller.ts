@@ -62,7 +62,9 @@ export class JobsController {
     summary: "Offer a job to a partner who can take it, until the workspace's deadline.",
     description:
       "Refused with 409 while the job is offered or accepted already, or when the partner can't take it, with the reasons in `errors`. " +
-      "Unless the workspace's `partners.routing.splitOrderLines` is on, an order line goes only to the partner holding the order's other lines (409).",
+      "Unless the workspace's `partners.routing.splitOrderLines` is on, an order line goes only to the partner holding the order's other lines (409). " +
+      "`due_on` is the day the job should be done by, today or later (400 before). Left out, an order line is due the order's promised date " +
+      'less `orders.scheduling` working days (a part of an assembly one more allowance), and never before today; any other job has none.',
     body: offerSchema,
     response: jobAssignmentResponseSchema,
     errors: [400, 404, 409],
@@ -74,7 +76,7 @@ export class JobsController {
     @Param('groupId', idParam) groupId: string,
     @Body(new ZodValidationPipe(offerSchema)) body: z.infer<typeof offerSchema>,
   ): Promise<JobAssignmentResponse> {
-    return this.jobs.offer(auth, groupId, body.partner_id);
+    return this.jobs.offer(auth, groupId, body.partner_id, body.due_on);
   }
 
   @ApiDoc({

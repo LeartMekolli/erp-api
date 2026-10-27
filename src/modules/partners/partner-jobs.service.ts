@@ -142,6 +142,7 @@ export class PartnerJobsService {
         status: row.status === 'offered' ? 'offered' : active > 0 ? 'accepted' : 'finished',
         offered_at: row.createdAt.toISOString(),
         expires_at: row.expiresAt?.toISOString() ?? null,
+        due_on: row.dueOn?.toISOString().slice(0, 10) ?? null,
         product: group.product ? { name: group.product.name } : null,
         options: options.get(group.id) ?? [],
         quantity: group.quantity,

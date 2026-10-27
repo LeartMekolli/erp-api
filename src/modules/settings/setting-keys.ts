@@ -38,6 +38,12 @@ export const SETTING_KEYS = {
     offerHours: z.number().int().min(1).max(720),
     splitOrderLines: z.boolean(),
   }),
+  // How far ahead of an order's promised date a partner's job is due, in working days (Orders spec, B3): a
+  // buffer for every job, and one more allowance for a part of an assembly. Unset: 2 and 1.
+  'orders.scheduling': z.object({
+    bufferDays: z.number().int().min(0).max(60),
+    assemblyAllowanceDays: z.number().int().min(0).max(60),
+  }),
   // How much each part counts towards a partner's overall score (Partners spec, goal 15).
   'partners.scoreWeights': z.object({
     quality: z.number().int().min(0).max(10),

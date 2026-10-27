@@ -1541,6 +1541,8 @@ model JobAssignment {
   // When an offer lapses; null for a job handed over without an offer.
   expiresAt          DateTime? @map("expires_at")
   respondedAt        DateTime? @map("responded_at")
+  // The day the partner should have the job done by; null for a job that isn't an order line, unless staff gave one.
+  dueOn              DateTime? @map("due_on") @db.Date
   createdByUserId    String    @map("created_by_user_id") @db.Uuid
   createdAt          DateTime  @default(now()) @map("created_at")
 

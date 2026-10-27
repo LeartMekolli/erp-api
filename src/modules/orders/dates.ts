@@ -10,6 +10,11 @@ export interface BusinessCalendar {
 const WEEKDAY: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
 const DAY_MS = 86_400_000;
 
+/** The calendar date of `at` in `timeZone`. */
+export function localDate(at: Date, timeZone: string): string {
+  return localParts(at, timeZone).date;
+}
+
 /** The calendar date, ISO weekday and hour of `at` in `timeZone`. */
 function localParts(at: Date, timeZone: string): { date: string; hour: number } {
   const parts = Object.fromEntries(
@@ -27,6 +32,28 @@ function weekday(date: string): number {
 
 function nextDay(date: string): string {
   return new Date(new Date(`${date}T00:00:00Z`).getTime() + DAY_MS).toISOString().slice(0, 10);
+}
+
+function previousDay(date: string): string {
+  return new Date(new Date(`${date}T00:00:00Z`).getTime() - DAY_MS).toISOString().slice(0, 10);
+}
+
+/** Open: a working weekday that isn't a closed date. */
+function isOpen(date: string, calendar: BusinessCalendar): boolean {
+  return calendar.workingDays.includes(weekday(date)) && !calendar.closedDates.includes(date);
+}
+
+/**
+ * The day `days` open days before `date` (Orders spec, B3), for a due date counted back from a promised
+ * one. Zero days is `date` itself, even when it is a day off.
+ */
+export function workingDaysBefore(date: string, days: number, calendar: BusinessCalendar): string {
+  let day = date;
+  for (let left = days; left > 0; left -= 1) {
+    do day = previousDay(day);
+    while (!isOpen(day, calendar));
+  }
+  return day;
 }
 
 /**

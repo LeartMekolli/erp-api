@@ -57,6 +57,15 @@ describe('setting keys', () => {
     }
   });
 
+  it('accepts order scheduling buffers of 0 to 60 working days', () => {
+    const scheduling = { bufferDays: 2, assemblyAllowanceDays: 1 };
+    expect(parseSetting('orders.scheduling', scheduling)).toEqual(scheduling);
+    expect(parseSetting('orders.scheduling', { bufferDays: 0, assemblyAllowanceDays: 60 })).toEqual({ bufferDays: 0, assemblyAllowanceDays: 60 });
+    for (const bad of [{ bufferDays: -1 }, { bufferDays: 61 }, { assemblyAllowanceDays: -1 }, { assemblyAllowanceDays: 61 }, { bufferDays: 1.5 }]) {
+      expect(() => parseSetting('orders.scheduling', { ...scheduling, ...bad })).toThrow(ZodError);
+    }
+  });
+
   it('accepts partner score weights of 0 to 10 each', () => {
     const weights = { quality: 3, scrap: 2, reliability: 2, onTime: 1, rating: 3 };
     expect(parseSetting('partners.scoreWeights', weights)).toEqual(weights);

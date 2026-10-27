@@ -4,9 +4,11 @@ import type { Prisma, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { CustomerAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { defaultDueOn, workspaceToday } from '../orders/order-lines';
 import { QuotesService } from '../pricing/quotes.service';
 import type { CustomerQuoteRequest, PartnerChoice, QuotedJob, QuoteContext } from '../pricing/quotes.service';
 import type { QuoteResultResponse } from '../pricing/quote-response';
+import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
 import { EligibilityService } from './eligibility.service';
 import { jobLabel, toAssignment } from './jobs.service';
@@ -31,6 +33,7 @@ export class PartnerQuotesService implements OnModuleInit {
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
     private readonly score: ScoreService,
+    private readonly settings: SettingsService,
   ) {}
 
   onModuleInit(): void {
@@ -106,6 +109,7 @@ export class PartnerQuotesService implements OnModuleInit {
       });
     }
 
+    const due = await defaultDueOn(tx, groupId, await this.settings.list(tx), await workspaceToday(tx, started.tenantId));
     const row = await tx.jobAssignment.create({
       data: {
         groupId,
@@ -113,6 +117,7 @@ export class PartnerQuotesService implements OnModuleInit {
         kind: 'direct',
         status: 'accepted',
         cost: quote.partnerCost,
+        dueOn: due ? new Date(`${due}T00:00:00Z`) : null,
         createdByUserId: started.userId,
       },
       include: { partner: { select: { id: true, name: true } } },

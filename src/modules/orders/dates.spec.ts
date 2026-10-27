@@ -1,5 +1,24 @@
-import { promisedDate } from './dates';
+import { promisedDate, workingDaysBefore } from './dates';
 import type { BusinessCalendar } from './dates';
+
+describe('working days before a date', () => {
+  const calendar: BusinessCalendar = { workingDays: [1, 2, 3, 4, 5], endHour: 17, closedDates: ['2026-12-25'] };
+
+  it('counts open days back, skipping weekends and closed dates', () => {
+    expect(workingDaysBefore('2026-12-29', 2, calendar)).toBe('2026-12-24');
+    expect(workingDaysBefore('2026-12-28', 1, calendar)).toBe('2026-12-24');
+    expect(workingDaysBefore('2026-12-22', 1, calendar)).toBe('2026-12-21');
+  });
+
+  it('counts from a day that is itself closed', () => {
+    expect(workingDaysBefore('2026-12-27', 1, calendar)).toBe('2026-12-24');
+  });
+
+  it('makes zero days the date itself, even on a day off', () => {
+    expect(workingDaysBefore('2026-12-29', 0, calendar)).toBe('2026-12-29');
+    expect(workingDaysBefore('2026-12-27', 0, calendar)).toBe('2026-12-27');
+  });
+});
 
 describe('promised dates', () => {
   const calendar: BusinessCalendar = { workingDays: [1, 2, 3, 4, 5], endHour: 17, closedDates: ['2026-12-25'] };

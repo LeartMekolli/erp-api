@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import type { PaginationQuery } from '../../common/pagination/page';
@@ -10,7 +10,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuditInput } from '../audit/audit.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
-import { ONE_PARTNER, lockOrderOfGroup, otherLinePartners } from '../orders/order-lines';
+import { ONE_PARTNER, defaultDueOn, lockOrderOfGroup, otherLinePartners, workspaceToday } from '../orders/order-lines';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
 import { WorkOrdersService } from '../workflow/work-orders.service';
@@ -23,7 +23,13 @@ import { lockPartner } from './partners.service';
 
 const MONEY = /^\d{1,16}(\.\d{1,2})?$/;
 
-export const offerSchema = z.object({ partner_id: z.uuid() });
+export const offerSchema = z.object({
+  partner_id: z.uuid(),
+  /** The day the job should be done by; from today on. Omitted: the order's promised date less a buffer (Orders spec, B3). */
+  due_on: z.iso.date().optional(),
+});
+
+const asDate = (day: string) => new Date(`${day}T00:00:00Z`);
 
 export const reassignSchema = z.object({
   partner_id: z.uuid(),
@@ -69,6 +75,7 @@ export function toAssignment(row: Row): JobAssignmentResponse {
         : null,
     expires_at: row.expiresAt?.toISOString() ?? null,
     responded_at: row.respondedAt?.toISOString() ?? null,
+    due_on: row.dueOn?.toISOString().slice(0, 10) ?? null,
     created_at: row.createdAt.toISOString(),
   };
 }
@@ -138,18 +145,24 @@ export class JobsService implements OnModuleInit {
    * Offers the job to a partner that can take it, open until the workspace's deadline. Refused while
    * the job is offered or accepted already.
    */
-  async offer(auth: TenantAuth, groupId: string, partnerId: string): Promise<JobAssignmentResponse> {
+  async offer(auth: TenantAuth, groupId: string, partnerId: string, dueOn?: string): Promise<JobAssignmentResponse> {
     const { row, job, expired } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockOrderOfGroup(tx, groupId);
       await lockGroup(tx, groupId);
       // An offer past its deadline lets go of the job now, not when the minute run comes by.
       const expired = await this.expireLapsed(tx, { type: 'user', id: auth.userId }, groupId);
       await this.refuseOpen(tx, groupId);
-      const routing = await this.routing(tx);
+      const settings = await this.settings.list(tx);
+      const routing = settings['partners.routing'] as Routing | undefined;
       await this.keepWithOrder(tx, routing, groupId, partnerId);
       // The partner's room and open jobs are judged once at a time (Review Focus 1 of the fixes).
       await lockPartner(tx, partnerId);
       const { job, cost } = await this.able(tx, groupId, partnerId);
+      const today = await workspaceToday(tx, auth.tenantId);
+      if (dueOn !== undefined && dueOn < today) {
+        throw new BadRequestException({ message: 'The due date is before today', errors: [{ path: 'due_on', message: `must be ${today} or later` }] });
+      }
+      const due = dueOn ?? (await defaultDueOn(tx, groupId, settings, today));
       const now = new Date();
       const created = await tx.jobAssignment.create({
         data: {
@@ -159,6 +172,7 @@ export class JobsService implements OnModuleInit {
           status: 'offered',
           cost,
           expiresAt: new Date(now.getTime() + (routing?.offerHours ?? DEFAULT_OFFER_HOURS) * HOUR_MS),
+          dueOn: due ? asDate(due) : null,
           createdByUserId: auth.userId,
         },
         include,
@@ -229,6 +243,7 @@ export class JobsService implements OnModuleInit {
           kind: 'reassign',
           status: 'accepted',
           cost,
+          dueOn: current.dueOn,
           createdByUserId: auth.userId,
         },
         include,

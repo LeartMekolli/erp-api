@@ -159,6 +159,8 @@ export const jobAssignmentResponseSchema = z.strictObject({
   /** When an offer lapses; null when there was no offer. */
   expires_at: z.iso.datetime().nullable(),
   responded_at: z.iso.datetime().nullable(),
+  /** The day the job should be done by; null for a job that isn't an order line and was given none. */
+  due_on: z.iso.date().nullable(),
   created_at: z.iso.datetime(),
 });
 export type JobAssignmentResponse = z.infer<typeof jobAssignmentResponseSchema>;
@@ -177,6 +179,8 @@ export const partnerJobResponseSchema = z.strictObject({
   offered_at: z.iso.datetime(),
   /** When an offer lapses; null for a job handed over without one. */
   expires_at: z.iso.datetime().nullable(),
+  /** The day the job should be done by; null when it has none. */
+  due_on: z.iso.date().nullable(),
   product: z.strictObject({ name: z.string() }).nullable(),
   /** The chosen options, by name, in option order. */
   options: z.array(z.strictObject({ group: z.string(), value: z.string() })),
