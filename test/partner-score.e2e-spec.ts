@@ -281,6 +281,33 @@ describe('partners: ratings and score', () => {
     await tenant.castcoPerson.get(`/partner-portal/partners/${tenant.metalworks}/score`).expect(404);
   });
 
+  it('fills the on-time part from due dates', async () => {
+    const tenant = await freshTenant();
+    const day = (offset: number) => new Date(`${new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10)}T00:00:00Z`);
+    const [early, late, pending, notDue] = [await tenant.job(1), await tenant.job(1), await tenant.job(1), await tenant.job(1)];
+    expect((await staffScore(tenant, tenant.castco)).parts.on_time).toBeNull();
+
+    // The due dates are set in the database, as the dates themselves can't be set in the past through the API.
+    const dueOn = (group: string, offset: number) =>
+      prisma.inTenant(tenant.id, (tx) => tx.jobAssignment.updateMany({ where: { groupId: group }, data: { dueOn: day(offset) } }));
+    await dueOn(early, 1);
+    await dueOn(late, -1);
+    await dueOn(pending, -1);
+    await dueOn(notDue, 3);
+    await finishByCastco(tenant, early);
+    await finishByCastco(tenant, late);
+
+    // Finished today: one by tomorrow, one a day after its date. A job past due and unfinished is late too;
+    // one not due yet and unfinished is left out.
+    expect((await staffScore(tenant, tenant.castco)).parts.on_time).toBeCloseTo(1 / 3);
+    await finishByCastco(tenant, pending);
+    expect((await staffScore(tenant, tenant.castco)).parts.on_time).toBeCloseTo(1 / 3);
+    await finishByCastco(tenant, notDue);
+    expect((await staffScore(tenant, tenant.castco)).parts.on_time).toBeCloseTo(2 / 4);
+    // CastCo sees the same part.
+    expect(((await portalScore(tenant)).body as PortalScore).score.parts.on_time).toBeCloseTo(0.5);
+  });
+
   it('scores a partner from its work and its ratings once it has finished 5 jobs, by the workspace weights', async () => {
     const tenant = await freshTenant();
     const jobs: string[] = [];

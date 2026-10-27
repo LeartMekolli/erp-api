@@ -26,7 +26,7 @@ export const partnerScoreSchema = z.strictObject({
     scrap: scorePartSchema,
     /** Offers accepted, rather than declined or left to expire. */
     reliability: scorePartSchema,
-    /** Always null until due dates come with Orders. */
+    /** The share of jobs with a due date finished by it, among those finished or past due; null with none. */
     on_time: scorePartSchema,
     /** Customers' stars, 1 to 5 as 0 to 1. */
     rating: scorePartSchema,

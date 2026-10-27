@@ -24,8 +24,7 @@ export interface ScoreParts {
   quality: number | null;
   scrap: number | null;
   reliability: number | null;
-  /** Due dates come with Orders; until then always null. */
-  onTime: null;
+  onTime: number | null;
   rating: number | null;
 }
 
@@ -37,6 +36,10 @@ export interface ScoreFacts {
   offers: { status: string }[];
   /** Customers' stars for its jobs, 1 to 5. */
   stars: number[];
+  /** Its jobs that have a due date, with the day the last piece passed the payout step, or null while one hasn't. */
+  jobs: { dueOn: string; finishedOn: string | null }[];
+  /** Today in the workspace's timezone: a job past due is judged even if unfinished. */
+  today: string;
 }
 
 /** Offers the partner took: a replaced job, or one whose order line was cancelled, was accepted first. */
@@ -63,11 +66,15 @@ export function scoreParts(facts: ScoreFacts): ScoreParts {
   const answered = facts.offers.filter((offer) => ANSWERED.has(offer.status));
   const stars = facts.stars.map((value) => (value - 1) / 4);
 
+  // On time: among jobs finished or past due, those finished by their due date. A job not due yet is left out.
+  const judged = facts.jobs.filter((job) => job.finishedOn !== null || job.dueOn < facts.today);
+  const onTime = judged.filter((job) => job.finishedOn !== null && job.finishedOn <= job.dueOn).length;
+
   return {
     quality: share(firstTime, first.size),
     scrap: scrapShare === null ? null : 1 - scrapShare,
     reliability: share(answered.filter((offer) => TAKEN.has(offer.status)).length, answered.length),
-    onTime: null,
+    onTime: share(onTime, judged.length),
     rating: share(
       stars.reduce((sum, value) => sum + value, 0),
       stars.length,

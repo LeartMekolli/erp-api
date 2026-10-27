@@ -4,7 +4,7 @@ import type { ScoreFacts, ScoreParts } from './score';
 type Move = ScoreFacts['moves'][number];
 const pass = (workOrderId: string, fromStepId: string): Move => ({ workOrderId, fromStepId, kind: 'pass', toStatus: 'active' });
 const fail = (workOrderId: string, fromStepId: string, toStatus = 'active'): Move => ({ workOrderId, fromStepId, kind: 'fail', toStatus });
-const none: ScoreFacts = { moves: [], offers: [], stars: [] };
+const none: ScoreFacts = { moves: [], offers: [], stars: [], jobs: [], today: '2026-10-27' };
 
 describe('the parts of a partner score', () => {
   it('rates quality as the share of pieces that passed a step first time', () => {
@@ -43,9 +43,31 @@ describe('the parts of a partner score', () => {
     expect(scoreParts({ ...none, stars: [1] }).rating).toBe(0);
   });
 
-  it('leaves out a part with nothing to go on, and on time until due dates exist', () => {
+  it('rates on time as the share of jobs finished by their due date, among those finished or past due', () => {
+    const jobs = [
+      // On time: finished before the due date, and on it.
+      { dueOn: '2026-10-20', finishedOn: '2026-10-19' },
+      { dueOn: '2026-10-20', finishedOn: '2026-10-20' },
+      // Late: finished after it.
+      { dueOn: '2026-10-20', finishedOn: '2026-10-22' },
+      // Late: past due and not finished.
+      { dueOn: '2026-10-20', finishedOn: null },
+      // Not due yet and not finished: left out.
+      { dueOn: '2026-10-30', finishedOn: null },
+    ];
+    expect(scoreParts({ ...none, jobs }).onTime).toBeCloseTo(0.5);
+  });
+
+  it('counts a job finished before it is due, and one due today as not yet late', () => {
+    expect(scoreParts({ ...none, jobs: [{ dueOn: '2026-10-30', finishedOn: '2026-10-26' }] }).onTime).toBe(1);
+    expect(scoreParts({ ...none, jobs: [{ dueOn: '2026-10-27', finishedOn: null }] }).onTime).toBeNull();
+    expect(scoreParts({ ...none, jobs: [{ dueOn: '2026-10-26', finishedOn: null }] }).onTime).toBe(0);
+  });
+
+  it('leaves out a part with nothing to go on', () => {
     expect(scoreParts(none)).toEqual({ quality: null, scrap: null, reliability: null, onTime: null, rating: null });
     expect(scoreParts({ ...none, offers: [{ status: 'withdrawn' }, { status: 'offered' }] }).reliability).toBeNull();
+    expect(scoreParts({ ...none, jobs: [{ dueOn: '2026-10-30', finishedOn: null }] }).onTime).toBeNull();
   });
 });
 
@@ -57,6 +79,12 @@ describe('the overall score', () => {
     expect(overallScore(parts, DEFAULT_SCORE_WEIGHTS, 5)).toBe(4.2);
     // Without ratings: (3 × 0.9 + 2 × 0.95 + 2 × 0.75) / 7 × 5 = 4.357.
     expect(overallScore({ ...parts, rating: null }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(4.4);
+  });
+
+  it('counts on time once it has data', () => {
+    // (3 + 2 + 2 + 0.5 + 3) / 11 × 5 = 4.77, against 5 when on time has no data.
+    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: 0.5, rating: 1 }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(4.8);
+    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: null, rating: 1 }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(5);
   });
 
   it('follows the workspace weights, leaving out a part weighted 0', () => {
