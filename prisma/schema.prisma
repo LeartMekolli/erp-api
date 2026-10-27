@@ -86,6 +86,7 @@ model Tenant {
   orderLineParts  OrderLinePart[]
   orderCounter    OrderCounter?
   paymentAccount  PaymentAccount?
+  ledgerJournals  LedgerJournal[]
 
   @@map("tenant")
 }
@@ -133,6 +134,7 @@ model User {
   externalIdentities ExternalIdentity[]
   transitions    Transition[]
   orderComments  OrderComment[]
+  ledgerJournals LedgerJournal[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1091,6 +1093,8 @@ model Customer {
   workOrderGroups WorkOrderGroup[]
   jobRatings    JobRating[]
   orders        Order[]
+  ledgerJournals LedgerJournal[]
+  ledgerLines   LedgerLine[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -1409,6 +1413,8 @@ model Partner {
   ratings          JobRating[]
   capacitySnapshots PartnerCapacitySnapshot[]
   comments         OrderComment[]
+  ledgerJournals   LedgerJournal[]
+  ledgerLines      LedgerLine[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1699,6 +1705,7 @@ model Order {
   shippingMethod ShippingMethod @relation(fields: [tenantId, shippingMethodId], references: [tenantId, id], onDelete: NoAction)
   lines          OrderLine[]
   comments       OrderComment[]
+  ledgerJournals LedgerJournal[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
@@ -1845,4 +1852,66 @@ model PaymentAccount {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("payment_account")
+}
+
+// One movement of money: lines that sum to zero (debit positive, credit negative), written once and
+// never changed (ADR 0003). A correction is a new journal of kind `reversal`. The database refuses a
+// journal that does not balance, at commit. The payout and refund ids point at tables of later
+// tasks, so they carry no key yet.
+model LedgerJournal {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // order_billed | payment_received | provider_fee | refund | payout | reversal
+  kind              String
+  occurredAt        DateTime @map("occurred_at")
+  currency          String   @db.Char(3)
+  orderId           String?  @map("order_id") @db.Uuid
+  customerId        String?  @map("customer_id") @db.Uuid
+  partnerId         String?  @map("partner_id") @db.Uuid
+  payoutId          String?  @map("payout_id") @db.Uuid
+  refundId          String?  @map("refund_id") @db.Uuid
+  // The provider's id for the fact this journal records; posting the same fact twice is a no-op.
+  providerObjectId  String?  @map("provider_object_id")
+  reversesJournalId String?  @map("reverses_journal_id") @db.Uuid
+  createdByUserId   String?  @map("created_by_user_id") @db.Uuid
+  memo              String   @default("")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order     Order?         @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: NoAction)
+  customer  Customer?      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  partner   Partner?       @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+  createdBy User?          @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  reverses  LedgerJournal? @relation("reversal", fields: [tenantId, reversesJournalId], references: [tenantId, id], onDelete: NoAction)
+  reversedBy LedgerJournal? @relation("reversal")
+  lines     LedgerLine[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, kind, providerObjectId])
+  @@unique([tenantId, reversesJournalId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, partnerId])
+  @@index([tenantId, orderId])
+  @@map("ledger_journal")
+}
+
+model LedgerLine {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  tenantId   String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  journalId  String  @map("journal_id") @db.Uuid
+  // customer_receivable | stripe_balance | outside_stripe | sales | tax_payable | provider_fees | partner_costs
+  account    String
+  // Debit positive, credit negative; never zero.
+  amount     Decimal @db.Decimal(18, 2)
+  customerId String? @map("customer_id") @db.Uuid
+  partnerId  String? @map("partner_id") @db.Uuid
+
+  journal  LedgerJournal @relation(fields: [tenantId, journalId], references: [tenantId, id], onDelete: Cascade)
+  customer Customer?     @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  partner  Partner?      @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+
+  @@index([tenantId, journalId])
+  @@index([tenantId, account, customerId])
+  @@index([tenantId, account, partnerId])
+  @@map("ledger_line")
 }

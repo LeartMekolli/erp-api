@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { paginationQuerySchema } from '../../common/pagination/page';
+import { ACCOUNTS, JOURNAL_KINDS } from './ledger';
 
 const prefixed = (prefixes: string[]) =>
   z
@@ -27,3 +29,36 @@ export const paymentAccountResponseSchema = z.strictObject({
   }),
 });
 export type PaymentAccountResponse = z.infer<typeof paymentAccountResponseSchema>;
+
+export const ledgerQuerySchema = paginationQuerySchema.extend({
+  order_id: z.uuid().optional(),
+  customer_id: z.uuid().optional(),
+  partner_id: z.uuid().optional(),
+  from: z.iso.date().optional().describe('Journals from the start of this day (UTC).'),
+  to: z.iso.date().optional().describe('Journals up to the end of this day (UTC).'),
+});
+export type LedgerQuery = z.infer<typeof ledgerQuerySchema>;
+
+export const ledgerJournalResponseSchema = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(JOURNAL_KINDS),
+  occurred_at: z.iso.datetime(),
+  currency: z.string().length(3),
+  order_id: z.uuid().nullable(),
+  customer_id: z.uuid().nullable(),
+  partner_id: z.uuid().nullable(),
+  payout_id: z.uuid().nullable(),
+  refund_id: z.uuid().nullable(),
+  provider_object_id: z.string().nullable(),
+  reverses_journal_id: z.uuid().nullable(),
+  memo: z.string(),
+  lines: z.array(
+    z.strictObject({
+      account: z.enum(ACCOUNTS),
+      amount: z.string().describe('Debit positive, credit negative; the lines of a journal sum to 0.00.'),
+      customer_id: z.uuid().nullable(),
+      partner_id: z.uuid().nullable(),
+    }),
+  ),
+});
+export type LedgerJournalResponse = z.infer<typeof ledgerJournalResponseSchema>;
