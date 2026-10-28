@@ -6,7 +6,7 @@ import type { SummaryGroup } from './pricing-response';
 const CENTS = 2;
 const cents = (value: Prisma.Decimal) => value.toDecimalPlaces(CENTS, Prisma.Decimal.ROUND_HALF_UP);
 
-export type SummaryLabel = SummaryGroup | 'quantity_discount' | 'your_discount' | 'delivery_speed';
+export type SummaryLabel = SummaryGroup | 'quantity_discount' | 'your_discount' | 'plan_discount' | 'delivery_speed';
 
 /** What a customer sees of a price: nothing but labelled amounts that add up to it. */
 export interface CustomerSummary {
@@ -26,7 +26,7 @@ export function customerSummary(breakdown: Breakdown): CustomerSummary {
   const visible: CustomerSummary['lines'] = [];
   for (const adjustment of breakdown.adjustments) {
     if (adjustment.kind === 'customer_group' && !adjustment.percent.isNegative()) continue;
-    const label = adjustment.kind === 'customer_group' ? 'your_discount' : adjustment.kind;
+    const label = adjustment.kind === 'customer_group' ? 'your_discount' : adjustment.kind === 'plan' ? 'plan_discount' : adjustment.kind;
     visible.push({ label, amount: cents(adjustment.amount) });
   }
 

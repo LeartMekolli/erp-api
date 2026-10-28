@@ -340,6 +340,10 @@ describe('orders: placing an order', () => {
 
   it('refuses mixed delivery speeds, a shipping method that is off or unknown, and a bad address', async () => {
     const tenant = await freshTenant();
+    // A customer's quote offers only the speeds of its plan (Payments 2): Starter gets rush.
+    const plans = (await tenant.staff.get('/payments/plans').expect(200)).body as { data: { id: string; is_default: boolean }[] };
+    const starter = plans.data.find((plan) => plan.is_default)!.id;
+    await tenant.staff.patch(`/payments/plans/${starter}`, { speeds: [{ key: 'rush', surcharge_percent: null }] }).expect(200);
     const standard = await tenant.staffQuote();
     const rush = await tenant.staffQuote({ delivery_speed: 'rush' });
     const before = await counts(tenant);

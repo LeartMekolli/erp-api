@@ -36,6 +36,7 @@ function input(overrides: Partial<EngineInput> = {}): EngineInput {
     marginPercent: D('0'),
     tier: null,
     groupPercent: null,
+    planPercent: null,
     speedPercent: null,
     ...overrides,
   };
@@ -76,6 +77,25 @@ describe('priceConfiguration', () => {
     expect(breakdown.unitPriceExact.toFixed()).toBe('74.6928');
     expect(breakdown.unitPrice.toFixed(2)).toBe('74.69');
     expect(breakdown.total.toFixed(2)).toBe('746.90');
+  });
+
+  it("takes the plan's discount after the customer group and before the speed", () => {
+    const breakdown = priced(
+      priceConfiguration(
+        input({ steps: [{ step: step('casting', 30), price: fixed('100') }], groupPercent: D('10'), planPercent: D('5'), speedPercent: D('20') }),
+      ),
+    );
+    expect(breakdown.adjustments.map((line) => [line.kind, line.percent.toFixed(), line.amount.toFixed(2)])).toEqual([
+      ['customer_group', '10', '10.00'],
+      ['plan', '5', '-5.50'],
+      ['delivery_speed', '20', '20.90'],
+    ]);
+    expect(breakdown.unitPrice.toFixed(2)).toBe('125.40');
+  });
+
+  it('has no plan line when the plan gives no discount', () => {
+    const breakdown = priced(priceConfiguration(input({ planPercent: null })));
+    expect(breakdown.adjustments.map((line) => line.kind)).not.toContain('plan');
   });
 
   it('adds up the steps in chain order', () => {

@@ -30,6 +30,8 @@ export interface EngineInput {
   /** The quantity discount tier reached (`tierFor`), or null. */
   tier: Prisma.Decimal | null;
   groupPercent: Prisma.Decimal | null;
+  /** The customer's plan's discount, taken off after the group (Payments 2); null: none. */
+  planPercent: Prisma.Decimal | null;
   speedPercent: Prisma.Decimal | null;
 }
 
@@ -43,6 +45,9 @@ export interface PricingRefusal {
 /** Quote prices are stored as Decimal(18, 2): below 10^16. */
 const PRICE_LIMIT = new Prisma.Decimal('1e16');
 
+export const ADJUSTMENT_KINDS = ['quantity_discount', 'customer_group', 'plan', 'delivery_speed'] as const;
+export type AdjustmentKind = (typeof ADJUSTMENT_KINDS)[number];
+
 export interface Breakdown {
   steps: { key: string; name: string; summaryGroup: SummaryGroup; cost: StepCost }[];
   /** Σ step costs, per piece. */
@@ -52,7 +57,7 @@ export interface Breakdown {
   margin: { percent: Prisma.Decimal; amount: Prisma.Decimal };
   priceBeforeAdjustments: Prisma.Decimal;
   /** In the order applied, each on the result of the one before; discounts are negative. */
-  adjustments: { kind: 'quantity_discount' | 'customer_group' | 'delivery_speed'; percent: Prisma.Decimal; amount: Prisma.Decimal }[];
+  adjustments: { kind: AdjustmentKind; percent: Prisma.Decimal; amount: Prisma.Decimal }[];
   unitPriceExact: Prisma.Decimal;
   /** Rounded to cents. */
   unitPrice: Prisma.Decimal;
@@ -72,7 +77,7 @@ export function tierFor(tiers: { minQuantity: number; percent: Prisma.Decimal }[
 /**
  * A configuration's price per piece (Pricing spec, "Order of calculation" 3–7): each step's cost,
  * plus overhead and the highest matching minimum-size surcharge, × (1 + margin); then the quantity
- * discount, the customer group and the delivery speed, each on the result of the one before; then
+ * discount, the customer group, the plan's discount and the delivery speed, each on the result of the one before; then
  * rounded once. Every step that cannot be priced is reported, not just the first.
  */
 export function priceConfiguration(input: EngineInput): EngineResult {
@@ -124,6 +129,7 @@ export function priceConfiguration(input: EngineInput): EngineResult {
   };
   apply('quantity_discount', input.tier, -1);
   apply('customer_group', input.groupPercent, 1);
+  apply('plan', input.planPercent, -1);
   apply('delivery_speed', input.speedPercent, 1);
 
   const unitPrice = running.toDecimalPlaces(CENTS, Prisma.Decimal.ROUND_HALF_UP);

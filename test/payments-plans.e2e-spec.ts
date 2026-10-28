@@ -108,8 +108,8 @@ describe('payments: plans', () => {
       yearly_price: null,
       discount_percent: '0',
       monthly_credits: 0,
-      member_limit: 2,
-      features: [],
+      member_limit: null,
+      features: ['pay_later'],
       speeds: [],
       published: true,
     });

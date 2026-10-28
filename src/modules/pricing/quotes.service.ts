@@ -16,6 +16,8 @@ import { UnitsService } from '../catalog/units';
 import type { UnitDef } from '../catalog/units';
 import { visibleTo } from '../catalog/visibility';
 import type { TenantAuth } from '../identity/auth-context';
+import { planOf } from '../payments/plans/plan-of';
+import type { PlanBenefits } from '../payments/plans/plan-of';
 import { missingStepTypes, resolveWorkflow } from '../workflow/coverage';
 import { partnerStepTypeIds } from '../workflow/partner-steps';
 import { AdjustmentsService } from './adjustments.service';
@@ -262,7 +264,7 @@ export class QuotesService {
       if (!priced.accepted) {
         return { accepted: false, reasons: priced.reasons };
       }
-      const { product, groupKey, speedKey, result, parts } = priced;
+      const { product, groupKey, speedKey, plan, result, parts } = priced;
       const { evaluation, profile } = result;
       const price = linePrice(result, parts, body.quantity);
       const expiresAt = new Date(Date.now() + profile.quoteValidHours * HOUR_MS);
@@ -272,6 +274,7 @@ export class QuotesService {
         size,
         file_version_id: fileVersionId,
         customer_group: groupKey,
+        plan: plan?.key ?? null,
         delivery_speed: speedKey,
       });
 
@@ -435,14 +438,20 @@ export class QuotesService {
     if (speedKey && !adjustments.speeds.has(speedKey)) {
       throw new BadRequestException(`delivery_speed: ${speedKey} is not a delivery speed of this workspace`);
     }
+    // A customer's quote gets its plan's discount and only the speeds it offers (Payments 2, goal 8):
+    // the workspace's default speed, and those the plan lists.
+    const plan = context ? await planOf(tx, context.customerId) : null;
+    if (plan && speedKey && speedKey !== adjustments.defaultSpeedKey && !plan.speeds.has(speedKey)) {
+      throw new BadRequestException(`delivery_speed: ${speedKey} is not offered on the customer's plan (${plan.name})`);
+    }
 
-    const result = await this.run(tx, tenantId, product, body, { adjustments, groupKey, speedKey, partnerId: partner?.partnerId });
+    const result = await this.run(tx, tenantId, product, body, { adjustments, groupKey, speedKey, plan, partnerId: partner?.partnerId });
     if (!result.accepted) {
       return { accepted: false as const, reasons: result.reasons };
     }
     let parts: PricedPart[] = [];
     if (product.kind === 'assembly') {
-      const priced = await this.priceParts(tx, tenantId, product.id, result.evaluation, body.quantity, { groupKey, speedKey });
+      const priced = await this.priceParts(tx, tenantId, product.id, result.evaluation, body.quantity, { groupKey, speedKey, plan });
       if ('reasons' in priced) {
         return { accepted: false as const, reasons: priced.reasons };
       }
@@ -466,7 +475,7 @@ export class QuotesService {
         };
       }
     }
-    return { accepted: true as const, product, groupKey, speedKey, result, parts };
+    return { accepted: true as const, product, groupKey, speedKey, plan, result, parts };
   }
 
   /**
@@ -481,7 +490,7 @@ export class QuotesService {
     assemblyId: string,
     chosen: Extract<Evaluation, { accepted: true }>,
     quantity: number,
-    pricing: { groupKey: string | null; speedKey: string | null },
+    pricing: { groupKey: string | null; speedKey: string | null; plan: PlanBenefits | null },
   ): Promise<{ parts: PricedPart[] } | { reasons: QuoteRefusal[] }> {
     const rows = await tx.assemblyPart.findMany({
       where: { assemblyId },
@@ -606,6 +615,8 @@ export class QuotesService {
       adjustments,
       groupKey: inputs.customer_group,
       speedKey: inputs.delivery_speed,
+      // The partner's cost comes from the steps; the customer's adjustments don't change it.
+      plan: null,
       partnerId,
     });
     if (!result.accepted) {
@@ -624,7 +635,7 @@ export class QuotesService {
     tenantId: string,
     product: { id: string; name: string },
     request: z.infer<typeof checkRequestSchema> & { quantity: number },
-    pricing: { adjustments: Adjustments; groupKey: string | null; speedKey: string | null; partnerId?: string },
+    pricing: { adjustments: Adjustments; groupKey: string | null; speedKey: string | null; plan: PlanBenefits | null; partnerId?: string },
   ): Promise<
     | { accepted: false; reasons: QuoteRefusal[] }
     | {
@@ -703,7 +714,9 @@ export class QuotesService {
     }
 
     // 4–7. The engine.
-    const { adjustments, groupKey, speedKey } = pricing;
+    const { adjustments, groupKey, speedKey, plan } = pricing;
+    // A plan may set its own surcharge for a speed; null keeps the speed's own.
+    const planSurcharge = speedKey ? (plan?.speeds.get(speedKey) ?? null) : null;
     const profile = await this.profile.get(tx);
     const result = priceConfiguration({
       quantity: request.quantity,
@@ -720,7 +733,8 @@ export class QuotesService {
       tier: tierFor(adjustments.tiers, request.quantity),
       // A saved quote's group or speed may since have been removed; it then no longer applies.
       groupPercent: groupKey ? (adjustments.groups.get(groupKey) ?? null) : null,
-      speedPercent: speedKey ? (adjustments.speeds.get(speedKey) ?? null) : null,
+      planPercent: plan && !plan.discountPercent.isZero() ? plan.discountPercent : null,
+      speedPercent: speedKey ? (planSurcharge ?? adjustments.speeds.get(speedKey) ?? null) : null,
     });
     if (!result.accepted) {
       return { accepted: false, reasons: result.reasons };
@@ -836,7 +850,8 @@ function toStaffView(row: Quote): QuoteResponse {
     created_at: row.createdAt.toISOString(),
     customer_id: row.customerId,
     partner: row.partnerId && row.partnerCost ? { id: row.partnerId, cost: row.partnerCost.toFixed(2) } : null,
-    inputs: row.inputs as QuoteInputs,
+    // Quotes made before plans existed have no `plan`.
+    inputs: { plan: null, ...(row.inputs as Omit<QuoteInputs, 'plan'>) },
     materials: row.materials as QuoteMaterial[],
     breakdown: { ...breakdown, parts: breakdown.parts ?? [] },
   };

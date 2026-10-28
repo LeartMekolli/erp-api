@@ -9,6 +9,7 @@ import type { Customer, CustomerGroup, CustomerPaymentTerms, Prisma } from '../.
 import { paymentTermsResponse } from '../payments/payment-response';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { planOf } from '../payments/plans/plan-of';
 import type { CustomerMemberResponse, CustomerResponse } from './customer-response';
 import { CUSTOMER_ROLES } from './customer-roles';
 
@@ -224,6 +225,7 @@ export class CustomersService {
     const memberCount = await tx.organisationMembership.count({
       where: { organisationType: 'customer', organisationId: row.id },
     });
+    const plan = await planOf(tx, row.id);
     return {
       id: row.id,
       name: row.name,
@@ -234,6 +236,7 @@ export class CustomersService {
       member_count: memberCount,
       may_pick_partner: row.mayPickPartner,
       payment_terms: paymentTermsResponse(row.paymentTerms),
+      plan: { key: plan.key, name: plan.name },
       created_at: row.createdAt.toISOString(),
     };
   }

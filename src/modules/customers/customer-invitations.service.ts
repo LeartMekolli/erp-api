@@ -8,6 +8,7 @@ import type { IdentityNotifier } from '../identity/identity-notifier';
 import { INVITATION_DAYS } from '../identity/invitations';
 import { issueOpaqueToken, parseOpaqueToken } from '../identity/opaque-token';
 import { hashPassword } from '../identity/passwords';
+import { planOf } from '../payments/plans/plan-of';
 import type { CustomerInvitationResponse } from './customer-response';
 import type { CustomerRole } from './customer-roles';
 import { lockCustomer } from './customers.service';
@@ -27,6 +28,23 @@ async function hasOwner(tx: Prisma.TransactionClient, customerId: string): Promi
     select: { id: true },
   });
   return owner !== null;
+}
+
+/**
+ * The customer's plan caps its active people plus open invitations (Payments 2, goal 8). A new
+ * invitation to the same email replaces its older one, so that one isn't counted. Call with the
+ * customer row locked. Accepting is never refused: the invitation was counted when it was sent.
+ */
+async function refuseOverMemberLimit(tx: Prisma.TransactionClient, customerId: string, email: string, now: Date): Promise<void> {
+  const plan = await planOf(tx, customerId);
+  if (plan.memberLimit === null) return;
+  const [members, open] = await Promise.all([
+    tx.organisationMembership.count({ where: { organisationType: 'customer', organisationId: customerId, user: { status: 'active' } } }),
+    tx.customerInvitation.count({ where: { customerId, acceptedAt: null, expiresAt: { gt: now }, email: { not: email } } }),
+  ]);
+  if (members + open >= plan.memberLimit) {
+    throw new ConflictException(`The customer's plan (${plan.name}) allows ${plan.memberLimit} members`);
+  }
 }
 
 /** What someone sends to accept: a password, or a Google ID token, or neither if they already have an account. */
@@ -72,6 +90,7 @@ export class CustomerInvitationsService {
       }
 
       const now = new Date();
+      await refuseOverMemberLimit(tx, customerId, input.email, now);
       await tx.customerInvitation.updateMany({
         where: { customerId, email: input.email, acceptedAt: null, expiresAt: { gt: now } },
         data: { expiresAt: now },

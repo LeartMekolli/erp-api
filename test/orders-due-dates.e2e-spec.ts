@@ -220,6 +220,10 @@ describe('orders: due dates on partner jobs', () => {
   it('is due no earlier than today when the promised date is near', async () => {
     const tenant = await freshTenant();
     await scheduling(tenant, 5);
+    // A customer's quote offers only the speeds of its plan (Payments 2): Starter gets rush.
+    const plans = (await tenant.staff.get('/payments/plans').expect(200)).body as { data: { id: string; is_default: boolean }[] };
+    const starter = plans.data.find((plan) => plan.is_default)!.id;
+    await tenant.staff.patch(`/payments/plans/${starter}`, { speeds: [{ key: 'rush', surcharge_percent: null }] }).expect(200);
     const placed = await order(tenant, [(await castQuote(tenant, 'rush')).id]);
     // Two working days away, less five: the date would be before today.
     expect(workingDaysBefore(placed.promised_on, 5, calendar) < day(0)).toBe(true);

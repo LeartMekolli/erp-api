@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { REFUSAL_CODES } from '../catalog/check-response';
 import { currentPriceSchema } from '../catalog/material-response';
 import { MEASURE_TYPES } from '../files/measurers';
+import { ADJUSTMENT_KINDS } from './engine';
 import { SUMMARY_GROUPS } from './pricing-response';
 
 // What clients receive for quotes; checked against real responses in the e2e tests. Decimals are
@@ -38,7 +39,7 @@ export const quoteRefusalSchema = z.strictObject({
 });
 export type QuoteRefusal = z.infer<typeof quoteRefusalSchema>;
 
-export const SUMMARY_LABELS = [...SUMMARY_GROUPS, 'quantity_discount', 'your_discount', 'delivery_speed'] as const;
+export const SUMMARY_LABELS = [...SUMMARY_GROUPS, 'quantity_discount', 'your_discount', 'plan_discount', 'delivery_speed'] as const;
 
 /** The customer's view: grouped lines that add up to the price, and nothing internal. */
 export const quoteSummaryResponseSchema = z.strictObject({
@@ -103,7 +104,7 @@ export const breakdownSchema = z.strictObject({
   price_before_adjustments: amount,
   /** In the order applied, each on the result of the one before; discounts are negative. */
   adjustments: z.array(
-    z.strictObject({ kind: z.enum(['quantity_discount', 'customer_group', 'delivery_speed']), percent: z.string(), amount }),
+    z.strictObject({ kind: z.enum(ADJUSTMENT_KINDS), percent: z.string(), amount }),
   ),
   unit_price_exact: amount,
   unit_price: amount,
@@ -131,6 +132,8 @@ export const quoteInputsSchema = z.strictObject({
   size: z.union([z.strictObject({ scale: z.string() }), z.strictObject({ named: z.string() })]).nullable(),
   file_version_id: z.uuid().nullable(),
   customer_group: z.string().nullable(),
+  /** The customer's plan, by key, when the quote was made (Payments 2); null for an internal quote. */
+  plan: z.string().nullable(),
   /** The speed named, else the workspace's default, else none. */
   delivery_speed: z.string().nullable(),
 });

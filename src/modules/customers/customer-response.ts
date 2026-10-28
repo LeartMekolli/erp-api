@@ -18,6 +18,8 @@ export const customerResponseSchema = z.strictObject({
   may_pick_partner: z.boolean(),
   /** How the customer pays (Payments spec); set with PUT /customers/:id/payment-terms. */
   payment_terms: paymentTermsResponseSchema,
+  /** The plan the customer is on (Payments 2): its subscription's, else the workspace's free default. */
+  plan: z.strictObject({ key: z.string(), name: z.string() }),
   created_at: z.string(),
 });
 export type CustomerResponse = z.infer<typeof customerResponseSchema>;

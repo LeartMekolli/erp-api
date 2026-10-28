@@ -39,9 +39,14 @@ describe('password reset', () => {
   /**
    * Every request here comes from the same loopback address, so the per-IP
    * limit (20 an hour) would otherwise carry over between tests and runs.
+   * Only loopback counters are cleared: the trust-proxy spec runs at the same
+   * time and reads its own forwarded addresses' counters back.
    */
   async function clearIpLimits(): Promise<void> {
-    const keys = await redis.client.keys('ratelimit:reset-ip:*');
+    const keys = (await redis.client.keys('ratelimit:reset-ip:*')).filter((key) => {
+      const ip = key.slice('ratelimit:reset-ip:'.length);
+      return ip === '::1' || ip.endsWith('127.0.0.1');
+    });
     if (keys.length > 0) await redis.client.del(...keys);
   }
 
