@@ -391,7 +391,60 @@ export const EVENTS = {
     defaults: {
       en: {
         subject: 'Payment received for order {{ number }}',
-        body: 'Thank you: we have received {{ amount }} for order {{ number }}, and it is now in production.',
+        body: 'Thank you: we have received {{ amount }} for order {{ number }}.',
+      },
+    },
+  },
+  // A shipped pay-later order is invoiced (Payments spec).
+  'invoice.sent': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      total: { sample: '119.00 EUR' },
+      invoice_url: { sample: 'https://pay.example/invoice/1' },
+      due_on: { sample: '2026-11-27' },
+    },
+    defaults: {
+      en: {
+        subject: 'Invoice for order {{ number }}',
+        body: 'Order {{ number }} has shipped. Your invoice of {{ total }} is due on {{ due_on }}.\n\nView and pay it here: {{ invoice_url }}',
+      },
+    },
+  },
+  'invoice.overdue': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      total: { sample: '119.00 EUR' },
+      invoice_url: { sample: 'https://pay.example/invoice/1' },
+      due_on: { sample: '2026-11-27' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your invoice for order {{ number }} is overdue',
+        body: 'Your invoice of {{ total }} for order {{ number }} was due on {{ due_on }}.\n\nPlease pay it here: {{ invoice_url }}',
+      },
+    },
+  },
+  // Staff who read payments hear of the same overdue invoice.
+  'invoice.overdue.staff': {
+    audience: { kind: 'permission', permission: 'payment.read' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      customer_name: { sample: 'Luna Jewels' },
+      total: { sample: '119.00 EUR' },
+      due_on: { sample: '2026-11-27' },
+    },
+    defaults: {
+      en: {
+        subject: 'Invoice for order {{ number }} is overdue',
+        body: '{{ customer_name }} has not paid {{ total }} for order {{ number }}, due on {{ due_on }}.',
       },
     },
   },

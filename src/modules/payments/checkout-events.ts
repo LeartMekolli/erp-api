@@ -3,8 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { PaymentEvent } from '../../generated/prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
-import { buildJournal } from './ledger';
-import type { JournalEntry } from './ledger';
+import { billedJournal, feeJournal, receivedJournal } from './ledger';
 import { LedgerService } from './ledger.service';
 import { OrderStarter } from './order-starter';
 import { PaymentAccountService } from './payment-account.service';
@@ -76,30 +75,14 @@ export class CheckoutEvents implements OnModuleInit {
         customerId: order.customerId,
         providerObjectId: event.objectId,
       };
-      const customerId = order.customerId;
-      const billed: JournalEntry[] = [
-        { account: 'customer_receivable', amount: checkout.amount, customerId },
-        { account: 'sales', amount: checkout.amount.sub(tax).neg(), customerId },
-        ...(tax.isZero() ? [] : [{ account: 'tax_payable' as const, amount: tax.neg(), customerId }]),
-      ];
-      await this.ledger.post(tx, { ...buildJournal('order_billed', billed), ...common, memo: `Order ${order.number}` });
+      await this.ledger.post(tx, { ...billedJournal(order.customerId, checkout.amount, tax), ...common, memo: `Order ${order.number}` });
       const received = await this.ledger.post(tx, {
-        ...buildJournal('payment_received', [
-          { account: 'stripe_balance', amount: checkout.amount },
-          { account: 'customer_receivable', amount: checkout.amount.neg(), customerId },
-        ]),
+        ...receivedJournal(order.customerId, checkout.amount, 'stripe_balance'),
         ...common,
         memo: `Order ${order.number} paid by checkout`,
       });
       if (checkout.fee.gt(0)) {
-        await this.ledger.post(tx, {
-          ...buildJournal('provider_fee', [
-            { account: 'provider_fees', amount: checkout.fee },
-            { account: 'stripe_balance', amount: checkout.fee.neg() },
-          ]),
-          ...common,
-          memo: `Fee on order ${order.number}`,
-        });
+        await this.ledger.post(tx, { ...feeJournal(checkout.fee), ...common, memo: `Fee on order ${order.number}` });
       }
 
       return {

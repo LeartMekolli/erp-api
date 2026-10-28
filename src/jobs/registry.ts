@@ -82,6 +82,12 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), eventId: z.uuid() }),
     jobId: (p) => [p.eventId],
   }),
+  // Invoices a shipped pay-later order not paid, once (Payments spec).
+  'payments.invoice.create': defineJob({
+    queue: 'payments',
+    payload: z.object({ tenantId: z.uuid(), orderId: z.uuid() }),
+    jobId: (p) => [p.orderId],
+  }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 
 export const SCHEDULED_JOBS = {
@@ -103,12 +109,18 @@ export const SCHEDULED_JOBS = {
   // Whether an offer can still be accepted is decided by its deadline, never by this having run.
   'partners.offers.expire': { queue: 'maintenance', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
   // Keeps each partner's load and capacity per step type for the day (Partners spec, D83).
-  // Cancels pay-first orders not paid by their deadline (Payments spec). Whether an order may still be
-  // paid is decided by its state under its lock, never by this having run.
-  'payments.unpaid.cancel': { queue: 'payments', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
   'partners.capacity.snapshot': {
     queue: 'maintenance',
     schedule: { pattern: '0 2 * * *', tz: 'UTC' },
+    lockTtlMs: 600_000,
+  },
+  // Cancels pay-first orders not paid by their deadline (Payments spec). Whether an order may still be
+  // paid is decided by its state under its lock, never by this having run.
+  'payments.unpaid.cancel': { queue: 'payments', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
+  // Tells the customer and staff of each invoice past its due date, once (Payments spec).
+  'payments.invoices.overdue': {
+    queue: 'payments',
+    schedule: { pattern: '0 6 * * *', tz: 'UTC' },
     lockTtlMs: 600_000,
   },
 } satisfies Record<string, ScheduledJobDefinition>;

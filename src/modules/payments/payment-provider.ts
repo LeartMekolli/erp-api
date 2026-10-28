@@ -66,7 +66,8 @@ export interface PaymentProvider {
   expireCheckout(keys: ProviderKeys, id: string): Promise<void>;
   ensureCustomer(
     keys: ProviderKeys,
-    input: { customerId: string; name: string; email: string; idempotencyKey: string },
+    /** `email` is null when the customer has no one to send its invoices to. */
+    input: { customerId: string; name: string; email: string | null; idempotencyKey: string },
   ): Promise<{ id: string }>;
   createInvoice(
     keys: ProviderKeys,

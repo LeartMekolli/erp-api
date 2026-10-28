@@ -45,3 +45,28 @@ export function buildJournal(kind: JournalKind, entries: JournalEntry[]): Journa
   }
   return { kind, entries };
 }
+
+/** The customer is billed `total`: `tax` of it is owed as tax, the rest is sales. */
+export function billedJournal(customerId: string, total: Prisma.Decimal, tax: Prisma.Decimal): JournalDraft {
+  return buildJournal('order_billed', [
+    { account: 'customer_receivable', amount: total, customerId },
+    { account: 'sales', amount: total.sub(tax).neg(), customerId },
+    ...(tax.isZero() ? [] : [{ account: 'tax_payable' as const, amount: tax.neg(), customerId }]),
+  ]);
+}
+
+/** The customer paid `amount`, which arrived on `cash`. */
+export function receivedJournal(customerId: string, amount: Prisma.Decimal, cash: 'stripe_balance' | 'outside_stripe'): JournalDraft {
+  return buildJournal('payment_received', [
+    { account: cash, amount },
+    { account: 'customer_receivable', amount: amount.neg(), customerId },
+  ]);
+}
+
+/** The provider kept `fee` of a payment. */
+export function feeJournal(fee: Prisma.Decimal): JournalDraft {
+  return buildJournal('provider_fee', [
+    { account: 'provider_fees', amount: fee },
+    { account: 'stripe_balance', amount: fee.neg() },
+  ]);
+}

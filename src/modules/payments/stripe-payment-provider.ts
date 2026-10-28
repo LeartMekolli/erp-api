@@ -106,10 +106,10 @@ export class StripePaymentProvider implements PaymentProvider {
 
   async ensureCustomer(
     keys: ProviderKeys,
-    input: { customerId: string; name: string; email: string; idempotencyKey: string },
+    input: { customerId: string; name: string; email: string | null; idempotencyKey: string },
   ): Promise<{ id: string }> {
     const customer = await this.client(keys).customers.create(
-      { name: input.name, email: input.email, metadata: { customer_id: input.customerId } },
+      { name: input.name, email: input.email ?? undefined, metadata: { customer_id: input.customerId } },
       { idempotencyKey: input.idempotencyKey },
     );
     return { id: customer.id };

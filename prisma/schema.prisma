@@ -90,6 +90,7 @@ model Tenant {
   paymentEvents   PaymentEvent[]
   customerPaymentTerms CustomerPaymentTerms[]
   orderPayments   OrderPayment[]
+  invoices        Invoice[]
 
   @@map("tenant")
 }
@@ -1724,6 +1725,7 @@ model Order {
   comments       OrderComment[]
   ledgerJournals LedgerJournal[]
   payments       OrderPayment[]
+  invoice        Invoice?
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
@@ -1957,6 +1959,35 @@ model OrderPayment {
   @@unique([tenantId, providerCheckoutId])
   @@index([tenantId, orderId])
   @@map("order_payment")
+}
+
+// A pay-later order's invoice, made once it ships (Payments spec). Written `creating` before the
+// provider is called, so a retried job finds it and makes the same invoice there.
+model Invoice {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  tenantId          String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId           String    @map("order_id") @db.Uuid
+  providerInvoiceId String?   @map("provider_invoice_id")
+  url               String?
+  linesAmount       Decimal   @map("lines_amount") @db.Decimal(18, 2)
+  shipping          Decimal   @db.Decimal(18, 2)
+  tax               Decimal   @db.Decimal(18, 2)
+  total             Decimal   @db.Decimal(18, 2)
+  currency          String    @db.Char(3)
+  dueOn             DateTime  @map("due_on") @db.Date
+  // creating | open | paid | void
+  status            String
+  paidAt            DateTime? @map("paid_at")
+  overdueNotifiedAt DateTime? @map("overdue_notified_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, orderId])
+  @@unique([tenantId, providerInvoiceId])
+  @@map("invoice")
 }
 
 // How a customer pays (Payments spec). No row means pay first, within 30 days, with no limit.

@@ -11,9 +11,12 @@ import { CheckoutService } from './checkout.service';
 import { CreditController } from './credit.controller';
 import { CreditService } from './credit.service';
 import { FakePaymentProvider } from './fake-payment-provider';
+import { InvoiceHandler } from './invoice.handler';
+import { InvoicesService } from './invoices.service';
 import { LedgerController } from './ledger.controller';
 import { LedgerService } from './ledger.service';
 import { OrderStarter } from './order-starter';
+import { OverdueInvoicesHandler } from './overdue-invoices.handler';
 import { PaymentAccountController } from './payment-account.controller';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentEventHandler } from './payment-event.handler';
@@ -43,6 +46,9 @@ import { WebhooksController } from './webhooks.controller';
     OrderStarter,
     CheckoutEvents,
     CreditService,
+    InvoicesService,
+    InvoiceHandler,
+    OverdueInvoicesHandler,
     UnpaidOrdersHandler,
     {
       provide: PAYMENT_PROVIDER,

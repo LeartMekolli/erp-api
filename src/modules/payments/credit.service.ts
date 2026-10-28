@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { localDate } from '../orders/dates';
 import type { OrderResponse } from '../orders/order-response';
 import { OrdersService } from '../orders/orders.service';
 import { CheckoutService } from './checkout.service';
@@ -45,19 +46,35 @@ export class CreditService {
     return this.orders.get(auth.tenantId, orderId);
   }
 
-  /** The customer's terms, what it owes or will owe, and its invoices (filled once invoicing exists). */
+  /** The customer's terms, what it owes or will owe, and its open invoices: past due or not, in the workspace's today. */
   async customer(tenantId: string, customerId: string): Promise<PaymentCustomerResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       // Row-level security hides other workspaces' customers, so a foreign id is simply not found.
       if (!(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
         throw new NotFoundException('Customer not found');
       }
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+      const today = localDate(new Date(), tenant.timezone);
+      const invoices = (
+        await tx.invoice.findMany({
+          where: { status: 'open', order: { customerId } },
+          orderBy: [{ dueOn: 'asc' }, { id: 'asc' }],
+          include: { order: { select: { number: true } } },
+        })
+      ).map((row) => ({
+        order_id: row.orderId,
+        order_number: row.order.number,
+        total: row.total.toFixed(2),
+        currency: row.currency,
+        due_on: row.dueOn.toISOString().slice(0, 10),
+        url: row.url,
+      }));
       return {
         ...paymentTermsResponse(await tx.customerPaymentTerms.findUnique({ where: { customerId } })),
         exposure: (await creditExposure(tx, customerId)).toFixed(2),
         balance: (await this.ledger.balance(tx, 'customer_receivable', { customerId })).toFixed(2),
-        open_invoices: [],
-        overdue_invoices: [],
+        open_invoices: invoices.filter((invoice) => invoice.due_on >= today),
+        overdue_invoices: invoices.filter((invoice) => invoice.due_on < today),
       };
     });
   }

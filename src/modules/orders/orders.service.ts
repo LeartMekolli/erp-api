@@ -13,7 +13,7 @@ import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
-import { paidAndRefunded, paymentState } from '../payments/payment-state';
+import { INVOICE_STATUSES, paidAndRefunded, paymentState } from '../payments/payment-state';
 import type { PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
@@ -96,13 +96,15 @@ export interface OrderPaymentHooks {
   placed(tenantId: string, orderId: string): Promise<void>;
   /** Lines of a waiting order, or all of it, were cancelled: the open checkout is for the old amount. */
   cancelled(tenantId: string, orderId: string): Promise<void>;
+  /** A pay-later order not paid has shipped: invoice it. */
+  shipped(tenantId: string, orderId: string): Promise<void>;
 }
 
 /** Placing orders and reading them (Orders spec, goals 1–4, 7, 8, 10, 11, 15, 17). */
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
-  private paymentHooks: OrderPaymentHooks | undefined;
+  private paymentHooks: Partial<OrderPaymentHooks> = {};
 
   constructor(
     private readonly prisma: PrismaService,
@@ -115,8 +117,9 @@ export class OrdersService {
     @Inject(TAX_CALCULATOR) private readonly tax: TaxCalculator,
   ) {}
 
-  registerPaymentHooks(hooks: OrderPaymentHooks): void {
-    this.paymentHooks = hooks;
+  /** Each Payments service registers the hooks it answers for. */
+  registerPaymentHooks(hooks: Partial<OrderPaymentHooks>): void {
+    this.paymentHooks = { ...this.paymentHooks, ...hooks };
   }
 
   /**
@@ -272,7 +275,7 @@ export class OrdersService {
     if (placed.payment.state !== 'awaiting_payment') return placed;
     // Waiting for payment: the checkout is opened now, outside the transaction, and read back.
     await this.afterCommit(placed.id, async () => {
-      await this.paymentHooks?.placed(auth.tenantId, placed.id);
+      await this.paymentHooks.placed?.(auth.tenantId, placed.id);
     });
     return this.get(auth.tenantId, placed.id);
   }
@@ -301,6 +304,11 @@ export class OrdersService {
         tracking: shipped.shipping.tracking ?? NOT_GIVEN,
       });
     });
+    if (shipped.payment.terms === 'pay_later' && shipped.payment.state === 'not_billed') {
+      await this.afterCommit(id, async () => {
+        await this.paymentHooks.shipped?.(auth.tenantId, id);
+      });
+    }
     return shipped;
   }
 
@@ -519,7 +527,7 @@ export class OrdersService {
   /** Lets Payments know a waiting order changed, after commit; a failure is logged. */
   private async afterPaymentChange(tenantId: string, orderId: string): Promise<void> {
     await this.afterCommit(orderId, async () => {
-      await this.paymentHooks?.cancelled(tenantId, orderId);
+      await this.paymentHooks.cancelled?.(tenantId, orderId);
     });
   }
 
@@ -828,6 +836,11 @@ export class OrdersService {
       where: { orderId: { in: ids }, status: 'open', url: { not: null } },
       select: { orderId: true, url: true },
     });
+    // An invoice once the provider has made it; one still being made is not shown.
+    const invoices = await tx.invoice.findMany({
+      where: { orderId: { in: ids }, status: { in: [...INVOICE_STATUSES] } },
+      select: { orderId: true, url: true, dueOn: true, status: true },
+    });
 
     return orders.map((order) => {
       const method = methods.find((one) => one.id === order.shippingMethodId)!;
@@ -859,6 +872,10 @@ export class OrdersService {
       const { paid, refunded } = paidAndRefunded(journals.filter((journal) => journal.orderId === order.id));
       const releaser = releasers.find((user) => user.id === order.releasedByUserId);
       const terms = order.paymentTerms as PaymentTerms;
+      const found = invoices.find((row) => row.orderId === order.id);
+      const invoice = found?.url
+        ? { url: found.url, due_on: found.dueOn.toISOString().slice(0, 10), status: found.status as (typeof INVOICE_STATUSES)[number] }
+        : null;
       return {
         id: order.id,
         number: order.number,
@@ -891,8 +908,7 @@ export class OrdersService {
             started: order.productionStartedAt !== null,
             paid,
             refunded,
-            // Invoices arrive with a later payment task.
-            invoice: null,
+            invoice: invoice && { status: invoice.status, dueOn: invoice.due_on },
             today,
           }),
           pay_by: order.payBy?.toISOString() ?? null,
@@ -900,8 +916,10 @@ export class OrdersService {
           released: releaser && order.releaseReason ? { by: releaser, reason: order.releaseReason } : null,
           paid: paid.toFixed(2),
           refunded: refunded.toFixed(2),
-          pay_url: openCheckouts.find((checkout) => checkout.orderId === order.id)?.url ?? null,
-          invoice: null,
+          // A waiting order's checkout, or else an open invoice's page, where it is paid too.
+          pay_url:
+            openCheckouts.find((checkout) => checkout.orderId === order.id)?.url ?? (invoice?.status === 'open' ? invoice.url : null),
+          invoice,
         },
       };
     });
