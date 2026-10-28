@@ -414,6 +414,22 @@ export const EVENTS = {
       },
     },
   },
+  'credits.added': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      credits: { sample: '100' },
+      source: { sample: 'pack' },
+      expires_on: { sample: '2027-10-28' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ credits }} credits added',
+        body: '{{ credits }} credits have been added to your balance. They can be used until {{ expires_on }}.',
+      },
+    },
+  },
   'subscription.changed': {
     audience: { kind: 'customer' },
     channels: ['email', 'feed'],

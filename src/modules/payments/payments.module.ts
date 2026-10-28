@@ -13,6 +13,9 @@ import { CreditService } from './credit.service';
 import { AllowancesHandler } from './credits/allowances.handler';
 import { AllowancesService } from './credits/allowances.service';
 import { CreditExpiryHandler } from './credits/credit-expiry.handler';
+import { CreditPacksController } from './credits/credit-packs.controller';
+import { CreditPacksService } from './credits/credit-packs.service';
+import { PackEvents } from './credits/pack-events';
 import { CreditsController } from './credits/credits.controller';
 import { CreditsService } from './credits/credits.service';
 import { FakePaymentProvider } from './fake-payment-provider';
@@ -69,6 +72,7 @@ import { WebhooksController } from './webhooks.controller';
     PlansController,
     CreditsController,
     SubscriptionsController,
+    CreditPacksController,
   ],
   providers: [
     PaymentAccountService,
@@ -99,6 +103,8 @@ import { WebhooksController } from './webhooks.controller';
     SubscriptionEvents,
     AllowancesService,
     AllowancesHandler,
+    CreditPacksService,
+    PackEvents,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],

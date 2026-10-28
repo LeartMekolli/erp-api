@@ -103,6 +103,8 @@ model Tenant {
   creditEntries   CreditEntry[]
   customerSubscriptions CustomerSubscription[]
   subscriptionNotices   SubscriptionNotice[]
+  creditPacks           CreditPack[]
+  creditPackPurchases   CreditPackPurchase[]
 
   @@map("tenant")
 }
@@ -155,6 +157,7 @@ model User {
   refunds        Refund[]
   payouts        Payout[]
   creditGrants   CreditGrant[]
+  creditPackPurchases CreditPackPurchase[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1122,6 +1125,7 @@ model Customer {
   creditEntries CreditEntry[]
   subscription  CustomerSubscription?
   subscriptionNotices SubscriptionNotice[]
+  creditPackPurchases CreditPackPurchase[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2283,6 +2287,59 @@ model SubscriptionNotice {
   @@unique([tenantId, providerInvoiceId])
   @@index([tenantId, customerId])
   @@map("subscription_notice")
+}
+
+// Credits a customer buys once, on any plan (Payments 2 spec, goal 10). Workspace data, sold through a
+// checkout for the amount on this row: no price at the provider.
+model CreditPack {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name      String
+  credits   Int
+  price     Decimal  @db.Decimal(18, 2)
+  currency  String   @db.Char(3)
+  // How long the credits last from payment.
+  validDays Int      @map("valid_days")
+  // active | archived
+  status    String   @default("active")
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  purchases CreditPackPurchase[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId])
+  @@map("credit_pack")
+}
+
+// One purchase of a pack, with what was sold copied from it: a later edit of the pack changes nothing here.
+model CreditPackPurchase {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  tenantId           String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId         String    @map("customer_id") @db.Uuid
+  packId             String    @map("pack_id") @db.Uuid
+  credits            Int
+  price              Decimal   @db.Decimal(18, 2)
+  currency           String    @db.Char(3)
+  validDays          Int       @map("valid_days")
+  // open | paid | expired
+  status             String    @default("open")
+  providerCheckoutId String?   @map("provider_checkout_id")
+  createdByUserId    String    @map("created_by_user_id") @db.Uuid
+  paidAt             DateTime? @map("paid_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer  Customer   @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  pack      CreditPack @relation(fields: [tenantId, packId], references: [tenantId, id], onDelete: NoAction)
+  createdBy User       @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerCheckoutId])
+  @@index([tenantId, customerId])
+  @@map("credit_pack_purchase")
 }
 
 // Credits given to a customer (Payments 2 spec, D48): a monthly allowance, a pack, a campaign or a staff

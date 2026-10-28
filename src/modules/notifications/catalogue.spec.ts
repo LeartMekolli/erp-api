@@ -7,6 +7,7 @@ describe('notification catalogue', () => {
   it('declares the events of the foundation, the catalog, customers, partners, orders and payments', () => {
     expect(events.sort()).toEqual([
       'auth.password_reset_requested',
+      'credits.added',
       'customer.invited',
       'file.measured',
       'invoice.overdue',
@@ -91,6 +92,12 @@ describe('notification catalogue', () => {
     expect(EVENTS['subscription.ended.staff'].audience).toEqual({ kind: 'permission', permission: 'payment.read' });
     expect(EVENTS['subscription.ended.staff'].subjectType).toBe('customer');
     expect(Object.keys(variablesOf('subscription.ended.staff')).sort()).toEqual(['customer', 'pay_later', 'plan']);
+  });
+
+  it("tells the customer's people of credits added to their balance", () => {
+    expect(EVENTS['credits.added'].audience).toEqual({ kind: 'customer' });
+    expect(EVENTS['credits.added'].subjectType).toBe('customer');
+    expect(Object.keys(variablesOf('credits.added')).sort()).toEqual(['credits', 'expires_on', 'source']);
   });
 
   it.each(events)('%s: every sample is non-empty', (event) => {
