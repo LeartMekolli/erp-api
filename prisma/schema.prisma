@@ -102,6 +102,7 @@ model Tenant {
   creditSpends    CreditSpend[]
   creditEntries   CreditEntry[]
   customerSubscriptions CustomerSubscription[]
+  subscriptionNotices   SubscriptionNotice[]
 
   @@map("tenant")
 }
@@ -1120,6 +1121,7 @@ model Customer {
   creditSpends  CreditSpend[]
   creditEntries CreditEntry[]
   subscription  CustomerSubscription?
+  subscriptionNotices SubscriptionNotice[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2205,6 +2207,7 @@ model PlanPrice {
   plan   Plan   @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
   subscriptions          CustomerSubscription[] @relation("subscription_price")
   scheduledSubscriptions CustomerSubscription[] @relation("subscription_scheduled_price")
+  pendingSubscriptions   CustomerSubscription[] @relation("subscription_pending_price")
 
   @@unique([tenantId, id])
   @@unique([tenantId, providerPriceId])
@@ -2244,6 +2247,8 @@ model CustomerSubscription {
   cancelAtPeriodEnd      Boolean   @default(false) @map("cancel_at_period_end")
   // The price it moves to at the end of the period (a downgrade).
   scheduledPlanPriceId   String?   @map("scheduled_plan_price_id") @db.Uuid
+  // An upgrade waiting for its prorated invoice to be paid.
+  pendingPlanPriceId     String?   @map("pending_plan_price_id") @db.Uuid
   // Where monthly allowances count from: set when the subscription becomes active from no paid plan.
   allowanceAnchor        DateTime? @map("allowance_anchor")
   createdAt              DateTime  @default(now()) @map("created_at")
@@ -2253,11 +2258,31 @@ model CustomerSubscription {
   customer       Customer   @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
   planPrice      PlanPrice  @relation("subscription_price", fields: [tenantId, planPriceId], references: [tenantId, id], onDelete: NoAction)
   scheduledPrice PlanPrice? @relation("subscription_scheduled_price", fields: [tenantId, scheduledPlanPriceId], references: [tenantId, id], onDelete: NoAction)
+  pendingPrice   PlanPrice? @relation("subscription_pending_price", fields: [tenantId, pendingPlanPriceId], references: [tenantId, id], onDelete: NoAction)
 
   @@unique([tenantId, customerId])
   @@unique([tenantId, providerSubscriptionId])
   @@index([tenantId, planPriceId])
   @@map("customer_subscription")
+}
+
+// A notice about a subscription's invoice already sent, such as a failed payment: the provider tells
+// of one invoice many times, the customer hears of it once.
+model SubscriptionNotice {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId        String   @map("customer_id") @db.Uuid
+  // payment_failed | upgrade_failed
+  kind              String
+  providerInvoiceId String   @map("provider_invoice_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, providerInvoiceId])
+  @@index([tenantId, customerId])
+  @@map("subscription_notice")
 }
 
 // Credits given to a customer (Payments 2 spec, D48): a monthly allowance, a pack, a campaign or a staff

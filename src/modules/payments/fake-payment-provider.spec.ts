@@ -158,7 +158,14 @@ describe('FakePaymentProvider', () => {
     expect(provider.subscription(subscriptionId)).toEqual(subscription);
 
     const invoice = await provider.getInvoice(keys, invoiceId);
-    expect(invoice).toMatchObject({ status: 'paid', paid: true, subscriptionId, periodStart: subscription.currentPeriodStart, periodEnd: nextMonth });
+    expect(invoice).toMatchObject({
+      status: 'paid',
+      paid: true,
+      subscriptionId,
+      reason: 'create',
+      periodStart: subscription.currentPeriodStart,
+      periodEnd: nextMonth,
+    });
     expect(invoice.amount.toFixed(2)).toBe('29.00');
     expect(invoice.fee.toFixed(2)).toBe('1.14');
   });
@@ -195,6 +202,97 @@ describe('FakePaymentProvider', () => {
     );
   });
 
+  describe('changing a subscription', () => {
+    /** A subscription active on a monthly price of `amount`, with another price to move to. */
+    async function subscribed(tag: string, amount = '29.00', other = '99.00') {
+      const provider = new FakePaymentProvider();
+      const product = await provider.ensureProduct(keys, { name: 'Plan', idempotencyKey: `plan-${tag}` });
+      const price = (value: string, key: string) =>
+        provider.createPrice(keys, {
+          productId: product.id,
+          amount: new Prisma.Decimal(value),
+          currency: 'EUR',
+          interval: 'month',
+          idempotencyKey: `${key}-${tag}`,
+        });
+      const current = await price(amount, 'current');
+      const next = await price(other, 'next');
+      const checkout = await provider.createSubscriptionCheckout(keys, {
+        providerCustomerId: `fake_customer_${tag}`,
+        priceId: current.id,
+        successUrl: 'https://shop.test/ok',
+        cancelUrl: 'https://shop.test/no',
+        metadata: {},
+        idempotencyKey: `checkout-${tag}`,
+      });
+      const { subscriptionId } = provider.completeSubscriptionCheckout(checkout.id);
+      return { provider, subscriptionId, current: current.id, next: next.id };
+    }
+
+    it('moves to the upgraded price only once its invoice is paid', async () => {
+      const { provider, subscriptionId, current, next } = await subscribed('up');
+
+      await provider.upgradeSubscription(keys, subscriptionId, { priceId: next, idempotencyKey: 'up-1' });
+      expect(provider.subscription(subscriptionId).priceId).toBe(current);
+
+      const { invoiceId } = provider.settleUpgrade(subscriptionId, true);
+
+      expect(provider.subscription(subscriptionId)).toMatchObject({ priceId: next, status: 'active' });
+      const invoice = await provider.getInvoice(keys, invoiceId);
+      expect(invoice).toMatchObject({ status: 'paid', subscriptionId, reason: 'update' });
+      expect(invoice.amount.toFixed(2)).toBe('70.00');
+    });
+
+    it('keeps the old price when the upgrade is not paid, its invoice left open', async () => {
+      const { provider, subscriptionId, current, next } = await subscribed('up-unpaid');
+
+      await provider.upgradeSubscription(keys, subscriptionId, { priceId: next, idempotencyKey: 'up-2' });
+      const { invoiceId } = provider.settleUpgrade(subscriptionId, false);
+
+      expect(provider.subscription(subscriptionId)).toMatchObject({ priceId: current, status: 'active' });
+      expect(await provider.getInvoice(keys, invoiceId)).toMatchObject({ status: 'open', paid: false, reason: 'update' });
+    });
+
+    it('moves to a scheduled price at renewal, and a removed schedule changes nothing', async () => {
+      const { provider, subscriptionId, current, next } = await subscribed('down', '99.00', '29.00');
+      const end = provider.subscription(subscriptionId).currentPeriodEnd;
+
+      await provider.scheduleSubscriptionPrice(keys, subscriptionId, { priceId: next, idempotencyKey: 'down-1' });
+      expect(provider.subscription(subscriptionId)).toMatchObject({ priceId: current, scheduledPriceId: next });
+      await provider.scheduleSubscriptionPrice(keys, subscriptionId, { priceId: null, idempotencyKey: 'down-2' });
+      expect(provider.subscription(subscriptionId).scheduledPriceId).toBeNull();
+      await provider.scheduleSubscriptionPrice(keys, subscriptionId, { priceId: next, idempotencyKey: 'down-3' });
+
+      const { invoiceId } = provider.renew(subscriptionId, true);
+
+      expect(provider.subscription(subscriptionId)).toMatchObject({ priceId: next, scheduledPriceId: null, status: 'active', currentPeriodStart: end });
+      const invoice = await provider.getInvoice(keys, invoiceId!);
+      expect(invoice).toMatchObject({ status: 'paid', reason: 'cycle' });
+      expect(invoice.amount.toFixed(2)).toBe('29.00');
+    });
+
+    it('ends a subscription cancelled at the period end on renewal, with no invoice', async () => {
+      const { provider, subscriptionId } = await subscribed('cancel');
+
+      await provider.setCancelAtPeriodEnd(keys, subscriptionId, true);
+      expect(provider.subscription(subscriptionId).cancelAtPeriodEnd).toBe(true);
+
+      expect(provider.renew(subscriptionId, true)).toEqual({ invoiceId: null });
+      expect(provider.subscription(subscriptionId).status).toBe('ended');
+    });
+
+    it('is past due when a renewal is not paid, and ends when the provider gives up', async () => {
+      const { provider, subscriptionId } = await subscribed('late');
+
+      const { invoiceId } = provider.renew(subscriptionId, false);
+
+      expect(provider.subscription(subscriptionId).status).toBe('past_due');
+      expect(await provider.getInvoice(keys, invoiceId!)).toMatchObject({ status: 'open', reason: 'cycle' });
+      provider.giveUp(subscriptionId);
+      expect(provider.subscription(subscriptionId).status).toBe('ended');
+    });
+  });
+
   it('has no subscription on an order checkout or an order invoice', async () => {
     const provider = new FakePaymentProvider();
     const { id } = await provider.createCheckout(keys, checkoutInput('k-sub-none'));
@@ -209,7 +307,7 @@ describe('FakePaymentProvider', () => {
     });
 
     expect((await provider.getCheckout(keys, id)).subscriptionId).toBeNull();
-    expect(await provider.getInvoice(keys, invoice.id)).toMatchObject({ subscriptionId: null, periodStart: null, periodEnd: null });
+    expect(await provider.getInvoice(keys, invoice.id)).toMatchObject({ subscriptionId: null, reason: null, periodStart: null, periodEnd: null });
   });
 
   it('refuses one transfer after failNextTransfer, then works again', async () => {

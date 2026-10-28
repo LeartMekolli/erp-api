@@ -414,6 +414,99 @@ export const EVENTS = {
       },
     },
   },
+  'subscription.changed': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      plan: { sample: 'Business' },
+    },
+    defaults: {
+      en: {
+        subject: 'You are now on {{ plan }}',
+        body: 'Your plan is now {{ plan }}. Its prices and benefits apply from now on.',
+      },
+    },
+  },
+  'subscription.downgrade_scheduled': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      plan: { sample: 'Pro' },
+      on: { sample: '2026-11-28' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your plan changes to {{ plan }} on {{ on }}',
+        body: 'Your plan changes to {{ plan }} on {{ on }}. Until then, you keep your current plan.',
+      },
+    },
+  },
+  'subscription.upgrade_failed': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      plan: { sample: 'Business' },
+      portal_url: { sample: 'https://shop.example/billing', url: true },
+    },
+    defaults: {
+      en: {
+        subject: 'Your change to {{ plan }} did not go through',
+        body:
+          'We could not take the payment for your change to {{ plan }}, so your plan stays as it was.\n\n' +
+          'Check your card and try again: {{ portal_url }}',
+      },
+    },
+  },
+  'subscription.payment_failed': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      plan: { sample: 'Pro' },
+      portal_url: { sample: 'https://shop.example/billing', url: true },
+    },
+    defaults: {
+      en: {
+        subject: 'Payment for your {{ plan }} plan failed',
+        body:
+          'We could not take the payment for your {{ plan }} plan. You keep it while we try again.\n\n' +
+          'Update your card here: {{ portal_url }}',
+      },
+    },
+  },
+  'subscription.ended': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      plan: { sample: 'Pro' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your {{ plan }} plan has ended',
+        body: 'Your {{ plan }} plan has ended, and you are on the free plan now. Orders placed before keep their prices.',
+      },
+    },
+  },
+  'subscription.ended.staff': {
+    audience: { kind: 'permission', permission: 'payment.read' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      customer: { sample: 'Brightline' },
+      plan: { sample: 'Pro' },
+      pay_later: { sample: 'yes' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ customer }} is back on the free plan',
+        body: "{{ customer }}'s {{ plan }} plan has ended; they are on the free plan now. Pays later: {{ pay_later }}.",
+      },
+    },
+  },
   'refund.made': {
     audience: { kind: 'customer' },
     channels: ['email', 'feed'],

@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../../docs/api-doc';
@@ -7,8 +8,13 @@ import type { CustomerAuth } from '../../identity/auth-context';
 import { CustomerAccess, RequirePermission } from '../../identity/route-markers';
 import { payLinkResponseSchema } from '../payment-response';
 import type { PayLinkResponse } from '../payment-response';
-import { portalPlanListResponseSchema, subscriptionCheckoutSchema, subscriptionResponseSchema } from './plan-response';
-import type { PortalPlanListResponse, SubscriptionCheckout, SubscriptionResponse } from './plan-response';
+import {
+  portalPlanListResponseSchema,
+  subscriptionChangeSchema,
+  subscriptionCheckoutSchema,
+  subscriptionResponseSchema,
+} from './plan-response';
+import type { PortalPlanListResponse, SubscriptionChange, SubscriptionCheckout, SubscriptionResponse } from './plan-response';
 import { SubscriptionsService } from './subscriptions.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
@@ -74,6 +80,30 @@ export class SubscriptionsController {
     @Body(new ZodValidationPipe(subscriptionCheckoutSchema)) body: SubscriptionCheckout,
   ): Promise<PayLinkResponse> {
     return this.subscriptions.checkout(customer.tenantId, customer.customerId, body);
+  }
+
+  @ApiDoc({
+    summary: "Move the customer's subscription to another plan or interval.",
+    description:
+      'Costing as much or more a month, it applies at once, charged the prorated difference: 202, and the plan changes ' +
+      'only once that payment is taken. Costing less, it applies at the end of the period: 200, shown as `change`. The ' +
+      'free plan ends the subscription at the end of the period; the current plan and interval undo a change asked ' +
+      'before. A 409 without an active subscription (subscribe through checkout), while a payment is late, or for a ' +
+      'plan not sold. A 503 when the payment provider does not answer.',
+    body: subscriptionChangeSchema,
+    response: subscriptionResponseSchema,
+    errors: [400, 404, 409, 503],
+  })
+  @CustomerAccess('owner')
+  @Post('portal/customers/:customerId/subscription/change')
+  async change(
+    @CurrentCustomer() customer: CustomerAuth,
+    @Body(new ZodValidationPipe(subscriptionChangeSchema)) body: SubscriptionChange,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<SubscriptionResponse> {
+    const { pending, view } = await this.subscriptions.change(customer.tenantId, customer.customerId, body);
+    res.status(pending ? 202 : 200);
+    return view;
   }
 
   @ApiDoc({

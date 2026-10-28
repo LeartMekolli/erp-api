@@ -35,6 +35,29 @@ export class SubscriptionEvents implements OnModuleInit {
     }
     registerEventHandler('invoice.paid', (tenantId, event) => this.invoicePaid(tenantId, event), OWNER);
     registerEventHandler('invoice.payment_succeeded', (tenantId, event) => this.invoicePaid(tenantId, event), OWNER);
+    registerEventHandler('invoice.payment_failed', (tenantId, event) => this.invoiceFailed(tenantId, event), OWNER);
+  }
+
+  /** A subscription invoice the provider couldn't charge: the customer is told once. An order's is skipped. */
+  async invoiceFailed(tenantId: string, event: PaymentEvent): Promise<void> {
+    const invoice = await this.subscriptionInvoice(tenantId, event.objectId);
+    if (!invoice?.subscriptionId || invoice.paid) return;
+    await this.subscriptions.paymentFailed(tenantId, invoice.subscriptionId, { id: event.objectId, reason: invoice.reason });
+  }
+
+  /** The invoice, unless it is an order's or the provider doesn't know it. */
+  private async subscriptionInvoice(tenantId: string, providerInvoiceId: string) {
+    const forOrder = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.invoice.findFirst({ where: { providerInvoiceId }, select: { id: true } }),
+    );
+    if (forOrder) return null;
+    try {
+      return await this.provider.getInvoice((await this.accounts.keysFor(tenantId)).keys, providerInvoiceId);
+    } catch (error) {
+      // Made by someone else on the same account: not ours, and asking again won't change that.
+      if (error instanceof ProviderNotFoundError) return null;
+      throw error;
+    }
   }
 
   /** A subscription's checkout: the subscription it made is synced. An order's checkout is skipped. */
@@ -59,18 +82,8 @@ export class SubscriptionEvents implements OnModuleInit {
    * paid and the provider's fee journalled, each once. An order's invoice is skipped.
    */
   async invoicePaid(tenantId: string, event: PaymentEvent): Promise<void> {
-    const forOrder = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.invoice.findFirst({ where: { providerInvoiceId: event.objectId }, select: { id: true } }),
-    );
-    if (forOrder) return;
-    let invoice: Awaited<ReturnType<PaymentProvider['getInvoice']>>;
-    try {
-      invoice = await this.provider.getInvoice((await this.accounts.keysFor(tenantId)).keys, event.objectId);
-    } catch (error) {
-      if (error instanceof ProviderNotFoundError) return;
-      throw error;
-    }
-    if (!invoice.subscriptionId || !invoice.paid) return;
+    const invoice = await this.subscriptionInvoice(tenantId, event.objectId);
+    if (!invoice?.subscriptionId || !invoice.paid) return;
 
     await this.subscriptions.sync(tenantId, invoice.subscriptionId);
     const subscription = await this.subscriptions.subscriptionOf(tenantId, invoice.subscriptionId);

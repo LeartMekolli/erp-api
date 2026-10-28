@@ -175,8 +175,8 @@ export const subscriptionResponseSchema = z.strictObject({
   status: z.enum(['free', 'incomplete', 'active', 'past_due']),
   /** When the current period ends: the next payment, or the end of a cancelled subscription. */
   current_period_end: z.iso.datetime().nullable(),
-  /** A change that takes effect at the end of the period (a downgrade). */
-  change: z.strictObject({ plan: planRefSchema, interval: z.enum(PLAN_INTERVALS), on: z.iso.datetime() }).nullable(),
+  /** A change that takes effect at the end of the period: a downgrade, or the free plan (no interval). */
+  change: z.strictObject({ plan: planRefSchema, interval: z.enum(PLAN_INTERVALS).nullable(), on: z.iso.datetime() }).nullable(),
   cancel_at_period_end: z.boolean(),
 });
 export type SubscriptionResponse = z.infer<typeof subscriptionResponseSchema>;
@@ -187,3 +187,7 @@ export const subscriptionCheckoutSchema = z.strictObject({
   interval: z.enum(PLAN_INTERVALS),
 });
 export type SubscriptionCheckout = z.infer<typeof subscriptionCheckoutSchema>;
+
+/** The plan to move to: the free default plan cancels at the period end, the current one undoes a change. */
+export const subscriptionChangeSchema = subscriptionCheckoutSchema;
+export type SubscriptionChange = SubscriptionCheckout;

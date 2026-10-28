@@ -9,13 +9,27 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { customerBillingLink } from '../../notifications/web-links';
 import { PaymentAccountService } from '../payment-account.service';
 import { PAYMENT_PROVIDER } from '../payment-provider';
-import type { PaymentProvider } from '../payment-provider';
+import type { InvoiceReason, PaymentProvider } from '../payment-provider';
 import { ProviderCustomers } from '../provider-customers';
 import { PLAN_GIVING_STATUSES, planOf } from './plan-of';
 import type { PlanBenefits } from './plan-of';
 import { isPublished, planInclude, portalPlanResponse } from './plan-response';
-import type { PortalPlanListResponse, SubscriptionCheckout, SubscriptionResponse } from './plan-response';
+import type { PortalPlanListResponse, SubscriptionChange, SubscriptionCheckout, SubscriptionResponse } from './plan-response';
+import { isUpgrade } from './plans';
 import type { PlanInterval } from './plans';
+
+type SubscriptionEvent =
+  | 'subscription.started'
+  | 'subscription.changed'
+  | 'subscription.downgrade_scheduled'
+  | 'subscription.ended'
+  | 'subscription.ended.staff';
+
+/** A notice `sync` found to send, once its transaction has committed. */
+interface Notice {
+  event: SubscriptionEvent;
+  variables: Record<string, string>;
+}
 
 /** A subscription the customer holds, paid or not yet: a second one can't be bought. */
 const HELD_STATUSES = ['incomplete', ...PLAN_GIVING_STATUSES];
@@ -88,20 +102,20 @@ export class SubscriptionsService {
           cancel_at_period_end: false,
         };
       }
+      const on = row.currentPeriodEnd.toISOString();
+      const free = row.cancelAtPeriodEnd ? await tx.plan.findFirstOrThrow({ where: { isDefault: true } }) : null;
       const scheduled = row.scheduledPrice;
       return {
         plan: { key: row.planPrice.plan.key, name: row.planPrice.plan.name },
         interval: row.planPrice.interval as PlanInterval,
         price: row.planPrice.amount.toFixed(2),
         status: row.status as SubscriptionResponse['status'],
-        current_period_end: row.currentPeriodEnd.toISOString(),
-        change: scheduled
-          ? {
-              plan: { key: scheduled.plan.key, name: scheduled.plan.name },
-              interval: scheduled.interval as PlanInterval,
-              on: row.currentPeriodEnd.toISOString(),
-            }
-          : null,
+        current_period_end: on,
+        change: free
+          ? { plan: { key: free.key, name: free.name }, interval: null, on }
+          : scheduled
+            ? { plan: { key: scheduled.plan.key, name: scheduled.plan.name }, interval: scheduled.interval as PlanInterval, on }
+            : null,
         cancel_at_period_end: row.cancelAtPeriodEnd,
       };
     });
@@ -144,6 +158,94 @@ export class SubscriptionsService {
     }
   }
 
+  /**
+   * Asks the provider to move the customer's subscription to another plan (spec B3): costing as
+   * much or more a month, at once on payment (`pending: true`); costing less, at the period end; the
+   * free plan, by cancelling at the period end; the current plan and interval, by undoing any of
+   * those. Never writes the row itself: `sync` reads what the provider made of it.
+   */
+  async change(tenantId: string, customerId: string, input: SubscriptionChange): Promise<{ pending: boolean; view: SubscriptionResponse }> {
+    const prepared = await this.prisma.inTenant(tenantId, async (tx) => {
+      const keys = (await this.accounts.keys(tx)).keys;
+      const row = await tx.customerSubscription.findFirst({ where: { customerId, status: { in: HELD_STATUSES } }, include: { planPrice: true } });
+      if (!row || row.status === 'incomplete') throw new ConflictException('No subscription to change; subscribe through checkout');
+      if (row.status === 'past_due') throw new ConflictException('The last payment is late; update the card in the billing portal first');
+      const plan = await tx.plan.findFirst({ where: { id: input.plan_id }, include: planInclude });
+      if (!plan) throw new NotFoundException('Plan not found');
+      const current = row.planPrice;
+      if (plan.isDefault) return { keys, row, action: 'cancel' as const };
+      if (plan.id === current.planId && input.interval === current.interval) return { keys, row, action: 'undo' as const };
+      if (plan.status !== 'active') throw new ConflictException('This plan is no longer sold');
+      const price = plan.prices.find((candidate) => candidate.interval === input.interval);
+      if (!price?.providerPriceId || !isPublished(plan)) throw new ConflictException('This plan is not ready to be sold yet');
+      const terms = (from: { amount: Prisma.Decimal; interval: string }) => ({ amount: from.amount, interval: from.interval as PlanInterval });
+      return {
+        keys,
+        row,
+        action: isUpgrade(terms(current), terms(price)) ? ('upgrade' as const) : ('schedule' as const),
+        priceId: price.providerPriceId,
+      };
+    });
+
+    const { keys, row } = prepared;
+    const id = row.providerSubscriptionId;
+    try {
+      // Whatever was asked before is replaced by this.
+      if (prepared.action !== 'cancel' && row.cancelAtPeriodEnd) await this.provider.setCancelAtPeriodEnd(keys, id, false);
+      if (row.scheduledPlanPriceId && prepared.action !== 'schedule') {
+        await this.provider.scheduleSubscriptionPrice(keys, id, { priceId: null, idempotencyKey: newId() });
+      }
+      if (prepared.action === 'cancel') await this.provider.setCancelAtPeriodEnd(keys, id, true);
+      if (prepared.action === 'upgrade') await this.provider.upgradeSubscription(keys, id, { priceId: prepared.priceId, idempotencyKey: newId() });
+      if (prepared.action === 'schedule') {
+        await this.provider.scheduleSubscriptionPrice(keys, id, { priceId: prepared.priceId, idempotencyKey: newId() });
+      }
+    } catch (error) {
+      this.logger.error({ err: error, tenantId, customerId }, 'the payment provider refused a subscription change');
+      throw new ServiceUnavailableException('The payment provider is not answering; try again shortly');
+    }
+    await this.sync(tenantId, id);
+    return { pending: prepared.action === 'upgrade', view: await this.view(tenantId, customerId) };
+  }
+
+  /**
+   * A subscription invoice the provider couldn't charge: the customer hears of it once per invoice,
+   * as a failed upgrade (the plan stays) or a late payment (the plan stays while the provider retries).
+   */
+  async paymentFailed(tenantId: string, providerSubscriptionId: string, invoice: { id: string; reason: InvoiceReason | null }): Promise<void> {
+    await this.sync(tenantId, providerSubscriptionId);
+    const notice = await this.prisma.inTenant(tenantId, async (tx) => {
+      const row = await tx.customerSubscription.findFirst({
+        where: { providerSubscriptionId },
+        include: { planPrice: { include: { plan: true } }, pendingPrice: { include: { plan: true } } },
+      });
+      if (!row) return null;
+      await lockCustomer(tx, row.customerId);
+      const kind = invoice.reason === 'update' ? ('upgrade_failed' as const) : ('payment_failed' as const);
+      const [created] = await tx.subscriptionNotice.createManyAndReturn({
+        data: [{ customerId: row.customerId, kind, providerInvoiceId: invoice.id }],
+        skipDuplicates: true,
+      });
+      if (!created) return null;
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { slug: true, customerSiteOrigin: true } });
+      return {
+        kind,
+        customerId: row.customerId,
+        plan: (kind === 'upgrade_failed' ? row.pendingPrice?.plan.name : undefined) ?? row.planPrice.plan.name,
+        portalUrl: customerBillingLink(this.target(tenant)),
+      };
+    });
+    if (!notice) return;
+    await this.tell(tenantId, notice.customerId, () =>
+      this.notifications.raise(
+        tenantId,
+        notice.kind === 'upgrade_failed' ? 'subscription.upgrade_failed' : 'subscription.payment_failed',
+        { type: 'customer', id: notice.customerId },
+        { plan: notice.plan, portal_url: notice.portalUrl },
+      ),
+    );
+  }
+
   /** A link to the provider's billing portal, where the owner changes the card, the plan or cancels. */
   async billingPortal(tenantId: string, customerId: string): Promise<{ url: string }> {
     const prepared = await this.prisma.inTenant(tenantId, async (tx) => ({
@@ -170,7 +272,7 @@ export class SubscriptionsService {
     const keys = (await this.accounts.keysFor(tenantId)).keys;
     const now = await this.provider.getSubscription(keys, providerSubscriptionId);
 
-    const started = await this.prisma.inTenant(tenantId, async (tx) => {
+    const told = await this.prisma.inTenant(tenantId, async (tx): Promise<{ customerId: string; notices: Notice[] } | null> => {
       const byProvider = await tx.customerPaymentTerms.findFirst({
         where: { providerCustomerId: now.providerCustomerId },
         select: { customerId: true },
@@ -184,9 +286,10 @@ export class SubscriptionsService {
         this.logger.warn({ tenantId, providerSubscriptionId }, 'a subscription not of ours was ignored');
         return null;
       }
-      const scheduled = now.scheduledPriceId
-        ? await tx.planPrice.findFirst({ where: { providerPriceId: now.scheduledPriceId }, select: { id: true } })
-        : null;
+      const priceOf = (providerPriceId: string | null) =>
+        providerPriceId ? tx.planPrice.findFirst({ where: { providerPriceId }, include: { plan: true } }) : null;
+      const scheduled = await priceOf(now.scheduledPriceId);
+      const pending = await priceOf(now.pendingPriceId);
 
       await lockCustomer(tx, customerId);
       const existing = await tx.customerSubscription.findFirst({ where: { customerId } });
@@ -205,6 +308,7 @@ export class SubscriptionsService {
         currentPeriodEnd: now.currentPeriodEnd,
         cancelAtPeriodEnd: now.cancelAtPeriodEnd,
         scheduledPlanPriceId: scheduled?.id ?? null,
+        pendingPlanPriceId: pending?.id ?? null,
         // Monthly allowances count from when the subscription became active from no paid plan.
         allowanceAnchor: now.status === 'active' && fresh ? now.currentPeriodStart : (existing?.allowanceAnchor ?? null),
       };
@@ -215,24 +319,57 @@ export class SubscriptionsService {
       if (before.id !== after.id) {
         for (const hook of this.hooks) await hook(tx, { tenantId, customerId, before, after, subscription: row });
       }
-      return now.status === 'active' && fresh ? { customerId, price } : null;
+
+      // What changed, each told once: a repeat of the same state finds nothing new.
+      const notices: Notice[] = [];
+      if (now.status === 'active' && fresh) {
+        notices.push({
+          event: 'subscription.started',
+          variables: { plan: price.plan.name, interval: price.interval, price: `${price.amount.toFixed(2)} ${price.currency}` },
+        });
+      } else if (!fresh && before.id !== after.id && !after.isDefault) {
+        notices.push({ event: 'subscription.changed', variables: { plan: after.name } });
+      }
+      if (scheduled && scheduled.id !== existing?.scheduledPlanPriceId && !fresh) {
+        notices.push({
+          event: 'subscription.downgrade_scheduled',
+          variables: { plan: scheduled.plan.name, on: now.currentPeriodEnd.toISOString().slice(0, 10) },
+        });
+      }
+      if (now.status === 'ended' && existing?.providerSubscriptionId === providerSubscriptionId && existing.status !== 'ended') {
+        const customer = await tx.customer.findUniqueOrThrow({ where: { id: customerId }, select: { name: true } });
+        const terms = await tx.customerPaymentTerms.findUnique({ where: { customerId }, select: { terms: true } });
+        notices.push(
+          { event: 'subscription.ended', variables: { plan: price.plan.name } },
+          {
+            event: 'subscription.ended.staff',
+            variables: { customer: customer.name, plan: price.plan.name, pay_later: terms?.terms === 'pay_later' ? 'yes' : 'no' },
+          },
+        );
+      }
+      return { customerId, notices };
     });
 
-    if (!started) return;
-    try {
-      await this.notifications.raise(tenantId, 'subscription.started', { type: 'customer', id: started.customerId }, {
-        plan: started.price.plan.name,
-        interval: started.price.interval,
-        price: `${started.price.amount.toFixed(2)} ${started.price.currency}`,
-      });
-    } catch (error) {
-      this.logger.error({ err: error, tenantId, customerId: started.customerId }, 'telling of a started subscription failed');
+    if (!told) return;
+    for (const notice of told.notices) {
+      await this.tell(tenantId, told.customerId, () =>
+        this.notifications.raise(tenantId, notice.event, { type: 'customer', id: told.customerId }, notice.variables as never),
+      );
     }
   }
 
   /** The customer of one of our subscriptions, by its provider id; null when it isn't ours. */
   async subscriptionOf(tenantId: string, providerSubscriptionId: string): Promise<CustomerSubscription | null> {
     return this.prisma.inTenant(tenantId, (tx) => tx.customerSubscription.findFirst({ where: { providerSubscriptionId } }));
+  }
+
+  /** A notice runs after its change committed; failing to tell never undoes the change. */
+  private async tell(tenantId: string, customerId: string, step: () => Promise<unknown>): Promise<void> {
+    try {
+      await step();
+    } catch (error) {
+      this.logger.error({ err: error, tenantId, customerId }, 'a notice about a subscription failed');
+    }
   }
 
   private target(tenant: { slug: string; customerSiteOrigin: string | null }) {

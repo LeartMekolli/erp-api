@@ -1,4 +1,4 @@
-import { EVENTS, EventKey, variablesOf } from './catalogue';
+import { EVENTS, EventKey, urlVariablesOf, variablesOf } from './catalogue';
 import { validateTemplate } from './render';
 
 const events = Object.keys(EVENTS) as EventKey[];
@@ -34,7 +34,13 @@ describe('notification catalogue', () => {
       'payouts.reminder',
       'refund.failed',
       'refund.made',
+      'subscription.changed',
+      'subscription.downgrade_scheduled',
+      'subscription.ended',
+      'subscription.ended.staff',
+      'subscription.payment_failed',
       'subscription.started',
+      'subscription.upgrade_failed',
       'user.invited',
       'user.joined',
       'user.roles_changed',
@@ -66,6 +72,25 @@ describe('notification catalogue', () => {
     expect(EVENTS['subscription.started'].audience).toEqual({ kind: 'customer' });
     expect(EVENTS['subscription.started'].subjectType).toBe('customer');
     expect(Object.keys(variablesOf('subscription.started')).sort()).toEqual(['interval', 'plan', 'price']);
+  });
+
+  it("tells the customer's people of plan changes and failed payments, and staff of a subscription that ended", () => {
+    const customer = {
+      'subscription.changed': ['plan'],
+      'subscription.downgrade_scheduled': ['on', 'plan'],
+      'subscription.upgrade_failed': ['plan', 'portal_url'],
+      'subscription.payment_failed': ['plan', 'portal_url'],
+      'subscription.ended': ['plan'],
+    } as const;
+    for (const [event, variables] of Object.entries(customer) as [keyof typeof customer, readonly string[]][]) {
+      expect([event, EVENTS[event].audience, EVENTS[event].subjectType]).toEqual([event, { kind: 'customer' }, 'customer']);
+      expect([event, Object.keys(variablesOf(event)).sort()]).toEqual([event, [...variables]]);
+    }
+    expect(urlVariablesOf('subscription.payment_failed')).toEqual(new Set(['portal_url']));
+
+    expect(EVENTS['subscription.ended.staff'].audience).toEqual({ kind: 'permission', permission: 'payment.read' });
+    expect(EVENTS['subscription.ended.staff'].subjectType).toBe('customer');
+    expect(Object.keys(variablesOf('subscription.ended.staff')).sort()).toEqual(['customer', 'pay_later', 'plan']);
   });
 
   it.each(events)('%s: every sample is non-empty', (event) => {

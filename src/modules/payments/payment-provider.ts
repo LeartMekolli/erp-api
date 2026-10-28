@@ -33,7 +33,12 @@ export interface ProviderSubscription {
   cancelAtPeriodEnd: boolean;
   /** The price it moves to at the end of the period, when a change is scheduled. */
   scheduledPriceId: string | null;
+  /** The price of an upgrade waiting for its invoice to be paid. */
+  pendingPriceId: string | null;
 }
+
+/** Why a subscription's invoice was made: its first, a renewal, or a change of price. */
+export type InvoiceReason = 'create' | 'cycle' | 'update' | 'other';
 
 /** DI token: the fake for tests and local work, Stripe otherwise (`PAYMENT_PROVIDER`). */
 export const PAYMENT_PROVIDER = Symbol('PAYMENT_PROVIDER');
@@ -108,12 +113,21 @@ export interface PaymentProvider {
       idempotencyKey: string;
     },
   ): Promise<{ id: string; url: string; dueOn: string }>;
-  /** A subscription's invoice names it, with the period it pays for. Unknown: `ProviderNotFoundError`. */
+  /**
+   * A subscription's invoice names it, why it was made and the period it pays for; an order's has
+   * none of these. Unknown: `ProviderNotFoundError`.
+   */
   getInvoice(
     keys: ProviderKeys,
     id: string,
   ): Promise<
-    ProviderPayment & { status: 'open' | 'paid' | 'void'; subscriptionId: string | null; periodStart: Date | null; periodEnd: Date | null }
+    ProviderPayment & {
+      status: 'open' | 'paid' | 'void';
+      subscriptionId: string | null;
+      reason: InvoiceReason | null;
+      periodStart: Date | null;
+      periodEnd: Date | null;
+    }
   >;
   markInvoicePaidOutside(keys: ProviderKeys, id: string): Promise<void>;
   refund(
@@ -151,6 +165,14 @@ export interface PaymentProvider {
     },
   ): Promise<{ id: string; url: string }>;
   getSubscription(keys: ProviderKeys, id: string): Promise<ProviderSubscription>;
+  /**
+   * Moves to a dearer price at once, prorated and invoiced now; the price changes only when that
+   * invoice is paid, and stays as it was when it isn't.
+   */
+  upgradeSubscription(keys: ProviderKeys, id: string, input: { priceId: string; idempotencyKey: string }): Promise<void>;
+  /** The price from the next period on; null removes a scheduled change. */
+  scheduleSubscriptionPrice(keys: ProviderKeys, id: string, input: { priceId: string | null; idempotencyKey: string }): Promise<void>;
+  setCancelAtPeriodEnd(keys: ProviderKeys, id: string, cancel: boolean): Promise<void>;
   /** Where the customer changes its card, plan or cancels, at the provider. */
   billingPortalLink(keys: ProviderKeys, input: { providerCustomerId: string; returnUrl: string }): Promise<{ url: string }>;
   /** Throws `ProviderRefusedError` with a message when the provider declines. */

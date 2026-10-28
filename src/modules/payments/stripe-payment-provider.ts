@@ -2,6 +2,7 @@ import Stripe from 'stripe';
 import { Prisma } from '../../generated/prisma/client';
 import { InvalidSignatureError, ProviderNotFoundError, ProviderRefusedError } from './payment-provider';
 import type {
+  InvoiceReason,
   PaymentProvider,
   ProviderEvent,
   ProviderKeys,
@@ -46,6 +47,19 @@ export function subscriptionStatus(status: Stripe.Subscription.Status): Provider
       return 'incomplete';
     default:
       return 'ended';
+  }
+}
+
+function invoiceReason(reason: Stripe.Invoice.BillingReason | null): InvoiceReason {
+  switch (reason) {
+    case 'subscription_create':
+      return 'create';
+    case 'subscription_cycle':
+      return 'cycle';
+    case 'subscription_update':
+      return 'update';
+    default:
+      return 'other';
   }
 }
 
@@ -167,7 +181,53 @@ export class StripePaymentProvider implements PaymentProvider {
       currentPeriodEnd: new Date(item.current_period_end * 1000),
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
       scheduledPriceId: await this.scheduledPrice(stripe, idOf(subscription.schedule), item.current_period_end),
+      pendingPriceId: idOf(subscription.pending_update?.subscription_items?.[0]?.price),
     };
+  }
+
+  async upgradeSubscription(keys: ProviderKeys, id: string, input: { priceId: string; idempotencyKey: string }): Promise<void> {
+    const stripe = this.client(keys);
+    const subscription = await this.withoutSchedule(stripe, id);
+    await stripe.subscriptions.update(
+      id,
+      {
+        items: [{ id: subscription.items.data[0].id, price: input.priceId }],
+        proration_behavior: 'always_invoice',
+        payment_behavior: 'pending_if_incomplete',
+      },
+      { idempotencyKey: input.idempotencyKey },
+    );
+  }
+
+  /** A schedule of two phases: the current price to the period end, then the new one; released after. */
+  async scheduleSubscriptionPrice(keys: ProviderKeys, id: string, input: { priceId: string | null; idempotencyKey: string }): Promise<void> {
+    const stripe = this.client(keys);
+    const subscription = await this.withoutSchedule(stripe, id);
+    if (input.priceId === null) return;
+    const item = subscription.items.data[0];
+    const next = await stripe.prices.retrieve(input.priceId);
+    const interval = next.recurring?.interval === 'year' ? 'year' : 'month';
+    const schedule = await stripe.subscriptionSchedules.create(
+      { from_subscription: id },
+      { idempotencyKey: `${input.idempotencyKey}:schedule` },
+    );
+    await stripe.subscriptionSchedules.update(
+      schedule.id,
+      {
+        end_behavior: 'release',
+        phases: [
+          { items: [{ price: item.price.id, quantity: 1 }], start_date: item.current_period_start, end_date: item.current_period_end },
+          { items: [{ price: input.priceId, quantity: 1 }], duration: { interval, interval_count: 1 } },
+        ],
+      },
+      { idempotencyKey: `${input.idempotencyKey}:phases` },
+    );
+  }
+
+  async setCancelAtPeriodEnd(keys: ProviderKeys, id: string, cancel: boolean): Promise<void> {
+    const stripe = this.client(keys);
+    await this.withoutSchedule(stripe, id);
+    await stripe.subscriptions.update(id, { cancel_at_period_end: cancel });
   }
 
   async billingPortalLink(keys: ProviderKeys, input: { providerCustomerId: string; returnUrl: string }): Promise<{ url: string }> {
@@ -259,6 +319,7 @@ export class StripePaymentProvider implements PaymentProvider {
       fee: paid && paymentId ? await this.feeOf(stripe, paymentId, invoice.currency) : new Prisma.Decimal(0),
       paymentId,
       subscriptionId,
+      reason: subscriptionId ? invoiceReason(invoice.billing_reason) : null,
       periodStart: periods.length > 0 ? new Date(Math.min(...periods.map((period) => period.start)) * 1000) : null,
       periodEnd: periods.length > 0 ? new Date(Math.max(...periods.map((period) => period.end)) * 1000) : null,
     };
@@ -363,6 +424,14 @@ export class StripePaymentProvider implements PaymentProvider {
       if (error instanceof Stripe.errors.StripeInvalidRequestError) throw new ProviderRefusedError(error.message);
       throw error;
     }
+  }
+
+  /** The subscription, with any schedule on it released first: a scheduled change is dropped. */
+  private async withoutSchedule(stripe: Stripe, id: string): Promise<Stripe.Subscription> {
+    const subscription = await stripe.subscriptions.retrieve(id);
+    const scheduleId = idOf(subscription.schedule);
+    if (scheduleId) await stripe.subscriptionSchedules.release(scheduleId);
+    return subscription;
   }
 
   /** The price a subscription schedule moves to once the current period ends, if it has one. */
