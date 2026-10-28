@@ -17,6 +17,7 @@ import { LedgerController } from './ledger.controller';
 import { LedgerService } from './ledger.service';
 import { OrderStarter } from './order-starter';
 import { OverdueInvoicesHandler } from './overdue-invoices.handler';
+import { PaidByHandService } from './paid-by-hand.service';
 import { PaymentAccountController } from './payment-account.controller';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentEventHandler } from './payment-event.handler';
@@ -47,6 +48,7 @@ import { WebhooksController } from './webhooks.controller';
     CheckoutEvents,
     CreditService,
     InvoicesService,
+    PaidByHandService,
     InvoiceHandler,
     OverdueInvoicesHandler,
     UnpaidOrdersHandler,

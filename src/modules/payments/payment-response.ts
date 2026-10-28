@@ -71,6 +71,13 @@ export function paymentTermsResponse(
 export const releaseOrderSchema = z.strictObject({ reason: z.string().trim().min(1).max(500) });
 export type ReleaseOrder = z.infer<typeof releaseOrderSchema>;
 
+/** A payment made outside the provider, such as a bank transfer, as staff record it. */
+export const paidByHandSchema = z.strictObject({
+  reference: z.string().trim().min(1).max(200).describe('Where to find the payment, such as the bank transfer reference.'),
+  received_on: z.iso.date().describe("The day it arrived; not after today in the workspace's timezone."),
+});
+export type PaidByHand = z.infer<typeof paidByHandSchema>;
+
 /** One invoice of the customer's, open or overdue. */
 export const customerInvoiceResponseSchema = z.strictObject({
   order_id: z.uuid(),
