@@ -10,6 +10,9 @@ import { CheckoutEvents } from './checkout-events';
 import { CheckoutService } from './checkout.service';
 import { CreditController } from './credit.controller';
 import { CreditService } from './credit.service';
+import { CreditExpiryHandler } from './credits/credit-expiry.handler';
+import { CreditsController } from './credits/credits.controller';
+import { CreditsService } from './credits/credits.service';
 import { FakePaymentProvider } from './fake-payment-provider';
 import { InvoiceHandler } from './invoice.handler';
 import { InvoicesService } from './invoices.service';
@@ -58,6 +61,7 @@ import { WebhooksController } from './webhooks.controller';
     PayoutAccountsController,
     PayoutsController,
     PlansController,
+    CreditsController,
   ],
   providers: [
     PaymentAccountService,
@@ -81,6 +85,8 @@ import { WebhooksController } from './webhooks.controller';
     OverdueInvoicesHandler,
     UnpaidOrdersHandler,
     PlansService,
+    CreditsService,
+    CreditExpiryHandler,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],

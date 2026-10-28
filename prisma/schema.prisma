@@ -98,6 +98,9 @@ model Tenant {
   plans           Plan[]
   planPrices      PlanPrice[]
   planSpeeds      PlanSpeed[]
+  creditGrants    CreditGrant[]
+  creditSpends    CreditSpend[]
+  creditEntries   CreditEntry[]
 
   @@map("tenant")
 }
@@ -149,6 +152,7 @@ model User {
   releasedOrders Order[]
   refunds        Refund[]
   payouts        Payout[]
+  creditGrants   CreditGrant[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1111,6 +1115,9 @@ model Customer {
   ledgerJournals LedgerJournal[]
   ledgerLines   LedgerLine[]
   paymentTerms  CustomerPaymentTerms?
+  creditGrants  CreditGrant[]
+  creditSpends  CreditSpend[]
+  creditEntries CreditEntry[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2216,4 +2223,84 @@ model PlanSpeed {
   @@id([planId, deliverySpeedId])
   @@index([tenantId])
   @@map("plan_speed")
+}
+
+// Credits given to a customer (Payments 2 spec, D48): a monthly allowance, a pack, a campaign or a staff
+// grant. What is left of one is the sum of its entries. Insert only (ADR 0003).
+model CreditGrant {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId      String   @map("customer_id") @db.Uuid
+  // allowance | pack | campaign | staff
+  source          String
+  amount          Int
+  grantedAt       DateTime @default(now()) @map("granted_at")
+  expiresAt       DateTime @map("expires_at")
+  // What the grant is for, such as `campaign:<campaignId>:<customerId>`; asking twice writes it once.
+  sourceKey       String   @map("source_key")
+  campaignId      String?  @map("campaign_id") @db.Uuid
+  packPurchaseId  String?  @map("pack_purchase_id") @db.Uuid
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  reason          String?
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer  Customer      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  createdBy User?         @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  entries   CreditEntry[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, sourceKey])
+  @@index([tenantId, customerId, expiresAt])
+  @@map("credit_grant")
+}
+
+// Credits used, or given back when the work they paid for failed. Insert only (ADR 0003).
+model CreditSpend {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  tenantId    String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId  String   @map("customer_id") @db.Uuid
+  // spend | give_back
+  kind        String
+  amount      Int
+  reason      String
+  // The caller's id for the work a spend pays for; spending twice for it spends once. Null on a give-back.
+  reference   String?
+  // The spend a give-back returns, once.
+  givesBackId String?  @map("gives_back_id") @db.Uuid
+  occurredAt  DateTime @default(now()) @map("occurred_at")
+
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer   Customer      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  givesBack  CreditSpend?  @relation("credit_give_back", fields: [tenantId, givesBackId], references: [tenantId, id], onDelete: NoAction)
+  givenBack  CreditSpend?  @relation("credit_give_back")
+  entries    CreditEntry[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, customerId, reference])
+  @@unique([tenantId, givesBackId])
+  @@map("credit_spend")
+}
+
+// One movement of one grant's credits: positive for a grant and a give-back, negative for a spend and
+// an expiry. Insert only (ADR 0003).
+model CreditEntry {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  grantId    String   @map("grant_id") @db.Uuid
+  spendId    String?  @map("spend_id") @db.Uuid
+  // grant | spend | give_back | expire
+  kind       String
+  amount     Int
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  tenant   Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer     @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  grant    CreditGrant  @relation(fields: [tenantId, grantId], references: [tenantId, id], onDelete: Cascade)
+  spend    CreditSpend? @relation(fields: [tenantId, spendId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, customerId, id])
+  @@index([tenantId, grantId])
+  @@index([tenantId, spendId])
+  @@map("credit_entry")
 }

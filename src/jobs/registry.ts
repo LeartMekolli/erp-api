@@ -141,6 +141,9 @@ export const SCHEDULED_JOBS = {
     schedule: { pattern: '0 7 * * 1', tz: 'UTC' },
     lockTtlMs: 600_000,
   },
+  // Writes off what is left of expired credit grants (Payments 2 spec). Whether credits can be spent
+  // is decided by their expiry, never by this having run.
+  'payments.credits.expire': { queue: 'payments', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;

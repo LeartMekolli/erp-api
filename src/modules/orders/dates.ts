@@ -25,6 +25,34 @@ function localParts(at: Date, timeZone: string): { date: string; hour: number } 
   return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
 }
 
+/** The instant the calendar date `date` begins in `timeZone`. */
+export function startOfLocalDay(date: string, timeZone: string): Date {
+  const midnightUtc = new Date(`${date}T00:00:00Z`).getTime();
+  // The zone's offset at a first guess, then once more at the result, for a day a clock change starts.
+  const guess = midnightUtc - zoneOffsetMs(new Date(midnightUtc), timeZone);
+  return new Date(midnightUtc - zoneOffsetMs(new Date(guess), timeZone));
+}
+
+/** How far `timeZone`'s wall clock is ahead of UTC at `at`. */
+function zoneOffsetMs(at: Date, timeZone: string): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(at)
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  const wall = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return wall - Math.floor(at.getTime() / 1000) * 1000;
+}
+
 /** The ISO weekday of a calendar date, which has no timezone of its own. */
 function weekday(date: string): number {
   return WEEKDAY[new Intl.DateTimeFormat('en', { timeZone: 'UTC', weekday: 'short' }).format(new Date(`${date}T00:00:00Z`))];
