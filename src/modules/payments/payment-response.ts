@@ -78,6 +78,23 @@ export const paidByHandSchema = z.strictObject({
 });
 export type PaidByHand = z.infer<typeof paidByHandSchema>;
 
+export const refundSuggestionQuerySchema = z.object({
+  lines: z
+    .string()
+    .regex(/^\d{1,3}(,\d{1,3}){0,49}$/, 'must be line positions separated by commas, such as 0,1')
+    .optional()
+    .describe('The positions of the lines to cancel; every line left when left out.'),
+});
+export type RefundSuggestionQuery = z.infer<typeof refundSuggestionQuerySchema>;
+
+/** What to refund if the lines were cancelled now: their price with tax, less the work partners are owed for. */
+export const refundSuggestionResponseSchema = z.strictObject({
+  suggested: z.string().describe('Never more than `paid_left`, never below 0.00.'),
+  work_done: z.string().describe('What partners are owed now for work on these lines; in-house work counts as 0.00.'),
+  paid_left: z.string().describe('What was paid and is neither refunded nor being refunded.'),
+});
+export type RefundSuggestionResponse = z.infer<typeof refundSuggestionResponseSchema>;
+
 /** One invoice of the customer's, open or overdue. */
 export const customerInvoiceResponseSchema = z.strictObject({
   order_id: z.uuid(),

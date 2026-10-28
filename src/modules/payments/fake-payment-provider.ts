@@ -27,6 +27,7 @@ const fee = (amount: Prisma.Decimal): Prisma.Decimal =>
 const store = {
   counter: 0,
   transferFailure: null as string | null,
+  holdRefund: false,
   byKey: new Map<string, unknown>(),
   checkouts: new Map<string, FakeCheckout>(),
   invoices: new Map<string, FakeInvoice>(),
@@ -70,6 +71,16 @@ export class FakePaymentProvider implements PaymentProvider {
 
   failNextTransfer(message: string): void {
     store.transferFailure = message;
+  }
+
+  /** The next refund stays `pending`, as a bank may keep it, until `settleRefund`. */
+  holdNextRefund(): void {
+    store.holdRefund = true;
+  }
+
+  settleRefund(id: string, status: 'succeeded' | 'failed'): void {
+    this.must(this.refunds, id);
+    this.refunds.set(id, status);
   }
 
   setPartnerAccountState(id: string, state: PartnerAccountState): void {
@@ -187,8 +198,10 @@ export class FakePaymentProvider implements PaymentProvider {
     return Promise.resolve(
       this.once(input.idempotencyKey, () => {
         const id = this.nextId('refund');
-        this.refunds.set(id, 'succeeded');
-        return { id, status: 'succeeded' as const };
+        const status = store.holdRefund ? ('pending' as const) : ('succeeded' as const);
+        store.holdRefund = false;
+        this.refunds.set(id, status);
+        return { id, status };
       }),
     );
   }

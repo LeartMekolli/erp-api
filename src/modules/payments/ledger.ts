@@ -63,6 +63,29 @@ export function receivedJournal(customerId: string, amount: Prisma.Decimal, cash
   ]);
 }
 
+/**
+ * A refund of `amount`, as two journals: sales and tax payable give back their share of it to the
+ * receivable, then the receivable is paid out of `cash`.
+ */
+export function refundJournals(
+  customerId: string,
+  amount: Prisma.Decimal,
+  tax: Prisma.Decimal,
+  cash: 'stripe_balance' | 'outside_stripe',
+): [JournalDraft, JournalDraft] {
+  return [
+    buildJournal('refund', [
+      { account: 'sales', amount: amount.sub(tax), customerId },
+      ...(tax.isZero() ? [] : [{ account: 'tax_payable' as const, amount: tax, customerId }]),
+      { account: 'customer_receivable', amount: amount.neg(), customerId },
+    ]),
+    buildJournal('refund', [
+      { account: 'customer_receivable', amount, customerId },
+      { account: cash, amount: amount.neg() },
+    ]),
+  ];
+}
+
 /** The provider kept `fee` of a payment. */
 export function feeJournal(fee: Prisma.Decimal): JournalDraft {
   return buildJournal('provider_fee', [

@@ -395,6 +395,37 @@ export const EVENTS = {
       },
     },
   },
+  'refund.made': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      amount: { sample: '119.00 EUR' },
+    },
+    defaults: {
+      en: {
+        subject: 'Refund for order {{ number }}',
+        body: 'We have refunded {{ amount }} for order {{ number }}. It may take a few days to reach you.',
+      },
+    },
+  },
+  // The provider refused a refund: staff who refund give it back another way.
+  'refund.failed': {
+    audience: { kind: 'permission', permission: 'payment.refund' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      amount: { sample: '119.00 EUR' },
+    },
+    defaults: {
+      en: {
+        subject: 'A refund for order {{ number }} failed',
+        body: 'The payment provider refused to refund {{ amount }} for order {{ number }}. Refund it another way.',
+      },
+    },
+  },
   // A shipped pay-later order is invoiced (Payments spec).
   'invoice.sent': {
     audience: { kind: 'customer' },

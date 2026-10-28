@@ -11,6 +11,7 @@ import { registerEventHandler } from './payment-events.service';
 import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
 import { billableTotals } from './payment-state';
+import { PAID_AFTER_CANCEL, RefundsService } from './refunds.service';
 
 const SYSTEM = { type: 'system' } as const;
 
@@ -28,6 +29,7 @@ export class CheckoutEvents implements OnModuleInit {
     private readonly accounts: PaymentAccountService,
     private readonly ledger: LedgerService,
     private readonly starter: OrderStarter,
+    private readonly refunds: RefundsService,
     private readonly notifications: NotificationsService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
@@ -41,7 +43,7 @@ export class CheckoutEvents implements OnModuleInit {
   /**
    * A checkout of ours the provider says is paid: the row is complete, the order billed, paid and the
    * provider's fee journalled, and a waiting order starts. A cancelled order is journalled but never
-   * starts; its refund is Refunds' to make.
+   * starts, and the payment is refunded in full.
    */
   async paid(tenantId: string, event: PaymentEvent): Promise<void> {
     const row = await this.checkoutOf(tenantId, event.objectId);
@@ -85,9 +87,15 @@ export class CheckoutEvents implements OnModuleInit {
         await this.ledger.post(tx, { ...feeJournal(checkout.fee), ...common, memo: `Fee on order ${order.number}` });
       }
 
+      // Paid after the order was cancelled: it never starts, and all of it goes back, once (Review Focus 1).
+      const refundId =
+        order.cancelledAt && received.created
+          ? await this.refunds.create(tx, { orderId: order.id, amount: checkout.amount, reason: PAID_AFTER_CANCEL, userId: null })
+          : null;
       return {
         order,
         newlyPaid: received.created,
+        refundId,
         started: await this.starter.start(tx, tenantId, order.id, SYSTEM),
         expireAtProvider: others.flatMap((other) => (other.providerCheckoutId ? [other.providerCheckoutId] : [])),
       };
@@ -98,6 +106,11 @@ export class CheckoutEvents implements OnModuleInit {
       for (const id of outcome.expireAtProvider) await this.provider.expireCheckout(keys, id);
     });
     await this.starter.announce(tenantId, outcome.started);
+    const { refundId } = outcome;
+    if (refundId) {
+      await this.after(tenantId, () => this.refunds.afterCreate(tenantId, refundId));
+      return;
+    }
     if (outcome.newlyPaid) {
       await this.after(tenantId, () =>
         this.notifications.raise(tenantId, 'payment.received', { type: 'order', id: outcome.order.id }, {

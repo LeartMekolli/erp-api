@@ -91,6 +91,7 @@ model Tenant {
   customerPaymentTerms CustomerPaymentTerms[]
   orderPayments   OrderPayment[]
   invoices        Invoice[]
+  refunds         Refund[]
 
   @@map("tenant")
 }
@@ -140,6 +141,7 @@ model User {
   orderComments  OrderComment[]
   ledgerJournals LedgerJournal[]
   releasedOrders Order[]
+  refunds        Refund[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1726,6 +1728,7 @@ model Order {
   ledgerJournals LedgerJournal[]
   payments       OrderPayment[]
   invoice        Invoice?
+  refunds        Refund[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
@@ -1988,6 +1991,32 @@ model Invoice {
   @@unique([tenantId, orderId])
   @@unique([tenantId, providerInvoiceId])
   @@map("invoice")
+}
+
+// Money given back for an order (Payments spec). Pending ones count against what is left to refund,
+// so two refunds at once never pass what was paid; journalled once it has succeeded.
+model Refund {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tenantId         String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId          String   @map("order_id") @db.Uuid
+  amount           Decimal  @db.Decimal(18, 2)
+  reason           String
+  // provider: through the payment provider | outside: paid outside it, given back outside it
+  kind             String
+  providerRefundId String?  @map("provider_refund_id")
+  // pending | succeeded | failed
+  status           String
+  createdByUserId  String?  @map("created_by_user_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order     Order  @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  createdBy User?  @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerRefundId])
+  @@index([tenantId, orderId])
+  @@map("refund")
 }
 
 // How a customer pays (Payments spec). No row means pay first, within 30 days, with no limit.

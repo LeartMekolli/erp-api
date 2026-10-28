@@ -88,6 +88,12 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), orderId: z.uuid() }),
     jobId: (p) => [p.orderId],
   }),
+  // Asks the provider for one pending refund and settles it when the provider has (Payments spec).
+  'payments.refund': defineJob({
+    queue: 'payments',
+    payload: z.object({ tenantId: z.uuid(), refundId: z.uuid() }),
+    jobId: (p) => [p.refundId],
+  }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 
 export const SCHEDULED_JOBS = {

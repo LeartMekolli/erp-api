@@ -386,6 +386,17 @@ export class JobsService implements OnModuleInit {
     });
   }
 
+  /**
+   * What partners are owed now for these jobs: accepted ones whose every live piece has passed the
+   * payout step (Payments, the refund suggestion). Work not that far yet counts as nothing.
+   */
+  async owedNow(tx: Tx, groupIds: string[]): Promise<Prisma.Decimal> {
+    const rows = await tx.jobAssignment.findMany({ where: { groupId: { in: groupIds }, status: 'accepted' } });
+    return (await owedJobs(tx, rows))
+      .filter((job) => job.state === 'owed')
+      .reduce((sum, job) => sum.plus(job.amount), new Prisma.Decimal(0));
+  }
+
   /** Sets what the partner is owed for the job instead of its cost; the job must be or have been the partner's. */
   async setOwed(auth: TenantAuth, groupId: string, input: z.infer<typeof setOwedSchema>): Promise<OwedJobResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {

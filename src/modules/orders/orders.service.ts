@@ -1,4 +1,13 @@
-import { BadRequestException, ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
@@ -65,6 +74,13 @@ export const cancelOrderSchema = z.strictObject({
       'one amount per line or part',
     )
     .optional(),
+  /**
+   * What to give back of what was paid; required once anything is paid, 0.00 for nothing, and needs
+   * `payment.refund`. The reason is the cancel's.
+   */
+  refund: z
+    .strictObject({ amount: z.string().regex(/^\d{1,16}(\.\d{1,2})?$/, 'must be an amount with at most 2 places, such as 50.00') })
+    .optional(),
 });
 export type CancelOrder = z.infer<typeof cancelOrderSchema>;
 
@@ -98,6 +114,16 @@ export interface OrderPaymentHooks {
   cancelled(tenantId: string, orderId: string): Promise<void>;
   /** A pay-later order not paid has shipped: invoice it. */
   shipped(tenantId: string, orderId: string): Promise<void>;
+  /** In the caller's transaction, under the order's lock: what was paid and is not refunded or being refunded. */
+  paidLeft(tx: Tx, orderId: string): Promise<Prisma.Decimal>;
+  /**
+   * In the caller's transaction, under the order's lock: refunds `amount` of what was paid (409 past
+   * what is left). Answers what to run once the transaction has committed.
+   */
+  refund(
+    tx: Tx,
+    input: { tenantId: string; orderId: string; amount: Prisma.Decimal; reason: string; userId: string | null },
+  ): Promise<() => Promise<void>>;
 }
 
 /** Placing orders and reading them (Orders spec, goals 1–4, 7, 8, 10, 11, 15, 17). */
@@ -412,13 +438,35 @@ export class OrdersService {
    * Staff cancel some lines, or every line left, until the order ships (Orders spec, goal 12). Each
    * line's unfinished pieces are cancelled and its partner let go; an accepted partner is owed what
    * `partner_owed` gives for its line, else nothing. Once every line is cancelled, so is the order.
+   * Once anything is paid, staff decide what to refund with it (Payments spec), in the same transaction.
    */
-  async cancel(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: CancelOrder): Promise<OrderResponse> {
-    const cancelled = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+  async cancel(auth: Pick<TenantAuth, 'tenantId' | 'userId' | 'permissions'>, id: string, body: CancelOrder): Promise<OrderResponse> {
+    let afterRefund = null as (() => Promise<void>) | null;
+    let cancelled = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const order = await this.lockOrder(tx, id);
-      return this.cancelLines(tx, auth, order, body);
+      const paidLeft = (await this.paymentHooks.paidLeft?.(tx, id)) ?? new Prisma.Decimal(0);
+      if ((paidLeft.gt(0) || body.refund) && !auth.permissions.has('payment.refund')) {
+        throw new ForbiddenException('Cancelling a paid order refunds it, which needs the payment.refund permission');
+      }
+      if (paidLeft.gt(0) && !body.refund) {
+        throw new BadRequestException({
+          message: 'A paid order is cancelled with what to refund of it',
+          errors: [{ path: 'refund.amount', message: `required: up to ${paidLeft.toFixed(2)}, or 0.00 to refund nothing` }],
+        });
+      }
+      const response = await this.cancelLines(tx, auth, order, body);
+      const amount = new Prisma.Decimal(body.refund?.amount ?? 0);
+      if (amount.gt(0) && this.paymentHooks.refund) {
+        afterRefund = await this.paymentHooks.refund(tx, { tenantId: auth.tenantId, orderId: id, amount, reason: body.reason, userId: auth.userId });
+      }
+      return response;
     });
     await this.afterPaymentChange(auth.tenantId, id);
+    if (afterRefund) {
+      await this.afterCommit(id, afterRefund);
+      // A refund outside the provider has succeeded already: answer the order with it.
+      cancelled = await this.get(auth.tenantId, id);
+    }
     // The customer hears of it once the whole order is cancelled; cancelling some lines leaves it open.
     if (cancelled.state === 'cancelled') {
       await this.afterCommit(id, async () => {
@@ -431,9 +479,12 @@ export class OrdersService {
     return cancelled;
   }
 
-  /** The customer cancels the whole order, only while no piece of it has been worked on (goal 12). */
+  /**
+   * The customer cancels the whole order, only while no piece of it has been worked on (goal 12), and
+   * gets back everything left of what it paid.
+   */
   async customerCancel(auth: CustomerAuth, id: string, body: CustomerCancelOrder): Promise<CustomerOrderResponse> {
-    const cancelled = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const afterRefund = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await this.customerOrder(tx, auth.customerId, id);
       const order = await this.lockOrder(tx, id);
       if (order.cancelledAt) {
@@ -447,8 +498,13 @@ export class OrdersService {
         throw new ConflictException('Production has started on this order: please contact us to cancel it');
       }
       await this.cancelLines(tx, auth, order, { reason: body.reason });
+      // Whatever is left of what was paid goes back (Payments spec).
+      const paidLeft = (await this.paymentHooks.paidLeft?.(tx, id)) ?? new Prisma.Decimal(0);
+      if (!paidLeft.gt(0) || !this.paymentHooks.refund) return null;
+      return this.paymentHooks.refund(tx, { tenantId: auth.tenantId, orderId: id, amount: paidLeft, reason: body.reason, userId: auth.userId });
     });
     await this.afterPaymentChange(auth.tenantId, id);
+    if (afterRefund) await this.afterCommit(id, afterRefund);
     return this.customerGet(auth.tenantId, auth.customerId, id);
   }
 

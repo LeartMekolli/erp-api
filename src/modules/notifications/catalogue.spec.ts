@@ -29,6 +29,8 @@ describe('notification catalogue', () => {
       'partner.submitted',
       'payment.received',
       'payment.requested',
+      'refund.failed',
+      'refund.made',
       'user.invited',
       'user.joined',
       'user.roles_changed',

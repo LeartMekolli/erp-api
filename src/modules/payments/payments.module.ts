@@ -18,6 +18,9 @@ import { LedgerService } from './ledger.service';
 import { OrderStarter } from './order-starter';
 import { OverdueInvoicesHandler } from './overdue-invoices.handler';
 import { PaidByHandService } from './paid-by-hand.service';
+import { RefundHandler } from './refund.handler';
+import { RefundsController } from './refunds.controller';
+import { RefundsService } from './refunds.service';
 import { PaymentAccountController } from './payment-account.controller';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentEventHandler } from './payment-event.handler';
@@ -36,7 +39,7 @@ import { WebhooksController } from './webhooks.controller';
  */
 @Module({
   imports: [AuditModule, NotificationsModule, OrdersModule, PartnersModule, SettingsModule],
-  controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController, CheckoutController, CreditController],
+  controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController, CheckoutController, CreditController, RefundsController],
   providers: [
     PaymentAccountService,
     LedgerService,
@@ -49,6 +52,8 @@ import { WebhooksController } from './webhooks.controller';
     CreditService,
     InvoicesService,
     PaidByHandService,
+    RefundsService,
+    RefundHandler,
     InvoiceHandler,
     OverdueInvoicesHandler,
     UnpaidOrdersHandler,
