@@ -67,6 +67,33 @@ export function paymentTermsResponse(
   };
 }
 
+/** Why staff let an order held for its credit limit through. */
+export const releaseOrderSchema = z.strictObject({ reason: z.string().trim().min(1).max(500) });
+export type ReleaseOrder = z.infer<typeof releaseOrderSchema>;
+
+/** One invoice of the customer's, open or overdue. */
+export const customerInvoiceResponseSchema = z.strictObject({
+  order_id: z.uuid(),
+  order_number: z.number().int(),
+  total: z.string(),
+  currency: z.string().length(3),
+  due_on: z.iso.date(),
+  url: z.string().nullable(),
+});
+
+/** A customer's money, as staff see it: its terms, what it owes and its invoices. */
+export const paymentCustomerResponseSchema = paymentTermsResponseSchema.extend({
+  exposure: z
+    .string()
+    .describe('What the customer owes or will owe: billed and not paid, plus its started pay-later orders not billed yet.'),
+  balance: z.string().describe('Billed and not paid, from the ledger.'),
+  /** Open and not due yet. Oldest due first. */
+  open_invoices: z.array(customerInvoiceResponseSchema),
+  /** Open and past due. Oldest due first. */
+  overdue_invoices: z.array(customerInvoiceResponseSchema),
+});
+export type PaymentCustomerResponse = z.infer<typeof paymentCustomerResponseSchema>;
+
 /** Where the customer pays for a waiting order. */
 export const payLinkResponseSchema = z.strictObject({ url: z.string() });
 export type PayLinkResponse = z.infer<typeof payLinkResponseSchema>;

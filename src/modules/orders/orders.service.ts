@@ -12,6 +12,7 @@ import type { AuditInput } from '../audit/audit.service';
 import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { creditExposure, overLimit } from '../payments/credit';
 import { paidAndRefunded, paymentState } from '../payments/payment-state';
 import type { PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
@@ -165,8 +166,14 @@ export class OrdersService {
         // The customer's terms as they are now; changing them later leaves this order as placed. A
         // pay-first order waits for its payment: its groups and a picked workshop's job are created
         // now, so the capacity is held, but nothing starts until it is paid (Payments spec, B1).
-        const terms = (await tx.customerPaymentTerms.findUnique({ where: { customerId }, select: { terms: true } }))?.terms ?? 'pay_first';
-        const payFirst = terms === 'pay_first';
+        // A pay-later order that would take the customer past its credit limit waits the same way, until
+        // paid or released. The terms row is locked, so two orders at once are judged one after the other.
+        const [row] = await tx.$queryRaw<{ terms: string; credit_limit: Prisma.Decimal | null }[]>`
+          SELECT terms, credit_limit FROM customer_payment_terms WHERE customer_id = ${customerId}::uuid FOR UPDATE`;
+        const terms = row?.terms ?? 'pay_first';
+        const creditLimit = row?.credit_limit ? new Prisma.Decimal(row.credit_limit) : null;
+        const heldForCredit = terms === 'pay_later' && overLimit(await creditExposure(tx, customerId), total, creditLimit);
+        const payFirst = terms === 'pay_first' || heldForCredit;
         const collection = parseSetting('payments.collection', (await this.settings.list(tx))['payments.collection'] ?? {});
 
         const order = await tx.order.create({
@@ -189,6 +196,7 @@ export class OrdersService {
             placedByUserId: auth.userId,
             placedAt,
             paymentTerms: terms,
+            heldForCredit,
             productionStartedAt: payFirst ? null : placedAt,
             payBy: payFirst ? new Date(placedAt.getTime() + collection.payWithinHours * HOUR_MS) : null,
           },
@@ -488,6 +496,24 @@ export class OrdersService {
         groupIds: [line.groupId, ...line.parts.map((part) => part.groupId)].flatMap((id) => (id ? [id] : [])),
       })),
     };
+  }
+
+  /**
+   * Staff let an order held for its credit limit through, with a reason (Payments spec, B2): it is no
+   * longer held and has no deadline to pay by. The caller then starts it, in the same transaction.
+   * Only a held order that still waits and isn't cancelled can be released (409).
+   */
+  async releaseHeld(tx: Tx, auth: Pick<TenantAuth, 'userId'>, orderId: string, reason: string): Promise<void> {
+    const order = await this.lockOrder(tx, orderId);
+    if (!order.heldForCredit || order.productionStartedAt || order.cancelledAt) {
+      throw new ConflictException('Only an order held for its credit limit, still waiting, can be released');
+    }
+    const before = (await this.views(tx, [order]))[0];
+    const updated = await tx.order.update({
+      where: { id: orderId },
+      data: { heldForCredit: false, payBy: null, releasedByUserId: auth.userId, releaseReason: reason },
+    });
+    await this.recordChange(tx, auth, before, updated);
   }
 
   /** Lets Payments know a waiting order changed, after commit; a failure is logged. */

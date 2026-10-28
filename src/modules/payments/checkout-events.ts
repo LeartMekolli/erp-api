@@ -3,11 +3,10 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { PaymentEvent } from '../../generated/prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
-import { OrdersService } from '../orders/orders.service';
-import { JobsService } from '../partners/jobs.service';
 import { buildJournal } from './ledger';
 import type { JournalEntry } from './ledger';
 import { LedgerService } from './ledger.service';
+import { OrderStarter } from './order-starter';
 import { PaymentAccountService } from './payment-account.service';
 import { registerEventHandler } from './payment-events.service';
 import { PAYMENT_PROVIDER } from './payment-provider';
@@ -29,8 +28,7 @@ export class CheckoutEvents implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly accounts: PaymentAccountService,
     private readonly ledger: LedgerService,
-    private readonly orders: OrdersService,
-    private readonly jobs: JobsService,
+    private readonly starter: OrderStarter,
     private readonly notifications: NotificationsService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
@@ -104,19 +102,10 @@ export class CheckoutEvents implements OnModuleInit {
         });
       }
 
-      const started = await this.orders.startProduction(tx, order.id, new Date(), SYSTEM);
-      const jobs = started
-        ? await this.jobs.startHeldJobs(tx, tenantId, started.lines.flatMap((line) => line.groupIds), SYSTEM)
-        : { handedOver: [], lost: [] };
-      const lostLines = jobs.lost.map((job) => ({
-        ...job,
-        position: started!.lines.find((line) => line.groupIds.includes(job.groupId))!.position,
-      }));
       return {
         order,
         newlyPaid: received.created,
-        handedOver: jobs.handedOver,
-        lostLines,
+        started: await this.starter.start(tx, tenantId, order.id, SYSTEM),
         expireAtProvider: others.flatMap((other) => (other.providerCheckoutId ? [other.providerCheckoutId] : [])),
       };
     });
@@ -125,16 +114,7 @@ export class CheckoutEvents implements OnModuleInit {
     await this.after(tenantId, async () => {
       for (const id of outcome.expireAtProvider) await this.provider.expireCheckout(keys, id);
     });
-    await this.after(tenantId, () => this.jobs.notifyDirect(tenantId, outcome.handedOver));
-    for (const lost of outcome.lostLines) {
-      await this.after(tenantId, () =>
-        this.notifications.raise(tenantId, 'order.partner_lost', { type: 'order', id: outcome.order.id }, {
-          number: String(outcome.order.number),
-          line: String(lost.position + 1),
-          partner_name: lost.partnerName,
-        }),
-      );
-    }
+    await this.starter.announce(tenantId, outcome.started);
     if (outcome.newlyPaid) {
       await this.after(tenantId, () =>
         this.notifications.raise(tenantId, 'payment.received', { type: 'order', id: outcome.order.id }, {

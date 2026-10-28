@@ -8,9 +8,12 @@ import { SettingsModule } from '../settings/settings.module';
 import { CheckoutController } from './checkout.controller';
 import { CheckoutEvents } from './checkout-events';
 import { CheckoutService } from './checkout.service';
+import { CreditController } from './credit.controller';
+import { CreditService } from './credit.service';
 import { FakePaymentProvider } from './fake-payment-provider';
 import { LedgerController } from './ledger.controller';
 import { LedgerService } from './ledger.service';
+import { OrderStarter } from './order-starter';
 import { PaymentAccountController } from './payment-account.controller';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentEventHandler } from './payment-event.handler';
@@ -29,7 +32,7 @@ import { WebhooksController } from './webhooks.controller';
  */
 @Module({
   imports: [AuditModule, NotificationsModule, OrdersModule, PartnersModule, SettingsModule],
-  controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController, CheckoutController],
+  controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController, CheckoutController, CreditController],
   providers: [
     PaymentAccountService,
     LedgerService,
@@ -37,7 +40,9 @@ import { WebhooksController } from './webhooks.controller';
     PaymentEventsService,
     PaymentEventHandler,
     CheckoutService,
+    OrderStarter,
     CheckoutEvents,
+    CreditService,
     UnpaidOrdersHandler,
     {
       provide: PAYMENT_PROVIDER,

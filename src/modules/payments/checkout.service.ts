@@ -156,17 +156,21 @@ export class CheckoutService implements OnModuleInit {
 
   /** The order's open checkout, if any, can no longer be paid: after a line or the order is cancelled. */
   async expireOpen(tenantId: string, orderId: string): Promise<void> {
-    const expired = await this.prisma.inTenant(tenantId, (tx) => this.expireRows(tx, orderId));
-    if (expired.length === 0) return;
-    await this.expireAtProvider((await this.accounts.keysFor(tenantId)).keys, expired);
+    await this.expireAt(tenantId, await this.prisma.inTenant(tenantId, (tx) => this.expireRows(tx, orderId)));
   }
 
-  /** Marks the order's open rows expired; answers the provider ids to expire there. */
-  private async expireRows(tx: Prisma.TransactionClient, orderId: string): Promise<string[]> {
+  /** Marks the order's open rows expired, in the caller's transaction; answers the provider ids to expire there. */
+  async expireRows(tx: Prisma.TransactionClient, orderId: string): Promise<string[]> {
     const open = await tx.orderPayment.findMany({ where: { orderId, status: 'open' }, select: { id: true, providerCheckoutId: true } });
     if (open.length === 0) return [];
     await tx.orderPayment.updateMany({ where: { id: { in: open.map((row) => row.id) } }, data: { status: 'expired' } });
     return open.flatMap((row) => (row.providerCheckoutId ? [row.providerCheckoutId] : []));
+  }
+
+  /** After commit: expires the rows `expireRows` answered at the provider. */
+  async expireAt(tenantId: string, checkoutIds: string[]): Promise<void> {
+    if (checkoutIds.length === 0) return;
+    await this.expireAtProvider((await this.accounts.keysFor(tenantId)).keys, checkoutIds);
   }
 
   /** Expires checkouts at the provider; one already expired or complete is no error there. */
