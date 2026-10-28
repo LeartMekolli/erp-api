@@ -10,7 +10,7 @@ import { AuditService } from '../audit/audit.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PARTNER_STATUSES } from './partner-response';
-import type { PartnerResponse, PartnerStatus } from './partner-response';
+import type { PartnerResponse, PartnerStatus, PayoutAccountState } from './partner-response';
 import { ScoreService } from './score.service';
 
 /** Who made a change: staff, or a partner person acting for the partner. */
@@ -58,7 +58,7 @@ export class PartnersService {
       const row = await tx.partner.create({ data: { name: input.name, displayName: input.display_name } });
       const created = await this.audited(tx, row);
       await this.record(tx, auth, row.id, undefined, created);
-      return { ...created, score: await this.score.scoreOf(tx, row.id) };
+      return { ...created, score: await this.score.scoreOf(tx, row.id), payout_account: 'not_connected' };
     });
   }
 
@@ -74,9 +74,10 @@ export class PartnersService {
       const page = toPage(rows, query.limit, secret);
       // One score run for the whole page.
       const scores = await this.score.scores(tx, page.data.map((row) => row.id));
+      const payouts = await payoutStates(tx, page.data.map((row) => row.id));
       const data: PartnerResponse[] = [];
       for (const row of page.data) {
-        data.push({ ...(await this.audited(tx, row)), score: scores.get(row.id)! });
+        data.push({ ...(await this.audited(tx, row)), score: scores.get(row.id)!, payout_account: payouts.get(row.id) ?? 'not_connected' });
       }
       return { data, next_cursor: page.next_cursor };
     });
@@ -85,7 +86,7 @@ export class PartnersService {
   async get(tenantId: string, id: string): Promise<PartnerResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       const row = await this.find(tx, id);
-      return { ...(await this.audited(tx, row)), score: await this.score.scoreOf(tx, id) };
+      return { ...(await this.audited(tx, row)), score: await this.score.scoreOf(tx, id), payout_account: await payoutStateOf(tx, id) };
     });
   }
 
@@ -170,12 +171,15 @@ export class PartnersService {
       const row = await tx.partner.update({ where: { id }, data: await changes(current, tx) });
       const after = await this.audited(tx, row);
       await this.record(tx, auth, id, before, after);
-      return { ...after, score: await this.score.scoreOf(tx, id) };
+      return { ...after, score: await this.score.scoreOf(tx, id), payout_account: await payoutStateOf(tx, id) };
     });
   }
 
-  /** The partner as audited: the response without its score, which is derived and changes on its own. */
-  private async audited(tx: Prisma.TransactionClient, row: Partner): Promise<Omit<PartnerResponse, 'score'>> {
+  /**
+   * The partner as audited: the response without its score and payout account, which are derived or
+   * kept by others and change on their own.
+   */
+  private async audited(tx: Prisma.TransactionClient, row: Partner): Promise<Omit<PartnerResponse, 'score' | 'payout_account'>> {
     const memberCount = await tx.organisationMembership.count({ where: { organisationType: 'partner', organisationId: row.id } });
     return {
       id: row.id,
@@ -197,8 +201,8 @@ export class PartnersService {
     tx: Prisma.TransactionClient,
     auth: Actor,
     id: string,
-    before: Omit<PartnerResponse, 'score'> | undefined,
-    after: Omit<PartnerResponse, 'score'>,
+    before: Omit<PartnerResponse, 'score' | 'payout_account'> | undefined,
+    after: Omit<PartnerResponse, 'score' | 'payout_account'>,
   ): Promise<void> {
     return this.audit.record(tx, {
       actor: { type: 'user', id: auth.userId },
@@ -208,4 +212,14 @@ export class PartnersService {
       after,
     });
   }
+}
+
+/** Where each partner's payout account stands at the provider, kept by Payments; no row is not connected. */
+async function payoutStates(tx: Prisma.TransactionClient, partnerIds: string[]): Promise<Map<string, PayoutAccountState>> {
+  const rows = await tx.partnerPayoutAccount.findMany({ where: { partnerId: { in: partnerIds } }, select: { partnerId: true, state: true } });
+  return new Map(rows.map((row) => [row.partnerId, row.state as PayoutAccountState]));
+}
+
+async function payoutStateOf(tx: Prisma.TransactionClient, partnerId: string): Promise<PayoutAccountState> {
+  return (await payoutStates(tx, [partnerId])).get(partnerId) ?? 'not_connected';
 }

@@ -26,6 +26,12 @@ export function customerOrderLink(
   return `${base.replace(/\/+$/, '')}/orders/${orderId}${query}`;
 }
 
+/** A page of the partner app in the web app, for one partner, as after onboarding at the payment provider. */
+export function partnerPortalLink(target: { webTemplate: string; slug: string }, partnerId: string, path: string): string {
+  const base = target.webTemplate.replace('{tenant}', target.slug).replace(/\/+$/, '');
+  return `${base}/partner-portal/${partnerId}${path}`;
+}
+
 /**
  * The link in an identity email. Customer people go to the workspace's
  * customer site when it has one (Customers spec, goal 13); staff, and

@@ -92,6 +92,7 @@ model Tenant {
   orderPayments   OrderPayment[]
   invoices        Invoice[]
   refunds         Refund[]
+  partnerPayoutAccounts PartnerPayoutAccount[]
 
   @@map("tenant")
 }
@@ -1423,6 +1424,7 @@ model Partner {
   comments         OrderComment[]
   ledgerJournals   LedgerJournal[]
   ledgerLines      LedgerLine[]
+  payoutAccount    PartnerPayoutAccount?
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -2017,6 +2019,24 @@ model Refund {
   @@unique([tenantId, providerRefundId])
   @@index([tenantId, orderId])
   @@map("refund")
+}
+
+// A partner's account at the payment provider, which it is paid through (Payments spec). No row means
+// not connected; the state follows the provider's `account.updated` events.
+model PartnerPayoutAccount {
+  partnerId         String   @id @map("partner_id") @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  providerAccountId String   @map("provider_account_id")
+  // onboarding | ready | restricted
+  state             String
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner Partner @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, partnerId])
+  @@unique([tenantId, providerAccountId])
+  @@map("partner_payout_account")
 }
 
 // How a customer pays (Payments spec). No row means pay first, within 30 days, with no limit.

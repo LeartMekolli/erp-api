@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import type { Prisma } from '../../generated/prisma/client';
 import { orderPaymentResponseSchema } from '../orders/order-response';
+import { PAYOUT_ACCOUNT_STATES } from '../partners/partner-response';
 import { ACCOUNTS, JOURNAL_KINDS } from './ledger';
 import { PAYMENT_TERMS } from './payment-state';
 
@@ -117,6 +118,14 @@ export const paymentCustomerResponseSchema = paymentTermsResponseSchema.extend({
   overdue_invoices: z.array(customerInvoiceResponseSchema),
 });
 export type PaymentCustomerResponse = z.infer<typeof paymentCustomerResponseSchema>;
+
+/** A partner's payout account, as staff and the partner see it: never the provider's id. */
+export const payoutAccountResponseSchema = z.strictObject({ state: z.enum(PAYOUT_ACCOUNT_STATES) });
+export type PayoutAccountResponse = z.infer<typeof payoutAccountResponseSchema>;
+
+/** Where the partner sets up or finishes its payout account at the provider; each link works once, until it expires. */
+export const payoutLinkResponseSchema = z.strictObject({ url: z.string(), expires_at: z.iso.datetime() });
+export type PayoutLinkResponse = z.infer<typeof payoutLinkResponseSchema>;
 
 /** Where the customer pays for a waiting order. */
 export const payLinkResponseSchema = z.strictObject({ url: z.string() });

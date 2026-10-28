@@ -9,6 +9,10 @@ import { PARTNER_ROLES } from './partner-roles';
 export const PARTNER_STATUSES = ['setting_up', 'approved', 'suspended'] as const;
 export type PartnerStatus = (typeof PARTNER_STATUSES)[number];
 
+/** A partner's account at the payment provider, which it is paid through (Payments spec). */
+export const PAYOUT_ACCOUNT_STATES = ['not_connected', 'onboarding', 'ready', 'restricted'] as const;
+export type PayoutAccountState = (typeof PAYOUT_ACCOUNT_STATES)[number];
+
 /** Each part a share from 0 to 1 over the last 90 days; null when there is nothing to go on. */
 const scorePartSchema = z.number().min(0).max(1).nullable();
 
@@ -52,6 +56,8 @@ export const partnerResponseSchema = z.strictObject({
   /** When the partner's owner said its setup is ready for approval; null until then. */
   submitted_at: z.iso.datetime().nullable(),
   score: partnerScoreSchema,
+  /** Whether the partner can be paid through the payment provider. */
+  payout_account: z.enum(PAYOUT_ACCOUNT_STATES),
   created_at: z.iso.datetime(),
 });
 export type PartnerResponse = z.infer<typeof partnerResponseSchema>;
