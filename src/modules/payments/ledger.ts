@@ -9,10 +9,22 @@ export const ACCOUNTS = [
   'tax_payable',
   'provider_fees',
   'partner_costs',
+  // Plans and credit packs (Payments 2 spec), apart from what orders sell.
+  'subscription_sales',
+  'credit_sales',
 ] as const;
 export type Account = (typeof ACCOUNTS)[number];
 
-export const JOURNAL_KINDS = ['order_billed', 'payment_received', 'provider_fee', 'refund', 'payout', 'reversal'] as const;
+export const JOURNAL_KINDS = [
+  'order_billed',
+  'payment_received',
+  'provider_fee',
+  'refund',
+  'payout',
+  'reversal',
+  'plan_billed',
+  'pack_billed',
+] as const;
 export type JournalKind = (typeof JOURNAL_KINDS)[number];
 
 /** Debit positive, credit negative. */
@@ -52,6 +64,22 @@ export function billedJournal(customerId: string, total: Prisma.Decimal, tax: Pr
     { account: 'customer_receivable', amount: total, customerId },
     { account: 'sales', amount: total.sub(tax).neg(), customerId },
     ...(tax.isZero() ? [] : [{ account: 'tax_payable' as const, amount: tax.neg(), customerId }]),
+  ]);
+}
+
+/** The customer is billed `amount` for a period of its plan. No tax yet (Payments 2 spec, non-goals). */
+export function planBilledJournal(customerId: string, amount: Prisma.Decimal): JournalDraft {
+  return buildJournal('plan_billed', [
+    { account: 'customer_receivable', amount, customerId },
+    { account: 'subscription_sales', amount: amount.neg(), customerId },
+  ]);
+}
+
+/** The customer is billed `amount` for a credit pack. No tax yet (Payments 2 spec, non-goals). */
+export function packBilledJournal(customerId: string, amount: Prisma.Decimal): JournalDraft {
+  return buildJournal('pack_billed', [
+    { account: 'customer_receivable', amount, customerId },
+    { account: 'credit_sales', amount: amount.neg(), customerId },
   ]);
 }
 

@@ -35,6 +35,7 @@ export interface EventDefinition {
     | 'user'
     | 'file_version'
     | 'material'
+    | 'customer'
     | 'order'
     | 'payout'
     | 'tenant';
@@ -394,6 +395,22 @@ export const EVENTS = {
       en: {
         subject: 'Payment received for order {{ number }}',
         body: 'Thank you: we have received {{ amount }} for order {{ number }}.',
+      },
+    },
+  },
+  'subscription.started': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'customer',
+    variables: {
+      plan: { sample: 'Pro' },
+      interval: { sample: 'month' },
+      price: { sample: '29.00 EUR' },
+    },
+    defaults: {
+      en: {
+        subject: 'Welcome to {{ plan }}',
+        body: 'Your {{ plan }} plan has started: {{ price }} a {{ interval }}. Its benefits apply from now on.',
       },
     },
   },

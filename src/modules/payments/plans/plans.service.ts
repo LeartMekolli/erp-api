@@ -13,6 +13,18 @@ import type { PlanInterval } from './plans';
 
 type SpeedInput = CreatePlan['speeds'];
 
+/** Subscriptions giving their plan, by plan; one plan's alone when `planId` is given. */
+async function subscribersByPlan(tx: Prisma.TransactionClient, planId?: string): Promise<Map<string, number>> {
+  const rows = await tx.$queryRaw<{ plan_id: string; subscribers: number }[]>`
+    SELECT pp.plan_id, COUNT(*)::int AS subscribers
+    FROM customer_subscription s
+    JOIN plan_price pp ON pp.id = s.plan_price_id
+    WHERE s.status IN ('active', 'past_due')
+      AND (${planId ?? null}::uuid IS NULL OR pp.plan_id = ${planId ?? null}::uuid)
+    GROUP BY pp.plan_id`;
+  return new Map(rows.map((row) => [row.plan_id, row.subscribers]));
+}
+
 /**
  * Plans as workspace data (Payments 2 spec, goals 1–3). Every save publishes what is new to the
  * provider after its commit: a product per paid plan and a recurring price per amount.
@@ -29,10 +41,11 @@ export class PlansService {
   ) {}
 
   async list(tenantId: string): Promise<PlanListResponse> {
-    const rows = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.plan.findMany({ include: planInclude, orderBy: [{ position: 'asc' }, { key: 'asc' }] }),
-    );
-    return { data: rows.map(planResponse) };
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const rows = await tx.plan.findMany({ include: planInclude, orderBy: [{ position: 'asc' }, { key: 'asc' }] });
+      const counts = await subscribersByPlan(tx);
+      return { data: rows.map((row) => planResponse(row, counts.get(row.id) ?? 0)) };
+    });
   }
 
   async create(auth: TenantAuth, input: CreatePlan): Promise<PlanResponse> {
@@ -196,10 +209,11 @@ export class PlansService {
   }
 
   private async view(tx: Prisma.TransactionClient, id: string): Promise<PlanResponse> {
-    return planResponse(await tx.plan.findUniqueOrThrow({ where: { id }, include: planInclude }));
+    const row = await tx.plan.findUniqueOrThrow({ where: { id }, include: planInclude });
+    return planResponse(row, (await subscribersByPlan(tx, id)).get(id) ?? 0);
   }
 
-  /** Audited without `published`, which follows the provider, not the change. */
+  /** Audited without `published` and `subscribers`, which follow the provider and customers, not the change. */
   private async record(
     tx: Prisma.TransactionClient,
     auth: TenantAuth,
@@ -207,7 +221,7 @@ export class PlansService {
     before: PlanResponse | undefined,
     after: PlanResponse,
   ): Promise<void> {
-    const strip = ({ published: _published, ...rest }: PlanResponse) => rest;
+    const strip = ({ published: _published, subscribers: _subscribers, ...rest }: PlanResponse) => rest;
     await this.audit.record(tx, {
       actor: { type: 'user', id: auth.userId },
       action: 'plan.changed',

@@ -20,6 +20,21 @@ export interface ProviderPayment {
   paymentId: string | null;
 }
 
+export type ProviderSubscriptionStatus = 'incomplete' | 'active' | 'past_due' | 'ended';
+
+/** A subscription as the provider holds it now. */
+export interface ProviderSubscription {
+  status: ProviderSubscriptionStatus;
+  priceId: string;
+  providerCustomerId: string;
+  metadata: Record<string, string>;
+  currentPeriodStart: Date;
+  currentPeriodEnd: Date;
+  cancelAtPeriodEnd: boolean;
+  /** The price it moves to at the end of the period, when a change is scheduled. */
+  scheduledPriceId: string | null;
+}
+
 /** DI token: the fake for tests and local work, Stripe otherwise (`PAYMENT_PROVIDER`). */
 export const PAYMENT_PROVIDER = Symbol('PAYMENT_PROVIDER');
 
@@ -28,6 +43,14 @@ export class InvalidSignatureError extends Error {
   constructor(message = 'Invalid signature') {
     super(message);
     this.name = 'InvalidSignatureError';
+  }
+}
+
+/** The provider has no such object: it was made by someone else, or never existed. */
+export class ProviderNotFoundError extends Error {
+  constructor(message = 'No such object at the payment provider') {
+    super(message);
+    this.name = 'ProviderNotFoundError';
   }
 }
 
@@ -61,7 +84,11 @@ export interface PaymentProvider {
       idempotencyKey: string;
     },
   ): Promise<{ id: string; url: string }>;
-  getCheckout(keys: ProviderKeys, id: string): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired' }>;
+  /** `subscriptionId` is set on a subscription's checkout once it is complete. Unknown: `ProviderNotFoundError`. */
+  getCheckout(
+    keys: ProviderKeys,
+    id: string,
+  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null }>;
   /** Already expired or complete: no error. */
   expireCheckout(keys: ProviderKeys, id: string): Promise<void>;
   ensureCustomer(
@@ -81,7 +108,13 @@ export interface PaymentProvider {
       idempotencyKey: string;
     },
   ): Promise<{ id: string; url: string; dueOn: string }>;
-  getInvoice(keys: ProviderKeys, id: string): Promise<ProviderPayment & { status: 'open' | 'paid' | 'void' }>;
+  /** A subscription's invoice names it, with the period it pays for. Unknown: `ProviderNotFoundError`. */
+  getInvoice(
+    keys: ProviderKeys,
+    id: string,
+  ): Promise<
+    ProviderPayment & { status: 'open' | 'paid' | 'void'; subscriptionId: string | null; periodStart: Date | null; periodEnd: Date | null }
+  >;
   markInvoicePaidOutside(keys: ProviderKeys, id: string): Promise<void>;
   refund(
     keys: ProviderKeys,
@@ -105,6 +138,21 @@ export interface PaymentProvider {
     keys: ProviderKeys,
     input: { productId: string; amount: Prisma.Decimal; currency: string; interval: 'month' | 'year'; idempotencyKey: string },
   ): Promise<{ id: string }>;
+  /** A checkout that subscribes the customer to a recurring price. */
+  createSubscriptionCheckout(
+    keys: ProviderKeys,
+    input: {
+      providerCustomerId: string;
+      priceId: string;
+      successUrl: string;
+      cancelUrl: string;
+      metadata: Record<string, string>;
+      idempotencyKey: string;
+    },
+  ): Promise<{ id: string; url: string }>;
+  getSubscription(keys: ProviderKeys, id: string): Promise<ProviderSubscription>;
+  /** Where the customer changes its card, plan or cancels, at the provider. */
+  billingPortalLink(keys: ProviderKeys, input: { providerCustomerId: string; returnUrl: string }): Promise<{ url: string }>;
   /** Throws `ProviderRefusedError` with a message when the provider declines. */
   transfer(
     keys: ProviderKeys,

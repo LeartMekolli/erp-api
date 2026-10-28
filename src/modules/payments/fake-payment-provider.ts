@@ -1,7 +1,14 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
-import { InvalidSignatureError, ProviderRefusedError } from './payment-provider';
-import type { PaymentProvider, ProviderEvent, ProviderKeys, ProviderPayment } from './payment-provider';
+import { InvalidSignatureError, ProviderNotFoundError, ProviderRefusedError } from './payment-provider';
+import type {
+  PaymentProvider,
+  ProviderEvent,
+  ProviderKeys,
+  ProviderPayment,
+  ProviderSubscription,
+  ProviderSubscriptionStatus,
+} from './payment-provider';
 
 type PartnerAccountState = 'onboarding' | 'ready' | 'restricted';
 
@@ -9,6 +16,9 @@ interface FakeCheckout {
   amount: Prisma.Decimal;
   status: 'open' | 'complete' | 'expired';
   paymentId: string | null;
+  /** On a subscription's checkout: what completing it subscribes to. */
+  subscribes: { priceId: string; providerCustomerId: string; metadata: Record<string, string> } | null;
+  subscriptionId: string | null;
 }
 interface FakePrice {
   productId: string;
@@ -21,6 +31,17 @@ interface FakeInvoice {
   status: 'open' | 'paid' | 'void';
   paidOutside: boolean;
   paymentId: string | null;
+  subscriptionId: string | null;
+  periodStart: Date | null;
+  periodEnd: Date | null;
+}
+
+/** `from` plus one month or one year, as the provider counts a billing period. */
+function periodAfter(from: Date, interval: 'month' | 'year'): Date {
+  const end = new Date(from);
+  if (interval === 'year') end.setUTCFullYear(end.getUTCFullYear() + 1);
+  else end.setUTCMonth(end.getUTCMonth() + 1);
+  return end;
 }
 
 const fee = (amount: Prisma.Decimal): Prisma.Decimal =>
@@ -41,6 +62,7 @@ const store = {
   refunds: new Map<string, 'pending' | 'succeeded' | 'failed'>(),
   transfers: [] as { id: string; destination: string; amount: Prisma.Decimal }[],
   prices: new Map<string, FakePrice>(),
+  subscriptions: new Map<string, ProviderSubscription>(),
 };
 
 /**
@@ -101,6 +123,52 @@ export class FakePaymentProvider implements PaymentProvider {
     return this.must(store.prices, id);
   }
 
+  /**
+   * The customer pays a subscription's checkout: the subscription is `active` for one interval from
+   * now, and its first invoice is paid.
+   */
+  completeSubscriptionCheckout(checkoutId: string): { subscriptionId: string; invoiceId: string } {
+    const checkout = this.must(this.checkouts, checkoutId);
+    if (!checkout.subscribes) throw new Error(`${checkoutId} is not a subscription's checkout`);
+    const price = this.price(checkout.subscribes.priceId);
+    const start = new Date();
+    const end = periodAfter(start, price.interval);
+    const subscriptionId = this.nextId('subscription');
+    store.subscriptions.set(subscriptionId, {
+      status: 'active',
+      priceId: checkout.subscribes.priceId,
+      providerCustomerId: checkout.subscribes.providerCustomerId,
+      metadata: checkout.subscribes.metadata,
+      currentPeriodStart: start,
+      currentPeriodEnd: end,
+      cancelAtPeriodEnd: false,
+      scheduledPriceId: null,
+    });
+    const invoiceId = this.nextId('invoice');
+    this.invoices.set(invoiceId, {
+      amount: price.amount,
+      status: 'paid',
+      paidOutside: false,
+      paymentId: this.nextId('payment'),
+      subscriptionId,
+      periodStart: start,
+      periodEnd: end,
+    });
+    checkout.status = 'complete';
+    checkout.paymentId = this.invoices.get(invoiceId)!.paymentId;
+    checkout.subscriptionId = subscriptionId;
+    return { subscriptionId, invoiceId };
+  }
+
+  /** A subscription as the provider holds it now. */
+  subscription(id: string): ProviderSubscription {
+    return { ...this.must(store.subscriptions, id) };
+  }
+
+  setSubscriptionStatus(id: string, status: ProviderSubscriptionStatus): void {
+    this.must(store.subscriptions, id).status = status;
+  }
+
   setPartnerAccountState(id: string, state: PartnerAccountState): void {
     this.must(this.accounts, id);
     this.accounts.set(id, state);
@@ -148,13 +216,16 @@ export class FakePaymentProvider implements PaymentProvider {
     return Promise.resolve(
       this.once(input.idempotencyKey, () => {
         const id = this.nextId('checkout');
-        this.checkouts.set(id, { amount: input.amount, status: 'open', paymentId: null });
+        this.checkouts.set(id, { amount: input.amount, status: 'open', paymentId: null, subscribes: null, subscriptionId: null });
         return { id, url: `https://fake.pay.test/checkout/${id}` };
       }),
     );
   }
 
-  getCheckout(_keys: ProviderKeys, id: string): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired' }> {
+  getCheckout(
+    _keys: ProviderKeys,
+    id: string,
+  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null }> {
     const checkout = this.must(this.checkouts, id);
     const paid = checkout.status === 'complete';
     return Promise.resolve({
@@ -163,7 +234,35 @@ export class FakePaymentProvider implements PaymentProvider {
       amount: checkout.amount,
       fee: paid ? fee(checkout.amount) : new Prisma.Decimal(0),
       paymentId: checkout.paymentId,
+      subscriptionId: checkout.subscriptionId,
     });
+  }
+
+  createSubscriptionCheckout(
+    _keys: ProviderKeys,
+    input: Parameters<PaymentProvider['createSubscriptionCheckout']>[1],
+  ): Promise<{ id: string; url: string }> {
+    return Promise.resolve(
+      this.once(input.idempotencyKey, () => {
+        const id = this.nextId('checkout');
+        this.checkouts.set(id, {
+          amount: this.price(input.priceId).amount,
+          status: 'open',
+          paymentId: null,
+          subscribes: { priceId: input.priceId, providerCustomerId: input.providerCustomerId, metadata: input.metadata },
+          subscriptionId: null,
+        });
+        return { id, url: `https://fake.pay.test/checkout/${id}` };
+      }),
+    );
+  }
+
+  getSubscription(_keys: ProviderKeys, id: string): Promise<ProviderSubscription> {
+    return Promise.resolve(this.subscription(id));
+  }
+
+  billingPortalLink(_keys: ProviderKeys, input: Parameters<PaymentProvider['billingPortalLink']>[1]): Promise<{ url: string }> {
+    return Promise.resolve({ url: `https://fake.pay.test/billing/${input.providerCustomerId}/${this.nextId('portal')}` });
   }
 
   expireCheckout(_keys: ProviderKeys, id: string): Promise<void> {
@@ -183,14 +282,14 @@ export class FakePaymentProvider implements PaymentProvider {
       this.once(input.idempotencyKey, () => {
         const id = this.nextId('invoice');
         const amount = input.lines.reduce((sum, line) => sum.add(line.amount), input.tax);
-        this.invoices.set(id, { amount, status: 'open', paidOutside: false, paymentId: null });
+        this.invoices.set(id, { amount, status: 'open', paidOutside: false, paymentId: null, subscriptionId: null, periodStart: null, periodEnd: null });
         const due = new Date(Date.now() + input.daysUntilDue * 86_400_000);
         return { id, url: `https://fake.pay.test/invoice/${id}`, dueOn: due.toISOString().slice(0, 10) };
       }),
     );
   }
 
-  getInvoice(_keys: ProviderKeys, id: string): Promise<ProviderPayment & { status: 'open' | 'paid' | 'void' }> {
+  getInvoice(_keys: ProviderKeys, id: string): ReturnType<PaymentProvider['getInvoice']> {
     const invoice = this.must(this.invoices, id);
     const paid = invoice.status === 'paid';
     return Promise.resolve({
@@ -199,6 +298,9 @@ export class FakePaymentProvider implements PaymentProvider {
       amount: invoice.amount,
       fee: paid && !invoice.paidOutside ? fee(invoice.amount) : new Prisma.Decimal(0),
       paymentId: invoice.paymentId,
+      subscriptionId: invoice.subscriptionId,
+      periodStart: invoice.periodStart,
+      periodEnd: invoice.periodEnd,
     });
   }
 
@@ -299,7 +401,7 @@ export class FakePaymentProvider implements PaymentProvider {
 
   private must<T>(map: Map<string, T>, id: string): T {
     const found = map.get(id);
-    if (found === undefined) throw new Error(`Unknown fake object ${id}`);
+    if (found === undefined) throw new ProviderNotFoundError(`Unknown fake object ${id}`);
     return found;
   }
 

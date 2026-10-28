@@ -1,7 +1,14 @@
 import Stripe from 'stripe';
 import { Prisma } from '../../generated/prisma/client';
-import { InvalidSignatureError, ProviderRefusedError } from './payment-provider';
-import type { PaymentProvider, ProviderEvent, ProviderKeys, ProviderPayment } from './payment-provider';
+import { InvalidSignatureError, ProviderNotFoundError, ProviderRefusedError } from './payment-provider';
+import type {
+  PaymentProvider,
+  ProviderEvent,
+  ProviderKeys,
+  ProviderPayment,
+  ProviderSubscription,
+  ProviderSubscriptionStatus,
+} from './payment-provider';
 
 function fractionDigits(currency: string): number {
   return new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
@@ -24,6 +31,26 @@ const isoDate = (seconds: number): string => new Date(seconds * 1000).toISOStrin
 
 const refundStatus = (status: string | null): 'pending' | 'succeeded' | 'failed' =>
   status === 'succeeded' ? 'succeeded' : status === 'failed' || status === 'canceled' ? 'failed' : 'pending';
+
+/** Stripe's subscription statuses, as ours: still owed money counts as past due, never as ended. */
+export function subscriptionStatus(status: Stripe.Subscription.Status): ProviderSubscriptionStatus {
+  switch (status) {
+    case 'trialing':
+    case 'active':
+      return 'active';
+    case 'past_due':
+    case 'unpaid':
+    case 'paused':
+      return 'past_due';
+    case 'incomplete':
+      return 'incomplete';
+    default:
+      return 'ended';
+  }
+}
+
+const idOf = (value: string | { id: string } | null | undefined): string | null =>
+  value == null ? null : typeof value === 'string' ? value : value.id;
 
 /**
  * Stripe, in the workspace's own account (`keys`). Used with test keys only. Never called from tests:
@@ -83,9 +110,17 @@ export class StripePaymentProvider implements PaymentProvider {
   async getCheckout(
     keys: ProviderKeys,
     id: string,
-  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired' }> {
+  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null }> {
     const stripe = this.client(keys);
-    const session = await stripe.checkout.sessions.retrieve(id);
+    let session: Stripe.Checkout.Session;
+    try {
+      session = await stripe.checkout.sessions.retrieve(id);
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeInvalidRequestError && error.code === 'resource_missing') {
+        throw new ProviderNotFoundError(error.message);
+      }
+      throw error;
+    }
     const currency = session.currency ?? 'eur';
     const paid = session.payment_status === 'paid';
     const paymentIntent = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
@@ -95,7 +130,49 @@ export class StripePaymentProvider implements PaymentProvider {
       amount: fromMinorUnits(session.amount_total ?? 0, currency),
       fee: paid && paymentIntent ? await this.feeOf(stripe, paymentIntent, currency) : new Prisma.Decimal(0),
       paymentId: paymentIntent ?? null,
+      subscriptionId: idOf(session.subscription),
     };
+  }
+
+  async createSubscriptionCheckout(
+    keys: ProviderKeys,
+    input: Parameters<PaymentProvider['createSubscriptionCheckout']>[1],
+  ): Promise<{ id: string; url: string }> {
+    const session = await this.client(keys).checkout.sessions.create(
+      {
+        mode: 'subscription',
+        customer: input.providerCustomerId,
+        line_items: [{ price: input.priceId, quantity: 1 }],
+        success_url: input.successUrl,
+        cancel_url: input.cancelUrl,
+        metadata: input.metadata,
+        subscription_data: { metadata: input.metadata },
+      },
+      { idempotencyKey: input.idempotencyKey },
+    );
+    return { id: session.id, url: session.url ?? '' };
+  }
+
+  async getSubscription(keys: ProviderKeys, id: string): Promise<ProviderSubscription> {
+    const stripe = this.client(keys);
+    const subscription = await stripe.subscriptions.retrieve(id);
+    const item = subscription.items.data[0];
+    if (!item) throw new Error(`Subscription ${id} has no item`);
+    return {
+      status: subscriptionStatus(subscription.status),
+      priceId: item.price.id,
+      providerCustomerId: idOf(subscription.customer) ?? '',
+      metadata: subscription.metadata,
+      currentPeriodStart: new Date(item.current_period_start * 1000),
+      currentPeriodEnd: new Date(item.current_period_end * 1000),
+      cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      scheduledPriceId: await this.scheduledPrice(stripe, idOf(subscription.schedule), item.current_period_end),
+    };
+  }
+
+  async billingPortalLink(keys: ProviderKeys, input: { providerCustomerId: string; returnUrl: string }): Promise<{ url: string }> {
+    const session = await this.client(keys).billingPortal.sessions.create({ customer: input.providerCustomerId, return_url: input.returnUrl });
+    return { url: session.url };
   }
 
   async expireCheckout(keys: ProviderKeys, id: string): Promise<void> {
@@ -157,19 +234,33 @@ export class StripePaymentProvider implements PaymentProvider {
     };
   }
 
-  async getInvoice(keys: ProviderKeys, id: string): Promise<ProviderPayment & { status: 'open' | 'paid' | 'void' }> {
+  async getInvoice(keys: ProviderKeys, id: string): ReturnType<PaymentProvider['getInvoice']> {
     const stripe = this.client(keys);
-    const invoice = await stripe.invoices.retrieve(id, { expand: ['payments'] });
+    let invoice: Stripe.Invoice;
+    try {
+      invoice = await stripe.invoices.retrieve(id, { expand: ['payments'] });
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeInvalidRequestError && error.code === 'resource_missing') {
+        throw new ProviderNotFoundError(error.message);
+      }
+      throw error;
+    }
     const paid = invoice.status === 'paid';
     const payment = invoice.payments?.data.find((candidate) => candidate.status === 'paid')?.payment;
     const paymentIntent = payment?.payment_intent;
     const paymentId = typeof paymentIntent === 'string' ? paymentIntent : (paymentIntent?.id ?? null);
+    const subscriptionId = idOf(invoice.parent?.subscription_details?.subscription);
+    // The invoice's own period is the one before; its lines carry the period they pay for.
+    const periods = subscriptionId ? invoice.lines.data.map((line) => line.period) : [];
     return {
       status: paid ? 'paid' : invoice.status === 'void' ? 'void' : 'open',
       paid,
       amount: fromMinorUnits(invoice.total, invoice.currency),
       fee: paid && paymentId ? await this.feeOf(stripe, paymentId, invoice.currency) : new Prisma.Decimal(0),
       paymentId,
+      subscriptionId,
+      periodStart: periods.length > 0 ? new Date(Math.min(...periods.map((period) => period.start)) * 1000) : null,
+      periodEnd: periods.length > 0 ? new Date(Math.max(...periods.map((period) => period.end)) * 1000) : null,
     };
   }
 
@@ -272,6 +363,14 @@ export class StripePaymentProvider implements PaymentProvider {
       if (error instanceof Stripe.errors.StripeInvalidRequestError) throw new ProviderRefusedError(error.message);
       throw error;
     }
+  }
+
+  /** The price a subscription schedule moves to once the current period ends, if it has one. */
+  private async scheduledPrice(stripe: Stripe, scheduleId: string | null, periodEnd: number): Promise<string | null> {
+    if (!scheduleId) return null;
+    const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
+    const next = schedule.phases.find((phase) => phase.start_date >= periodEnd);
+    return idOf(next?.items[0]?.price);
   }
 
   /** Stripe's fee on a payment, from the balance transaction of its charge. */

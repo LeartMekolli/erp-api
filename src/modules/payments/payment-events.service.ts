@@ -18,13 +18,17 @@ export type WebhookEndpoint = 'payments' | 'connect';
 export type PaymentEventHandlerFn = (tenantId: string, event: PaymentEvent) => Promise<void>;
 
 /**
- * By event type, for the whole process. Registering a type again replaces its handler, so the API's
- * and the worker's module instances can both register at boot.
+ * By event type, then by owner, for the whole process. One type may serve several owners (a paid
+ * invoice is an order's or a subscription's), each ignoring objects that aren't its own. The same
+ * owner registering a type again replaces its handler, so the API's and the worker's module
+ * instances can both register at boot.
  */
-const handlers = new Map<string, PaymentEventHandlerFn>();
+const handlers = new Map<string, Map<string, PaymentEventHandlerFn>>();
 
-export function registerEventHandler(type: string, handler: PaymentEventHandlerFn): void {
-  handlers.set(type, handler);
+export function registerEventHandler(type: string, handler: PaymentEventHandlerFn, owner = 'default'): void {
+  const owners = handlers.get(type) ?? new Map<string, PaymentEventHandlerFn>();
+  owners.set(owner, handler);
+  handlers.set(type, owners);
 }
 
 const ERROR_MAX_LENGTH = 1000;
@@ -104,16 +108,18 @@ export class PaymentEventsService {
   }
 
   /**
-   * Runs the handler for the event's type, outside any transaction. An event nobody handles is
-   * applied as is. A handler's error is kept on the event and rethrown, so the job retries.
+   * Runs every owner's handler for the event's type in turn, outside any transaction. An event nobody
+   * handles is applied as is. A handler's error is kept on the event and rethrown, so the job retries,
+   * running every handler again: each is safe to run twice.
    */
   async apply(tenantId: string, eventId: string): Promise<void> {
     const event = await this.prisma.inTenant(tenantId, (tx) => tx.paymentEvent.findFirst({ where: { id: eventId } }));
     if (!event || event.appliedAt) return;
 
-    const handler = handlers.get(event.type);
     try {
-      if (handler) await handler(tenantId, event);
+      for (const handler of handlers.get(event.type)?.values() ?? []) {
+        await handler(tenantId, event);
+      }
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, ERROR_MAX_LENGTH);
       await this.prisma.inTenant(tenantId, (tx) =>

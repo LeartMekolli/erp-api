@@ -37,6 +37,10 @@ import { PayoutsController } from './payouts.controller';
 import { PayoutsService } from './payouts.service';
 import { PlansController } from './plans/plans.controller';
 import { PlansService } from './plans/plans.service';
+import { SubscriptionEvents } from './plans/subscription-events';
+import { SubscriptionsController } from './plans/subscriptions.controller';
+import { SubscriptionsService } from './plans/subscriptions.service';
+import { ProviderCustomers } from './provider-customers';
 import { RefundHandler } from './refund.handler';
 import { RefundsController } from './refunds.controller';
 import { RefundsService } from './refunds.service';
@@ -62,6 +66,7 @@ import { WebhooksController } from './webhooks.controller';
     PayoutsController,
     PlansController,
     CreditsController,
+    SubscriptionsController,
   ],
   providers: [
     PaymentAccountService,
@@ -87,6 +92,9 @@ import { WebhooksController } from './webhooks.controller';
     PlansService,
     CreditsService,
     CreditExpiryHandler,
+    ProviderCustomers,
+    SubscriptionsService,
+    SubscriptionEvents,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],

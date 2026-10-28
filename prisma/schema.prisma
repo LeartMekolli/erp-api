@@ -101,6 +101,7 @@ model Tenant {
   creditGrants    CreditGrant[]
   creditSpends    CreditSpend[]
   creditEntries   CreditEntry[]
+  customerSubscriptions CustomerSubscription[]
 
   @@map("tenant")
 }
@@ -1118,6 +1119,7 @@ model Customer {
   creditGrants  CreditGrant[]
   creditSpends  CreditSpend[]
   creditEntries CreditEntry[]
+  subscription  CustomerSubscription?
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2201,6 +2203,8 @@ model PlanPrice {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   plan   Plan   @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
+  subscriptions          CustomerSubscription[] @relation("subscription_price")
+  scheduledSubscriptions CustomerSubscription[] @relation("subscription_scheduled_price")
 
   @@unique([tenantId, id])
   @@unique([tenantId, providerPriceId])
@@ -2223,6 +2227,37 @@ model PlanSpeed {
   @@id([planId, deliverySpeedId])
   @@index([tenantId])
   @@map("plan_speed")
+}
+
+// A customer's subscription, as the provider holds it (Payments 2 spec, D47): one row per customer,
+// written only by `SubscriptionsService.sync` from webhooks. Subscribing again after it ended reuses it.
+model CustomerSubscription {
+  id                     String    @id @default(uuid(7)) @db.Uuid
+  tenantId               String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId             String    @map("customer_id") @db.Uuid
+  providerSubscriptionId String    @map("provider_subscription_id")
+  planPriceId            String    @map("plan_price_id") @db.Uuid
+  // incomplete | active | past_due | ended
+  status                 String
+  currentPeriodStart     DateTime  @map("current_period_start")
+  currentPeriodEnd       DateTime  @map("current_period_end")
+  cancelAtPeriodEnd      Boolean   @default(false) @map("cancel_at_period_end")
+  // The price it moves to at the end of the period (a downgrade).
+  scheduledPlanPriceId   String?   @map("scheduled_plan_price_id") @db.Uuid
+  // Where monthly allowances count from: set when the subscription becomes active from no paid plan.
+  allowanceAnchor        DateTime? @map("allowance_anchor")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant         Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer       Customer   @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  planPrice      PlanPrice  @relation("subscription_price", fields: [tenantId, planPriceId], references: [tenantId, id], onDelete: NoAction)
+  scheduledPrice PlanPrice? @relation("subscription_scheduled_price", fields: [tenantId, scheduledPlanPriceId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, customerId])
+  @@unique([tenantId, providerSubscriptionId])
+  @@index([tenantId, planPriceId])
+  @@map("customer_subscription")
 }
 
 // Credits given to a customer (Payments 2 spec, D48): a monthly allowance, a pack, a campaign or a staff

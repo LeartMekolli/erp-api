@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Prisma } from '../../../generated/prisma/client';
 import { keySchema, percentSchema } from '../../pricing/decimals';
-import { PLAN_FEATURES } from './plans';
+import { PLAN_FEATURES, PLAN_INTERVALS } from './plans';
 
 const PRICE = /^\d{1,16}(\.\d{1,2})?$/;
 
@@ -86,6 +86,8 @@ export const planResponseSchema = z.strictObject({
   speeds: z.array(z.strictObject({ key: z.string(), name: z.string(), surcharge_percent: z.string().nullable() })),
   /** Every current price exists at the provider, so customers can subscribe. */
   published: z.boolean(),
+  /** Customers whose subscription is active or past due on any of its prices; 0 on the default plan. */
+  subscribers: z.number().int(),
 });
 export type PlanResponse = z.infer<typeof planResponseSchema>;
 
@@ -99,7 +101,7 @@ export const planInclude = {
 
 export type PlanWithPrices = Prisma.PlanGetPayload<{ include: typeof planInclude }>;
 
-export function planResponse(row: PlanWithPrices): PlanResponse {
+export function planResponse(row: PlanWithPrices, subscribers: number): PlanResponse {
   const price = (interval: 'month' | 'year') => row.prices.find((candidate) => candidate.interval === interval)?.amount.toFixed(2) ?? null;
   return {
     id: row.id,
@@ -123,8 +125,65 @@ export function planResponse(row: PlanWithPrices): PlanResponse {
         surcharge_percent: speed.surchargePercent?.toFixed() ?? null,
       }))
       .sort((a, b) => a.key.localeCompare(b.key)),
-    published:
-      row.prices.every((candidate) => candidate.providerPriceId !== null) &&
-      (row.prices.length === 0 || row.providerProductId !== null),
+    published: isPublished(row),
+    subscribers: row.isDefault ? 0 : subscribers,
   };
 }
+
+/** Every current price exists at the provider. */
+export function isPublished(row: PlanWithPrices): boolean {
+  return (
+    row.prices.every((candidate) => candidate.providerPriceId !== null) && (row.prices.length === 0 || row.providerProductId !== null)
+  );
+}
+
+/** A plan a customer can choose, as the customer sees it: no status, subscribers or provider state. */
+export const portalPlanResponseSchema = z.strictObject({
+  id: z.uuid(),
+  key: z.string(),
+  name: z.string(),
+  description: z.string(),
+  is_default: z.boolean(),
+  currency: z.string(),
+  monthly_price: z.string().nullable(),
+  yearly_price: z.string().nullable(),
+  discount_percent: z.string(),
+  monthly_credits: z.number().int(),
+  member_limit: z.number().int().nullable(),
+  features: z.array(z.enum(PLAN_FEATURES)),
+  speeds: z.array(z.strictObject({ key: z.string(), name: z.string(), surcharge_percent: z.string().nullable() })),
+  /** The customer's plan now. */
+  current: z.boolean(),
+});
+export type PortalPlanResponse = z.infer<typeof portalPlanResponseSchema>;
+
+export const portalPlanListResponseSchema = z.strictObject({ data: z.array(portalPlanResponseSchema) });
+export type PortalPlanListResponse = z.infer<typeof portalPlanListResponseSchema>;
+
+export function portalPlanResponse(row: PlanWithPrices, currentPlanId: string): PortalPlanResponse {
+  const { position: _position, status: _status, published: _published, subscribers: _subscribers, ...shown } = planResponse(row, 0);
+  return { ...shown, current: row.id === currentPlanId };
+}
+
+const planRefSchema = z.strictObject({ key: z.string(), name: z.string() });
+
+/** The customer's subscription. On the free default plan: `status: 'free'` and nothing else set. */
+export const subscriptionResponseSchema = z.strictObject({
+  plan: planRefSchema,
+  interval: z.enum(PLAN_INTERVALS).nullable(),
+  price: z.string().nullable(),
+  status: z.enum(['free', 'incomplete', 'active', 'past_due']),
+  /** When the current period ends: the next payment, or the end of a cancelled subscription. */
+  current_period_end: z.iso.datetime().nullable(),
+  /** A change that takes effect at the end of the period (a downgrade). */
+  change: z.strictObject({ plan: planRefSchema, interval: z.enum(PLAN_INTERVALS), on: z.iso.datetime() }).nullable(),
+  cancel_at_period_end: z.boolean(),
+});
+export type SubscriptionResponse = z.infer<typeof subscriptionResponseSchema>;
+
+/** A paid plan and how often to pay for it; the price is the plan's own, never the client's. */
+export const subscriptionCheckoutSchema = z.strictObject({
+  plan_id: z.uuid(),
+  interval: z.enum(PLAN_INTERVALS),
+});
+export type SubscriptionCheckout = z.infer<typeof subscriptionCheckoutSchema>;

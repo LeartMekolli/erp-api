@@ -78,13 +78,17 @@ export async function resolveAudience(
       break;
     }
     case 'customer': {
-      const order = await tx.order.findFirst({ where: { id: notification.subjectId }, select: { customerId: true } });
-      if (order) {
+      // The subject is the customer itself, or one of its orders.
+      const customerId =
+        notification.subjectType === 'customer'
+          ? notification.subjectId
+          : (await tx.order.findFirst({ where: { id: notification.subjectId }, select: { customerId: true } }))?.customerId;
+      if (customerId) {
         const people = await tx.user.findMany({
           where: {
             status: 'active',
             kind: 'customer',
-            memberships: { some: { organisationType: 'customer', organisationId: order.customerId } },
+            memberships: { some: { organisationType: 'customer', organisationId: customerId } },
           },
           orderBy: { id: 'asc' },
         });

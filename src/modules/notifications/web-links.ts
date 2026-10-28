@@ -26,6 +26,15 @@ export function customerOrderLink(
   return `${base.replace(/\/+$/, '')}/orders/${orderId}${query}`;
 }
 
+/** The customer's billing page, as after a subscription's checkout or the provider's billing portal. */
+export function customerBillingLink(
+  target: { webTemplate: string; slug: string; customerSiteOrigin: string | null },
+  query = '',
+): string {
+  const base = target.customerSiteOrigin ?? target.webTemplate.replace('{tenant}', target.slug);
+  return `${base.replace(/\/+$/, '')}/billing${query}`;
+}
+
 /** A page of the partner app in the web app, for one partner, as after onboarding at the payment provider. */
 export function partnerPortalLink(target: { webTemplate: string; slug: string }, partnerId: string, path: string): string {
   const base = target.webTemplate.replace('{tenant}', target.slug).replace(/\/+$/, '');

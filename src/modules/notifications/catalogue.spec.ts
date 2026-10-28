@@ -34,6 +34,7 @@ describe('notification catalogue', () => {
       'payouts.reminder',
       'refund.failed',
       'refund.made',
+      'subscription.started',
       'user.invited',
       'user.joined',
       'user.roles_changed',
@@ -59,6 +60,12 @@ describe('notification catalogue', () => {
     }
     expect(EVENTS['order.received'].audience).toEqual({ kind: 'permission', permission: 'order.read' });
     expect(Object.keys(variablesOf('order.shipped')).sort()).toEqual(['courier', 'number', 'tracking']);
+  });
+
+  it("tells the customer's people when a subscription starts, about the customer itself", () => {
+    expect(EVENTS['subscription.started'].audience).toEqual({ kind: 'customer' });
+    expect(EVENTS['subscription.started'].subjectType).toBe('customer');
+    expect(Object.keys(variablesOf('subscription.started')).sort()).toEqual(['interval', 'plan', 'price']);
   });
 
   it.each(events)('%s: every sample is non-empty', (event) => {

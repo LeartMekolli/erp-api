@@ -45,7 +45,14 @@ export async function planBenefits(tx: Prisma.TransactionClient, planId: string)
   return toBenefits(await tx.plan.findUniqueOrThrow({ where: { id: planId }, include }));
 }
 
-/** The customer's plan: its subscription's while active or past due (Task 4), else the default plan. */
-export function planOf(tx: Prisma.TransactionClient, _customerId: string): Promise<PlanBenefits> {
-  return defaultPlanOf(tx);
+/** Subscriptions that give their plan: paid, or late but not given up on by the provider. */
+export const PLAN_GIVING_STATUSES = ['active', 'past_due'] as const;
+
+/** The customer's plan: its subscription's while active or past due, else the default plan. */
+export async function planOf(tx: Prisma.TransactionClient, customerId: string): Promise<PlanBenefits> {
+  const subscription = await tx.customerSubscription.findFirst({
+    where: { customerId, status: { in: [...PLAN_GIVING_STATUSES] } },
+    select: { planPrice: { select: { planId: true } } },
+  });
+  return subscription ? planBenefits(tx, subscription.planPrice.planId) : defaultPlanOf(tx);
 }

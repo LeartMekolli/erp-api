@@ -13,6 +13,7 @@ import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
 import { DEFAULT_DAYS_TO_PAY } from './payment-response';
 import { billableTotals, paidAndRefunded } from './payment-state';
+import { ProviderCustomers } from './provider-customers';
 
 const DAY_MS = 86_400_000;
 
@@ -36,6 +37,7 @@ export class InvoicesService implements OnModuleInit {
     private readonly ledger: LedgerService,
     private readonly notifications: NotificationsService,
     private readonly orders: OrdersService,
+    private readonly providerCustomers: ProviderCustomers,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
 
@@ -94,28 +96,12 @@ export class InvoicesService implements OnModuleInit {
           },
         });
       }
-      const customer = await tx.customer.findUniqueOrThrow({ where: { id: order.customerId }, select: { id: true, name: true } });
-      // Who the provider sends the invoice to: the customer's first active owner.
-      const owner = await tx.organisationMembership.findFirst({
-        where: { organisationType: 'customer', organisationId: customer.id, role: 'owner', user: { status: 'active' } },
-        orderBy: { id: 'asc' },
-        select: { user: { select: { email: true } } },
-      });
-      return { order, invoice, lines, daysToPay, customer, email: owner?.user.email ?? null, providerCustomerId: terms?.providerCustomerId ?? null };
+      return { order, invoice, lines, daysToPay };
     });
     if (!prepared) return;
-    const { order, invoice, customer } = prepared;
+    const { order, invoice } = prepared;
 
-    let providerCustomerId = prepared.providerCustomerId;
-    if (!providerCustomerId) {
-      providerCustomerId = (
-        await this.provider.ensureCustomer(keys, { customerId: customer.id, name: customer.name, email: prepared.email, idempotencyKey: customer.id })
-      ).id;
-      const stored = providerCustomerId;
-      await this.prisma.inTenant(tenantId, (tx) =>
-        tx.customerPaymentTerms.updateMany({ where: { customerId: customer.id }, data: { providerCustomerId: stored } }),
-      );
-    }
+    const providerCustomerId = await this.providerCustomers.ensure(tenantId, order.customerId);
     const made = await this.provider.createInvoice(keys, {
       providerCustomerId,
       currency: invoice.currency,

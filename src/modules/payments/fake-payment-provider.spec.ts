@@ -115,6 +115,103 @@ describe('FakePaymentProvider', () => {
     });
   });
 
+  it('sells a subscription through a checkout, active for one interval and its first invoice paid', async () => {
+    const provider = new FakePaymentProvider();
+    const product = await provider.ensureProduct(keys, { name: 'Pro', idempotencyKey: 'plan-sub-1' });
+    const price = await provider.createPrice(keys, {
+      productId: product.id,
+      amount: new Prisma.Decimal('29.00'),
+      currency: 'EUR',
+      interval: 'month',
+      idempotencyKey: 'price-sub-1',
+    });
+    const input = {
+      providerCustomerId: 'fake_customer_x',
+      priceId: price.id,
+      successUrl: 'https://shop.test/billing?subscription=done',
+      cancelUrl: 'https://shop.test/billing?subscription=cancelled',
+      metadata: { customer_id: 'c1' },
+      idempotencyKey: 'sub-checkout-1',
+    };
+
+    const checkout = await provider.createSubscriptionCheckout(keys, input);
+    expect(await provider.createSubscriptionCheckout(keys, input)).toEqual(checkout);
+    expect(await provider.getCheckout(keys, checkout.id)).toMatchObject({ status: 'open', paid: false, subscriptionId: null });
+
+    const before = Date.now();
+    const { subscriptionId, invoiceId } = provider.completeSubscriptionCheckout(checkout.id);
+
+    expect(await provider.getCheckout(keys, checkout.id)).toMatchObject({ status: 'complete', paid: true, subscriptionId });
+    const subscription = await provider.getSubscription(keys, subscriptionId);
+    expect(subscription).toMatchObject({
+      status: 'active',
+      priceId: price.id,
+      providerCustomerId: 'fake_customer_x',
+      metadata: { customer_id: 'c1' },
+      cancelAtPeriodEnd: false,
+      scheduledPriceId: null,
+    });
+    expect(subscription.currentPeriodStart.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    const nextMonth = new Date(subscription.currentPeriodStart);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    expect(subscription.currentPeriodEnd).toEqual(nextMonth);
+    expect(provider.subscription(subscriptionId)).toEqual(subscription);
+
+    const invoice = await provider.getInvoice(keys, invoiceId);
+    expect(invoice).toMatchObject({ status: 'paid', paid: true, subscriptionId, periodStart: subscription.currentPeriodStart, periodEnd: nextMonth });
+    expect(invoice.amount.toFixed(2)).toBe('29.00');
+    expect(invoice.fee.toFixed(2)).toBe('1.14');
+  });
+
+  it('changes a subscription by test control, and links to the billing portal', async () => {
+    const provider = new FakePaymentProvider();
+    const product = await provider.ensureProduct(keys, { name: 'Pro', idempotencyKey: 'plan-sub-2' });
+    const price = await provider.createPrice(keys, {
+      productId: product.id,
+      amount: new Prisma.Decimal('290.00'),
+      currency: 'EUR',
+      interval: 'year',
+      idempotencyKey: 'price-sub-2',
+    });
+    const checkout = await provider.createSubscriptionCheckout(keys, {
+      providerCustomerId: 'fake_customer_y',
+      priceId: price.id,
+      successUrl: 'https://shop.test/ok',
+      cancelUrl: 'https://shop.test/no',
+      metadata: {},
+      idempotencyKey: 'sub-checkout-2',
+    });
+    const { subscriptionId } = provider.completeSubscriptionCheckout(checkout.id);
+    const start = provider.subscription(subscriptionId).currentPeriodStart;
+    const nextYear = new Date(start);
+    nextYear.setUTCFullYear(nextYear.getUTCFullYear() + 1);
+    expect(provider.subscription(subscriptionId).currentPeriodEnd).toEqual(nextYear);
+
+    provider.setSubscriptionStatus(subscriptionId, 'past_due');
+
+    expect((await provider.getSubscription(keys, subscriptionId)).status).toBe('past_due');
+    expect((await provider.billingPortalLink(keys, { providerCustomerId: 'fake_customer_y', returnUrl: 'https://shop.test/billing' })).url).toMatch(
+      /^https:\/\/fake\.pay\.test\/billing\//,
+    );
+  });
+
+  it('has no subscription on an order checkout or an order invoice', async () => {
+    const provider = new FakePaymentProvider();
+    const { id } = await provider.createCheckout(keys, checkoutInput('k-sub-none'));
+    const invoice = await provider.createInvoice(keys, {
+      providerCustomerId: 'fake_customer_z',
+      currency: 'EUR',
+      lines: [{ description: 'Ring', amount: new Prisma.Decimal('100.00') }],
+      tax: new Prisma.Decimal('19.00'),
+      daysUntilDue: 30,
+      metadata: {},
+      idempotencyKey: 'inv-sub-none',
+    });
+
+    expect((await provider.getCheckout(keys, id)).subscriptionId).toBeNull();
+    expect(await provider.getInvoice(keys, invoice.id)).toMatchObject({ subscriptionId: null, periodStart: null, periodEnd: null });
+  });
+
   it('refuses one transfer after failNextTransfer, then works again', async () => {
     const provider = new FakePaymentProvider();
     const input = (idempotencyKey: string) => ({
