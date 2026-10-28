@@ -33,6 +33,7 @@ const store = {
   invoices: new Map<string, FakeInvoice>(),
   accounts: new Map<string, PartnerAccountState>(),
   refunds: new Map<string, 'pending' | 'succeeded' | 'failed'>(),
+  transfers: [] as { id: string; destination: string; amount: Prisma.Decimal }[],
 };
 
 /**
@@ -67,6 +68,11 @@ export class FakePaymentProvider implements PaymentProvider {
     const invoice = this.must(this.invoices, id);
     invoice.status = 'paid';
     invoice.paymentId = this.nextId('payment');
+  }
+
+  /** The transfers made to a connected account, oldest first; a refused one was never made. */
+  transfersTo(destination: string): { id: string; amount: Prisma.Decimal }[] {
+    return store.transfers.filter((transfer) => transfer.destination === destination).map(({ id, amount }) => ({ id, amount }));
   }
 
   failNextTransfer(message: string): void {
@@ -244,7 +250,13 @@ export class FakePaymentProvider implements PaymentProvider {
       store.transferFailure = null;
       return Promise.reject(new ProviderRefusedError(message));
     }
-    return Promise.resolve(this.once(input.idempotencyKey, () => ({ id: this.nextId('transfer') })));
+    return Promise.resolve(
+      this.once(input.idempotencyKey, () => {
+        const id = this.nextId('transfer');
+        store.transfers.push({ id, destination: input.destination, amount: input.amount });
+        return { id };
+      }),
+    );
   }
 
   // --- helpers -------------------------------------------------------------------------------

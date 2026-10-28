@@ -59,16 +59,17 @@ export async function resolveAudience(
       break;
     }
     case 'partner': {
-      const assignment = await tx.jobAssignment.findFirst({
-        where: { id: notification.subjectId },
-        select: { partnerId: true },
-      });
-      if (assignment) {
+      // The partner of a job assignment, or of a payout to it.
+      const subject =
+        notification.subjectType === 'payout'
+          ? await tx.payout.findFirst({ where: { id: notification.subjectId }, select: { partnerId: true } })
+          : await tx.jobAssignment.findFirst({ where: { id: notification.subjectId }, select: { partnerId: true } });
+      if (subject) {
         const people = await tx.user.findMany({
           where: {
             status: 'active',
             kind: 'partner',
-            memberships: { some: { organisationType: 'partner', organisationId: assignment.partnerId } },
+            memberships: { some: { organisationType: 'partner', organisationId: subject.partnerId } },
           },
           orderBy: { id: 'asc' },
         });

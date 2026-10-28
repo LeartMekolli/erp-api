@@ -56,6 +56,8 @@ export class PartnerJobsController {
         quantity: job.quantity,
         state: job.state,
         amount: job.amount,
+        paid: job.paid,
+        due: job.due,
       })),
     };
   }

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationQuerySchema } from '../../common/pagination/page';
+import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
 import type { Prisma } from '../../generated/prisma/client';
 import { orderPaymentResponseSchema } from '../orders/order-response';
 import { PAYOUT_ACCOUNT_STATES } from '../partners/partner-response';
@@ -126,6 +126,35 @@ export type PayoutAccountResponse = z.infer<typeof payoutAccountResponseSchema>;
 /** Where the partner sets up or finishes its payout account at the provider; each link works once, until it expires. */
 export const payoutLinkResponseSchema = z.strictObject({ url: z.string(), expires_at: z.iso.datetime() });
 export type PayoutLinkResponse = z.infer<typeof payoutLinkResponseSchema>;
+
+/** One transfer to a partner of what was due, with what it holds for each job; never the order behind a job. */
+export const payoutResponseSchema = z.strictObject({
+  id: z.uuid(),
+  partner_id: z.uuid(),
+  amount: z.string(),
+  currency: z.string().length(3),
+  /** `pending` until the provider has made the transfer; `failed` or `reversed` gives its jobs back to be paid again. */
+  status: z.enum(['pending', 'paid', 'failed', 'reversed']),
+  /** Why the provider refused the transfer. */
+  failure: z.string().nullable(),
+  created_at: z.iso.datetime(),
+  settled_at: z.iso.datetime().nullable(),
+  jobs: z.array(
+    z.strictObject({
+      assignment_id: z.uuid(),
+      group_id: z.uuid(),
+      product: z.strictObject({ name: z.string() }).nullable(),
+      quantity: z.number().int(),
+      /** Negative when the payout takes back what an earlier one paid for the job. */
+      amount: z.string(),
+    }),
+  ),
+});
+export type PayoutResponse = z.infer<typeof payoutResponseSchema>;
+
+/** A partner's payouts, newest first, a page at a time. */
+export const payoutPageResponseSchema = pageSchema(payoutResponseSchema);
+export type PayoutPageResponse = z.infer<typeof payoutPageResponseSchema>;
 
 /** Where the customer pays for a waiting order. */
 export const payLinkResponseSchema = z.strictObject({ url: z.string() });

@@ -93,6 +93,8 @@ model Tenant {
   invoices        Invoice[]
   refunds         Refund[]
   partnerPayoutAccounts PartnerPayoutAccount[]
+  payouts         Payout[]
+  payoutJobs      PayoutJob[]
 
   @@map("tenant")
 }
@@ -143,6 +145,7 @@ model User {
   ledgerJournals LedgerJournal[]
   releasedOrders Order[]
   refunds        Refund[]
+  payouts        Payout[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1425,6 +1428,7 @@ model Partner {
   ledgerJournals   LedgerJournal[]
   ledgerLines      LedgerLine[]
   payoutAccount    PartnerPayoutAccount?
+  payouts          Payout[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1570,6 +1574,7 @@ model JobAssignment {
   tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   group   WorkOrderGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
   partner Partner        @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+  payoutJobs PayoutJob[]
 
   @@unique([tenantId, id])
   @@index([tenantId, groupId])
@@ -2037,6 +2042,51 @@ model PartnerPayoutAccount {
   @@unique([tenantId, partnerId])
   @@unique([tenantId, providerAccountId])
   @@map("partner_payout_account")
+}
+
+// One transfer to a partner of what was due (Payments spec). What pending and paid payouts hold for a
+// job counts as paid, so a second payout at once finds nothing left; a failed or reversed one gives
+// its jobs back.
+model Payout {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  tenantId           String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  partnerId          String    @map("partner_id") @db.Uuid
+  amount             Decimal   @db.Decimal(18, 2)
+  currency           String    @db.Char(3)
+  // pending | paid | failed | reversed
+  status             String
+  providerTransferId String?   @map("provider_transfer_id")
+  failure            String?
+  createdByUserId    String    @map("created_by_user_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at")
+  settledAt          DateTime? @map("settled_at")
+
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner   Partner     @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: Cascade)
+  createdBy User        @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  jobs      PayoutJob[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerTransferId])
+  @@index([tenantId, partnerId])
+  @@map("payout")
+}
+
+// What a payout holds for one job: its due when paid, negative when it takes back an amount paid before.
+model PayoutJob {
+  id           String  @id @default(uuid(7)) @db.Uuid
+  tenantId     String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  payoutId     String  @map("payout_id") @db.Uuid
+  assignmentId String  @map("assignment_id") @db.Uuid
+  amount       Decimal @db.Decimal(18, 2)
+
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  payout     Payout        @relation(fields: [tenantId, payoutId], references: [tenantId, id], onDelete: Cascade)
+  assignment JobAssignment @relation(fields: [tenantId, assignmentId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([payoutId, assignmentId])
+  @@index([tenantId, assignmentId])
+  @@map("payout_job")
 }
 
 // How a customer pays (Payments spec). No row means pay first, within 30 days, with no limit.

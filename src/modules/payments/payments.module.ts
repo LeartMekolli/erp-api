@@ -18,11 +18,6 @@ import { LedgerService } from './ledger.service';
 import { OrderStarter } from './order-starter';
 import { OverdueInvoicesHandler } from './overdue-invoices.handler';
 import { PaidByHandService } from './paid-by-hand.service';
-import { PayoutAccountsController } from './payout-accounts.controller';
-import { PayoutAccountsService } from './payout-accounts.service';
-import { RefundHandler } from './refund.handler';
-import { RefundsController } from './refunds.controller';
-import { RefundsService } from './refunds.service';
 import { PaymentAccountController } from './payment-account.controller';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentEventHandler } from './payment-event.handler';
@@ -31,6 +26,15 @@ import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
 import { PaymentTermsController } from './payment-terms.controller';
 import { PaymentTermsService } from './payment-terms.service';
+import { PayoutAccountsController } from './payout-accounts.controller';
+import { PayoutAccountsService } from './payout-accounts.service';
+import { PayoutReminderHandler } from './payout-reminder.handler';
+import { PayoutHandler } from './payout.handler';
+import { PayoutsController } from './payouts.controller';
+import { PayoutsService } from './payouts.service';
+import { RefundHandler } from './refund.handler';
+import { RefundsController } from './refunds.controller';
+import { RefundsService } from './refunds.service';
 import { StripePaymentProvider } from './stripe-payment-provider';
 import { UnpaidOrdersHandler } from './unpaid-orders.handler';
 import { WebhooksController } from './webhooks.controller';
@@ -41,7 +45,17 @@ import { WebhooksController } from './webhooks.controller';
  */
 @Module({
   imports: [AuditModule, NotificationsModule, OrdersModule, PartnersModule, SettingsModule],
-  controllers: [PaymentAccountController, LedgerController, WebhooksController, PaymentTermsController, CheckoutController, CreditController, RefundsController, PayoutAccountsController],
+  controllers: [
+    PaymentAccountController,
+    LedgerController,
+    WebhooksController,
+    PaymentTermsController,
+    CheckoutController,
+    CreditController,
+    RefundsController,
+    PayoutAccountsController,
+    PayoutsController,
+  ],
   providers: [
     PaymentAccountService,
     LedgerService,
@@ -57,6 +71,9 @@ import { WebhooksController } from './webhooks.controller';
     RefundsService,
     RefundHandler,
     PayoutAccountsService,
+    PayoutsService,
+    PayoutHandler,
+    PayoutReminderHandler,
     InvoiceHandler,
     OverdueInvoicesHandler,
     UnpaidOrdersHandler,

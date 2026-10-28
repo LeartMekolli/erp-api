@@ -251,6 +251,12 @@ export const owedJobResponseSchema = z.strictObject({
   amount: z.string(),
   /** Why staff set the amount; null when it is the cost. */
   override_reason: z.string().nullable(),
+  /** What payouts have paid for the job, or are paying. */
+  paid: z.string(),
+  /** What the next payout pays for it: owed now less `paid`; negative when more was paid than is owed now. */
+  due: z.string(),
+  /** Whether the customer has paid for the job's order; null when the job is not from an order. Staff only. */
+  customer_paid: z.boolean().nullable(),
 });
 export type OwedJobResponse = z.infer<typeof owedJobResponseSchema>;
 
@@ -268,7 +274,7 @@ export type PartnerOwedResponse = z.infer<typeof partnerOwedResponseSchema>;
 /** What a partner sees it is owed: the same, without staff's reasons. */
 export const portalOwedResponseSchema = z.strictObject({
   total: z.string(),
-  jobs: z.array(owedJobResponseSchema.omit({ override_reason: true })),
+  jobs: z.array(owedJobResponseSchema.omit({ override_reason: true, customer_paid: true })),
   next_cursor: z.string().nullable(),
 });
 export type PortalOwedResponse = z.infer<typeof portalOwedResponseSchema>;

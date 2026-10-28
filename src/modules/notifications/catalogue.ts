@@ -35,7 +35,9 @@ export interface EventDefinition {
     | 'user'
     | 'file_version'
     | 'material'
-    | 'order';
+    | 'order'
+    | 'payout'
+    | 'tenant';
   variables: Record<string, VariableSpec>;
   defaults: { en: { subject: string; body: string } };
 }
@@ -423,6 +425,54 @@ export const EVENTS = {
       en: {
         subject: 'A refund for order {{ number }} failed',
         body: 'The payment provider refused to refund {{ amount }} for order {{ number }}. Refund it another way.',
+      },
+    },
+  },
+  // A partner was paid what was due (Payments spec). Never names a customer or an order.
+  'payout.paid': {
+    audience: { kind: 'partner' },
+    channels: ['email', 'feed'],
+    subjectType: 'payout',
+    variables: {
+      amount: { sample: '480.00 EUR' },
+      jobs: { sample: '3' },
+    },
+    defaults: {
+      en: {
+        subject: 'You have been paid {{ amount }}',
+        body: 'We have sent you {{ amount }} for {{ jobs }} jobs. It reaches your account on the payment provider’s schedule.',
+      },
+    },
+  },
+  // A transfer to a partner was refused or reversed: what it paid is due again.
+  'payout.failed': {
+    audience: { kind: 'permission', permission: 'payment.payout' },
+    channels: ['email', 'feed'],
+    subjectType: 'payout',
+    variables: {
+      partner_name: { sample: 'CastCo' },
+      amount: { sample: '480.00 EUR' },
+      reason: { sample: 'The transfer was reversed by the payment provider.' },
+    },
+    defaults: {
+      en: {
+        subject: 'Paying {{ partner_name }} {{ amount }} failed',
+        body: '{{ reason }}\n\nWhat it paid for is due again; pay {{ partner_name }} once the problem is solved.',
+      },
+    },
+  },
+  // Weekly: who has something due, and whether it can be paid yet.
+  'payouts.reminder': {
+    audience: { kind: 'permission', permission: 'payment.payout' },
+    channels: ['email', 'feed'],
+    subjectType: 'tenant',
+    variables: {
+      partners: { sample: 'CastCo: 480.00 EUR, ready to pay\nMetalWorks: 120.00 EUR, no ready payout account' },
+    },
+    defaults: {
+      en: {
+        subject: 'Partners to pay this week',
+        body: 'These partners have money due:\n\n{{ partners }}',
       },
     },
   },

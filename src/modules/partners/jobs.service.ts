@@ -12,6 +12,7 @@ import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ONE_PARTNER, defaultDueOn, lockOrderOfGroup, otherLinePartners, workspaceToday } from '../orders/order-lines';
 import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
+import { dueFor } from '../payments/payouts';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
 import { WorkOrdersService } from '../workflow/work-orders.service';
@@ -397,6 +398,12 @@ export class JobsService implements OnModuleInit {
       .reduce((sum, job) => sum.plus(job.amount), new Prisma.Decimal(0));
   }
 
+  /** What is due on each of the partner's jobs, for a payout (Payments spec): owed now, less what payouts hold. */
+  async dues(tx: Tx, partnerId: string): Promise<{ assignmentId: string; due: Prisma.Decimal }[]> {
+    const rows = await tx.jobAssignment.findMany({ where: { partnerId, status: { in: OWED_STATUSES } }, orderBy: { id: 'asc' } });
+    return (await owedJobs(tx, rows)).map((job) => ({ assignmentId: job.assignment_id, due: new Prisma.Decimal(job.due) }));
+  }
+
   /** Sets what the partner is owed for the job instead of its cost; the job must be or have been the partner's. */
   async setOwed(auth: TenantAuth, groupId: string, input: z.infer<typeof setOwedSchema>): Promise<OwedJobResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
@@ -543,13 +550,25 @@ async function jobPastPayout(tx: Tx, groupId: string): Promise<boolean> {
   return live.length > 0 && live.every((piece) => piece.passedPayout);
 }
 
-/** What each hand-over is owed, read from its job's pieces and its workflow version's payout step. */
+/**
+ * What each hand-over is owed, read from its job's pieces and its workflow version's payout step; what
+ * payouts have paid for it (pending and paid ones, Payments spec), what is due, and whether the
+ * customer has paid for the job's order.
+ */
 async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[]> {
   const byId = await jobsWithPieces(tx, rows.map((row) => row.groupId));
+  const held = await tx.payoutJob.groupBy({
+    by: ['assignmentId'],
+    _sum: { amount: true },
+    where: { assignmentId: { in: rows.map((row) => row.id) }, payout: { status: { in: ['pending', 'paid'] } } },
+  });
+  const paidFor = new Map(held.map((entry) => [entry.assignmentId, entry._sum.amount ?? new Prisma.Decimal(0)]));
+  const customerPaid = await customerPaidFor(tx, rows.map((row) => row.groupId));
   return rows.flatMap((row) => {
     const group = byId.get(row.groupId)!;
     const owed = owedFor(row, group.pieces);
     if (!owed) return [];
+    const paid = paidFor.get(row.id) ?? new Prisma.Decimal(0);
     return [
       {
         assignment_id: row.id,
@@ -559,9 +578,28 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
         state: owed.state,
         amount: owed.amount.toFixed(2),
         override_reason: row.owedOverride !== null ? row.owedOverrideReason : null,
+        paid: paid.toFixed(2),
+        due: dueFor(owed.state === 'owed' ? owed.amount : null, paid).toFixed(2),
+        customer_paid: customerPaid.get(row.groupId) ?? null,
       },
     ];
   });
+}
+
+/** Per job from an order, its line's or its part's: whether a payment for that order was received. */
+async function customerPaidFor(tx: Tx, groupIds: string[]): Promise<Map<string, boolean>> {
+  const lines = await tx.orderLine.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, orderId: true } });
+  const parts = await tx.orderLinePart.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, line: { select: { orderId: true } } } });
+  const orderOf = new Map<string, string>([
+    ...lines.flatMap((line) => (line.groupId ? [[line.groupId, line.orderId] as [string, string]] : [])),
+    ...parts.flatMap((part) => (part.groupId ? [[part.groupId, part.line.orderId] as [string, string]] : [])),
+  ]);
+  const paidOrders = await tx.ledgerJournal.findMany({
+    where: { kind: 'payment_received', orderId: { in: [...new Set(orderOf.values())] } },
+    select: { orderId: true },
+  });
+  const paid = new Set(paidOrders.map((journal) => journal.orderId));
+  return new Map([...orderOf].map(([groupId, orderId]) => [groupId, paid.has(orderId)]));
 }
 
 /** What a job's notifications name: never the customer. */

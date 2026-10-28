@@ -94,6 +94,12 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), refundId: z.uuid() }),
     jobId: (p) => [p.refundId],
   }),
+  // Transfers one pending payout to its partner and settles it (Payments spec).
+  'payments.payout.transfer': defineJob({
+    queue: 'payments',
+    payload: z.object({ tenantId: z.uuid(), payoutId: z.uuid() }),
+    jobId: (p) => [p.payoutId],
+  }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 
 export const SCHEDULED_JOBS = {
@@ -127,6 +133,12 @@ export const SCHEDULED_JOBS = {
   'payments.invoices.overdue': {
     queue: 'payments',
     schedule: { pattern: '0 6 * * *', tz: 'UTC' },
+    lockTtlMs: 600_000,
+  },
+  // Mondays: tells staff who pay which partners have money due (Payments spec).
+  'payments.payouts.remind': {
+    queue: 'payments',
+    schedule: { pattern: '0 7 * * 1', tz: 'UTC' },
     lockTtlMs: 600_000,
   },
 } satisfies Record<string, ScheduledJobDefinition>;
