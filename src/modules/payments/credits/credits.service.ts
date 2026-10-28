@@ -152,6 +152,16 @@ export class CreditsService {
     return left.reduce((sum, grant) => sum + grant.amount, 0);
   }
 
+  /**
+   * The caller holds the customer's lock. Ends early what is left of every grant of `source` still in
+   * date, as when a plan change replaces the monthly allowance; the expiry job takes the rest. Returns
+   * the credits written off.
+   */
+  async writeOff(tx: Prisma.TransactionClient, customerId: string, source: GrantSource): Promise<number> {
+    const grants = await tx.creditGrant.findMany({ where: { customerId, source, expiresAt: { gt: new Date() } }, select: { id: true } });
+    return this.expire(tx, customerId, new Date(8.64e15), { grantIds: grants.map((grant) => grant.id) });
+  }
+
   /** The credits usable at `at`: grants not expired yet with credits left, in the spending order. */
   async balance(tx: Prisma.TransactionClient, customerId: string, at: Date): Promise<CreditBalanceResponse> {
     const grants = inSpendingOrder(await this.usable(tx, customerId, at));

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
+import { addMonths } from './credits/allowance-month';
 import { InvalidSignatureError, ProviderNotFoundError, ProviderRefusedError } from './payment-provider';
 import type {
   InvoiceReason,
@@ -40,10 +41,7 @@ interface FakeInvoice {
 
 /** `from` plus one month or one year, as the provider counts a billing period. */
 function periodAfter(from: Date, interval: 'month' | 'year'): Date {
-  const end = new Date(from);
-  if (interval === 'year') end.setUTCFullYear(end.getUTCFullYear() + 1);
-  else end.setUTCMonth(end.getUTCMonth() + 1);
-  return end;
+  return addMonths(from, interval === 'year' ? 12 : 1);
 }
 
 const fee = (amount: Prisma.Decimal): Prisma.Decimal =>

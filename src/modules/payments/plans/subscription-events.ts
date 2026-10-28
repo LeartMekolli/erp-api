@@ -2,6 +2,7 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import type { PaymentEvent } from '../../../generated/prisma/client';
 import { lockCustomer } from '../../customers/customers.service';
+import { AllowancesService } from '../credits/allowances.service';
 import { feeJournal, planBilledJournal, receivedJournal } from '../ledger';
 import { LedgerService } from '../ledger.service';
 import { PaymentAccountService } from '../payment-account.service';
@@ -25,6 +26,7 @@ export class SubscriptionEvents implements OnModuleInit {
     private readonly accounts: PaymentAccountService,
     private readonly ledger: LedgerService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly allowances: AllowancesService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
 
@@ -79,7 +81,8 @@ export class SubscriptionEvents implements OnModuleInit {
 
   /**
    * A paid invoice of one of our subscriptions: the subscription is synced, then the period is billed,
-   * paid and the provider's fee journalled, each once. An order's invoice is skipped.
+   * paid and the provider's fee journalled, each once, and the month it pays for brings its allowance.
+   * An order's invoice is skipped.
    */
   async invoicePaid(tenantId: string, event: PaymentEvent): Promise<void> {
     const invoice = await this.subscriptionInvoice(tenantId, event.objectId);
@@ -87,11 +90,13 @@ export class SubscriptionEvents implements OnModuleInit {
 
     await this.subscriptions.sync(tenantId, invoice.subscriptionId);
     const subscription = await this.subscriptions.subscriptionOf(tenantId, invoice.subscriptionId);
-    // Not ours, or nothing to journal (a period that cost nothing).
-    if (!subscription || invoice.amount.isZero()) return;
+    if (!subscription) return;
 
     await this.prisma.inTenant(tenantId, async (tx) => {
       await lockCustomer(tx, subscription.customerId);
+      await this.allowances.grantDue(tx, subscription.customerId, invoice.periodStart ?? new Date());
+      // Nothing to journal for a period that cost nothing.
+      if (invoice.amount.isZero()) return;
       const price = await tx.planPrice.findUniqueOrThrow({ where: { id: subscription.planPriceId }, include: { plan: { select: { name: true } } } });
       const common = {
         occurredAt: new Date(),

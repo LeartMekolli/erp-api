@@ -10,6 +10,8 @@ import { CheckoutEvents } from './checkout-events';
 import { CheckoutService } from './checkout.service';
 import { CreditController } from './credit.controller';
 import { CreditService } from './credit.service';
+import { AllowancesHandler } from './credits/allowances.handler';
+import { AllowancesService } from './credits/allowances.service';
 import { CreditExpiryHandler } from './credits/credit-expiry.handler';
 import { CreditsController } from './credits/credits.controller';
 import { CreditsService } from './credits/credits.service';
@@ -95,6 +97,8 @@ import { WebhooksController } from './webhooks.controller';
     ProviderCustomers,
     SubscriptionsService,
     SubscriptionEvents,
+    AllowancesService,
+    AllowancesHandler,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],

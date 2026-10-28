@@ -144,6 +144,9 @@ export const SCHEDULED_JOBS = {
   // Writes off what is left of expired credit grants (Payments 2 spec). Whether credits can be spent
   // is decided by their expiry, never by this having run.
   'payments.credits.expire': { queue: 'payments', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
+  // Grants each customer the monthly allowance it is owed (Payments 2 spec, goal 9); granted once per
+  // month by its source key, however often this runs.
+  'payments.credits.allowances': { queue: 'payments', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;

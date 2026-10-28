@@ -15,6 +15,15 @@ const checkoutInput = (idempotencyKey: string) => ({
   idempotencyKey,
 });
 
+/** `from` plus `months`, on the same day or the month's last when it is shorter, as Stripe counts a period. */
+function plusMonths(from: Date, months: number): Date {
+  const target = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + months, 1));
+  const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(from.getUTCDate(), last));
+  target.setUTCHours(from.getUTCHours(), from.getUTCMinutes(), from.getUTCSeconds(), from.getUTCMilliseconds());
+  return target;
+}
+
 describe('FakePaymentProvider', () => {
   it('gives the same checkout for the same idempotency key', async () => {
     const provider = new FakePaymentProvider();
@@ -152,8 +161,7 @@ describe('FakePaymentProvider', () => {
       scheduledPriceId: null,
     });
     expect(subscription.currentPeriodStart.getTime()).toBeGreaterThanOrEqual(before - 1000);
-    const nextMonth = new Date(subscription.currentPeriodStart);
-    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    const nextMonth = plusMonths(subscription.currentPeriodStart, 1);
     expect(subscription.currentPeriodEnd).toEqual(nextMonth);
     expect(provider.subscription(subscriptionId)).toEqual(subscription);
 
@@ -190,9 +198,7 @@ describe('FakePaymentProvider', () => {
     });
     const { subscriptionId } = provider.completeSubscriptionCheckout(checkout.id);
     const start = provider.subscription(subscriptionId).currentPeriodStart;
-    const nextYear = new Date(start);
-    nextYear.setUTCFullYear(nextYear.getUTCFullYear() + 1);
-    expect(provider.subscription(subscriptionId).currentPeriodEnd).toEqual(nextYear);
+    expect(provider.subscription(subscriptionId).currentPeriodEnd).toEqual(plusMonths(start, 12));
 
     provider.setSubscriptionStatus(subscriptionId, 'past_due');
 
