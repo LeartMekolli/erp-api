@@ -3,6 +3,7 @@ import type { PrismaService } from '../src/database/prisma.service';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { SYSTEM_ROLES } from '../src/modules/identity/permissions';
 import { createSystemRoles } from '../src/modules/identity/system-roles';
+import { createDefaultPlan } from '../src/modules/payments/plans/default-plan';
 
 export const TEST_PASSWORD = 'test-password-123';
 
@@ -32,6 +33,7 @@ export async function createTestTenant(
     });
 
     await createSystemRoles(tx);
+    await createDefaultPlan(tx);
   });
 
   return { id, slug };

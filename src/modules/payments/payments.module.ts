@@ -32,6 +32,8 @@ import { PayoutReminderHandler } from './payout-reminder.handler';
 import { PayoutHandler } from './payout.handler';
 import { PayoutsController } from './payouts.controller';
 import { PayoutsService } from './payouts.service';
+import { PlansController } from './plans/plans.controller';
+import { PlansService } from './plans/plans.service';
 import { RefundHandler } from './refund.handler';
 import { RefundsController } from './refunds.controller';
 import { RefundsService } from './refunds.service';
@@ -55,6 +57,7 @@ import { WebhooksController } from './webhooks.controller';
     RefundsController,
     PayoutAccountsController,
     PayoutsController,
+    PlansController,
   ],
   providers: [
     PaymentAccountService,
@@ -77,6 +80,7 @@ import { WebhooksController } from './webhooks.controller';
     InvoiceHandler,
     OverdueInvoicesHandler,
     UnpaidOrdersHandler,
+    PlansService,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],

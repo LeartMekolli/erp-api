@@ -98,6 +98,13 @@ export interface PaymentProvider {
     urls: { returnUrl: string; refreshUrl: string },
   ): Promise<{ url: string; expiresAt: Date }>;
   getPartnerAccount(keys: ProviderKeys, accountId: string): Promise<{ state: 'onboarding' | 'ready' | 'restricted' }>;
+  /** What a plan is sold as at the provider; one per idempotency key. */
+  ensureProduct(keys: ProviderKeys, input: { name: string; idempotencyKey: string }): Promise<{ id: string }>;
+  /** A recurring price on a product. Prices never change; a new amount is a new price. */
+  createPrice(
+    keys: ProviderKeys,
+    input: { productId: string; amount: Prisma.Decimal; currency: string; interval: 'month' | 'year'; idempotencyKey: string },
+  ): Promise<{ id: string }>;
   /** Throws `ProviderRefusedError` with a message when the provider declines. */
   transfer(
     keys: ProviderKeys,

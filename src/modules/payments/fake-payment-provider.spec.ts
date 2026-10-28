@@ -83,6 +83,38 @@ describe('FakePaymentProvider', () => {
     expect(() => provider.verifyEvent(Buffer.from(body), 'nonsense', 'whsec_a')).toThrow(InvalidSignatureError);
   });
 
+  it('makes a product once per key and recurring prices on it', async () => {
+    const provider = new FakePaymentProvider();
+
+    const product = await provider.ensureProduct(keys, { name: 'Pro', idempotencyKey: 'plan-1' });
+    const again = await provider.ensureProduct(keys, { name: 'Pro', idempotencyKey: 'plan-1' });
+    const monthly = await provider.createPrice(keys, {
+      productId: product.id,
+      amount: new Prisma.Decimal('29.00'),
+      currency: 'EUR',
+      interval: 'month',
+      idempotencyKey: 'price-1',
+    });
+    const sameKey = await provider.createPrice(keys, {
+      productId: product.id,
+      amount: new Prisma.Decimal('29.00'),
+      currency: 'EUR',
+      interval: 'month',
+      idempotencyKey: 'price-1',
+    });
+
+    expect(again).toEqual(product);
+    expect(product.id).toMatch(/^fake_product_\d+$/);
+    expect(sameKey).toEqual(monthly);
+    expect(monthly.id).toMatch(/^fake_price_\d+$/);
+    expect(provider.price(monthly.id)).toEqual({
+      productId: product.id,
+      amount: new Prisma.Decimal('29.00'),
+      currency: 'EUR',
+      interval: 'month',
+    });
+  });
+
   it('refuses one transfer after failNextTransfer, then works again', async () => {
     const provider = new FakePaymentProvider();
     const input = (idempotencyKey: string) => ({

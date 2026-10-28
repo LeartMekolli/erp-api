@@ -10,6 +10,12 @@ interface FakeCheckout {
   status: 'open' | 'complete' | 'expired';
   paymentId: string | null;
 }
+interface FakePrice {
+  productId: string;
+  amount: Prisma.Decimal;
+  currency: string;
+  interval: 'month' | 'year';
+}
 interface FakeInvoice {
   amount: Prisma.Decimal;
   status: 'open' | 'paid' | 'void';
@@ -34,6 +40,7 @@ const store = {
   accounts: new Map<string, PartnerAccountState>(),
   refunds: new Map<string, 'pending' | 'succeeded' | 'failed'>(),
   transfers: [] as { id: string; destination: string; amount: Prisma.Decimal }[],
+  prices: new Map<string, FakePrice>(),
 };
 
 /**
@@ -87,6 +94,11 @@ export class FakePaymentProvider implements PaymentProvider {
   settleRefund(id: string, status: 'succeeded' | 'failed'): void {
     this.must(this.refunds, id);
     this.refunds.set(id, status);
+  }
+
+  /** A price made by `createPrice`. */
+  price(id: string): FakePrice {
+    return this.must(store.prices, id);
   }
 
   setPartnerAccountState(id: string, state: PartnerAccountState): void {
@@ -239,6 +251,20 @@ export class FakePaymentProvider implements PaymentProvider {
 
   getPartnerAccount(_keys: ProviderKeys, accountId: string): Promise<{ state: PartnerAccountState }> {
     return Promise.resolve({ state: this.must(this.accounts, accountId) });
+  }
+
+  ensureProduct(_keys: ProviderKeys, input: Parameters<PaymentProvider['ensureProduct']>[1]): Promise<{ id: string }> {
+    return Promise.resolve(this.once(input.idempotencyKey, () => ({ id: this.nextId('product') })));
+  }
+
+  createPrice(_keys: ProviderKeys, input: Parameters<PaymentProvider['createPrice']>[1]): Promise<{ id: string }> {
+    return Promise.resolve(
+      this.once(input.idempotencyKey, () => {
+        const id = this.nextId('price');
+        store.prices.set(id, { productId: input.productId, amount: input.amount, currency: input.currency, interval: input.interval });
+        return { id };
+      }),
+    );
   }
 
   transfer(

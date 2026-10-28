@@ -11,6 +11,7 @@ import { IDENTITY_NOTIFIER } from '../modules/identity/identity-notifier';
 import type { IdentityNotifier } from '../modules/identity/identity-notifier';
 import { createInvitation } from '../modules/identity/invitations';
 import { createSystemRoles } from '../modules/identity/system-roles';
+import { createDefaultPlan } from '../modules/payments/plans/default-plan';
 import { CreateTenantInput, createTenantSchema } from './tenant-input';
 
 export type TenantStatus = 'active' | 'suspended';
@@ -71,6 +72,7 @@ export class TenantService {
           },
         });
         const roles = await createSystemRoles(tx);
+        await createDefaultPlan(tx);
         const created = await createInvitation(tx, id, { email: tenant.ownerEmail, roleId: roles.owner });
         await this.audit.record(tx, {
           actor,

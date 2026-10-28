@@ -26,7 +26,11 @@ export type AuditAction =
   | 'order.changed'
   | 'payment.account.changed'
   | 'customer.payment_terms.changed'
-  | 'order.paid_by_hand';
+  | 'order.paid_by_hand'
+  | 'plan.changed'
+  | 'credit_pack.changed'
+  | 'credit_campaign.changed'
+  | 'credits.granted';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };

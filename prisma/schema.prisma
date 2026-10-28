@@ -95,6 +95,9 @@ model Tenant {
   partnerPayoutAccounts PartnerPayoutAccount[]
   payouts         Payout[]
   payoutJobs      PayoutJob[]
+  plans           Plan[]
+  planPrices      PlanPrice[]
+  planSpeeds      PlanSpeed[]
 
   @@map("tenant")
 }
@@ -1007,7 +1010,8 @@ model DeliverySpeed {
   workingDays      Int      @default(0) @map("working_days")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planSpeeds PlanSpeed[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -2132,4 +2136,84 @@ model PaymentEvent {
 
   @@unique([tenantId, providerEventId])
   @@map("payment_event")
+}
+
+// ---------------------------------------------------------------------------
+// Plans and credits (Payments 2)
+// ---------------------------------------------------------------------------
+
+// What a customer subscribes to (Payments 2 spec, goal 1). Benefits are read live: an edit reaches
+// every subscriber at once; only the price stays as they signed up (plan_price). One plan per
+// workspace is the free default, kept by a per-workspace advisory lock.
+model Plan {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  key               String
+  name              String
+  description       String   @default("")
+  position          Int      @default(0)
+  isDefault         Boolean  @default(false) @map("is_default")
+  currency          String   @db.Char(3)
+  // Off order prices, after the customer group: 0–100.
+  discountPercent   Decimal  @default(0) @map("discount_percent") @db.Decimal(9, 4)
+  monthlyCredits    Int      @default(0) @map("monthly_credits")
+  // Null means unlimited.
+  memberLimit       Int?     @map("member_limit")
+  // Switches from PLAN_FEATURES (src/modules/payments/plans/plans.ts).
+  features          String[] @default([])
+  // active | archived
+  status            String   @default("active")
+  // The product at the provider, made when the plan is first published.
+  providerProductId String?  @map("provider_product_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  prices PlanPrice[]
+  speeds PlanSpeed[]
+
+  @@unique([tenantId, key])
+  @@unique([tenantId, id])
+  @@map("plan")
+}
+
+// One amount a plan was ever sold at. Changing a price deactivates the row and adds another, so a
+// subscriber keeps the price it pays. At most one active row per plan and interval, under the plan's lock.
+model PlanPrice {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  planId          String   @map("plan_id") @db.Uuid
+  // month | year
+  interval        String
+  amount          Decimal  @db.Decimal(18, 2)
+  currency        String   @db.Char(3)
+  active          Boolean  @default(true)
+  // The recurring price at the provider, once published.
+  providerPriceId String?  @map("provider_price_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerPriceId])
+  @@index([tenantId, planId])
+  @@map("plan_price")
+}
+
+// A delivery speed a plan offers beyond the workspace's default speed, which every plan offers;
+// with its own surcharge, or null for the speed's own.
+model PlanSpeed {
+  planId           String   @map("plan_id") @db.Uuid
+  deliverySpeedId  String   @map("delivery_speed_id") @db.Uuid
+  tenantId         String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  surchargePercent Decimal? @map("surcharge_percent") @db.Decimal(9, 4)
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan          Plan          @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
+  deliverySpeed DeliverySpeed @relation(fields: [tenantId, deliverySpeedId], references: [tenantId, id], onDelete: Cascade)
+
+  @@id([planId, deliverySpeedId])
+  @@index([tenantId])
+  @@map("plan_speed")
 }

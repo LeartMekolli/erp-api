@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { INestApplicationContext, Module } from '@nestjs/common';
+import { INestApplicationContext, Module, Type } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ZodError, z } from 'zod';
 import { ConfigModule } from '../config/config.module';
@@ -26,11 +26,15 @@ function formatError(error: unknown): string {
 /**
  * Boots the CLI context, runs the task, and always closes the context so the
  * database pool does not keep the process alive. Failures print a readable
- * message and set a non-zero exit code.
+ * message and set a non-zero exit code. A task that needs more than `CliModule`
+ * passes its own module.
  */
-export async function runCli(task: (app: INestApplicationContext) => Promise<void>): Promise<void> {
+export async function runCli(
+  task: (app: INestApplicationContext) => Promise<void>,
+  module: Type<unknown> = CliModule,
+): Promise<void> {
   try {
-    const app = await NestFactory.createApplicationContext(CliModule, { logger: ['error'] });
+    const app = await NestFactory.createApplicationContext(module, { logger: ['error'] });
     try {
       await task(app);
     } finally {

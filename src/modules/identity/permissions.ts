@@ -50,6 +50,10 @@ export const TENANT_PERMISSIONS = [
   'payment.refund',
   // Pays partners what they are owed.
   'payment.payout',
+  // Plans and credits (Payments 2 spec): plans, credit packs and campaigns.
+  'plan.write',
+  // Sensitive: gives a customer credits by hand, with a reason, audited.
+  'credit.grant',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */

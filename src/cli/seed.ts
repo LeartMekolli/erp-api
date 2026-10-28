@@ -1,12 +1,17 @@
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, Module } from '@nestjs/common';
+import { LoggingModule } from '../common/logging/logging.module';
+import { ReportingModule } from '../common/reporting/reporting.module';
 import { ConfigService } from '../config/config.service';
 import { PrismaService } from '../database/prisma.service';
+import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
 import { PaymentAccountService } from '../modules/payments/payment-account.service';
+import { PaymentsModule } from '../modules/payments/payments.module';
 import { PayoutAccountsService } from '../modules/payments/payout-accounts.service';
 import type { CreateTenantInput } from '../platform/tenant-input';
 import { TenantService } from '../platform/tenant.service';
+import { StorageModule } from '../storage/storage.module';
 import { createPlatformAdmin } from './platform-admins';
-import { runCli } from './run-cli';
+import { CliModule, runCli } from './run-cli';
 import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
 import { seedCustomers } from './seed-customers';
 import { seedOrders } from './seed-orders';
@@ -36,6 +41,14 @@ const SEED_TENANTS: CreateTenantInput[] = [
     ownerEmail: 'owner@sandbox.example.test',
   },
 ];
+
+/**
+ * The seed also stores the demo's payment account and creates payout accounts through the provider,
+ * so it loads Payments and the global modules its imports rely on, as the worker does (without
+ * consuming jobs).
+ */
+@Module({ imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule] })
+class SeedModule {}
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
@@ -148,4 +161,4 @@ void runCli(async (app) => {
         ? `, ${payments.account} payment accounts, ${payments.payoutAccounts} payout accounts\n`
         : '; no DEMO_STRIPE_* keys, so the payment account and payout accounts are skipped\n'),
   );
-});
+}, SeedModule);

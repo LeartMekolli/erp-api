@@ -194,6 +194,24 @@ export class StripePaymentProvider implements PaymentProvider {
     return { status: refundStatus((await this.client(keys).refunds.retrieve(id)).status) };
   }
 
+  async ensureProduct(keys: ProviderKeys, input: { name: string; idempotencyKey: string }): Promise<{ id: string }> {
+    const product = await this.client(keys).products.create({ name: input.name }, { idempotencyKey: input.idempotencyKey });
+    return { id: product.id };
+  }
+
+  async createPrice(keys: ProviderKeys, input: Parameters<PaymentProvider['createPrice']>[1]): Promise<{ id: string }> {
+    const price = await this.client(keys).prices.create(
+      {
+        product: input.productId,
+        currency: input.currency.toLowerCase(),
+        unit_amount: toMinorUnits(input.amount, input.currency),
+        recurring: { interval: input.interval },
+      },
+      { idempotencyKey: input.idempotencyKey },
+    );
+    return { id: price.id };
+  }
+
   async createPartnerAccount(
     keys: ProviderKeys,
     input: { partnerId: string; name: string; email: string | null; idempotencyKey: string },
