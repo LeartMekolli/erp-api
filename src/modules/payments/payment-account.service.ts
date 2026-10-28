@@ -5,7 +5,7 @@ import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
-import type { TenantAuth } from '../identity/auth-context';
+import type { AuditInput } from '../audit/audit.service';
 import type { ProviderKeys } from './payment-provider';
 import type { PaymentAccountResponse, setPaymentAccountSchema } from './payment-response';
 
@@ -41,9 +41,11 @@ export class PaymentAccountService {
     };
   }
 
+  /** Replaces the workspace's keys, as staff or as the demo seed (the system). */
   async set(
     tx: Prisma.TransactionClient,
-    auth: TenantAuth,
+    tenantId: string,
+    actor: AuditInput['actor'],
     input: z.infer<typeof setPaymentAccountSchema>,
   ): Promise<PaymentAccountResponse> {
     const data = {
@@ -53,16 +55,16 @@ export class PaymentAccountService {
       publishableKey: input.publishable_key,
     };
     const before = await tx.paymentAccount.findFirst({ select: { publishableKey: true } });
-    await tx.paymentAccount.upsert({ where: { tenantId: auth.tenantId }, create: data, update: data });
+    await tx.paymentAccount.upsert({ where: { tenantId }, create: data, update: data });
     // No key, secret or signing secret goes into the entry.
     await this.audit.record(tx, {
-      actor: { type: 'user', id: auth.userId },
+      actor,
       action: 'payment.account.changed',
-      subject: { type: 'payment_account', id: auth.tenantId },
+      subject: { type: 'payment_account', id: tenantId },
       before: { configured: before !== null },
       after: { configured: true, publishable_key: input.publishable_key },
     });
-    return this.view(tx, auth.tenantId);
+    return this.view(tx, tenantId);
   }
 
   /** For a request that holds a transaction. 409 when the workspace has no keys. */

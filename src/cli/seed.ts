@@ -1,6 +1,8 @@
 import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '../config/config.service';
 import { PrismaService } from '../database/prisma.service';
+import { PaymentAccountService } from '../modules/payments/payment-account.service';
+import { PayoutAccountsService } from '../modules/payments/payout-accounts.service';
 import type { CreateTenantInput } from '../platform/tenant-input';
 import { TenantService } from '../platform/tenant.service';
 import { createPlatformAdmin } from './platform-admins';
@@ -9,6 +11,7 @@ import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
 import { seedCustomers } from './seed-customers';
 import { seedOrders } from './seed-orders';
 import { seedPartners } from './seed-partners';
+import { seedPayments } from './seed-payments';
 import { seedPricing } from './seed-pricing';
 import { seedWorkflows } from './seed-workflows';
 
@@ -37,8 +40,8 @@ const SEED_TENANTS: CreateTenantInput[] = [
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
- * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`) and its ordering setup
- * (`seed-orders.ts`). The admin's, the
+ * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
+ * (`seed-orders.ts`) and its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
@@ -122,5 +125,27 @@ void runCli(async (app) => {
       (orders.calendar ? ', the business calendar' : '') +
       (orders.scheduling ? ', the job due dates' : '') +
       '\n',
+  );
+
+  const config = app.get(ConfigService);
+  const secretKey = config.get('DEMO_STRIPE_SECRET_KEY');
+  const keys = secretKey
+    ? {
+        secretKey,
+        publishableKey: config.get('DEMO_STRIPE_PUBLISHABLE_KEY')!,
+        webhookSecret: config.get('DEMO_STRIPE_WEBHOOK_SECRET')!,
+        connectWebhookSecret: config.get('DEMO_STRIPE_CONNECT_WEBHOOK_SECRET')!,
+      }
+    : null;
+  const payments = await seedPayments(
+    { prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) },
+    demo.id,
+    keys,
+  );
+  process.stdout.write(
+    `payments for demo: created ${payments.customers} customers, ${payments.terms} payment terms` +
+      (keys
+        ? `, ${payments.account} payment accounts, ${payments.payoutAccounts} payout accounts\n`
+        : '; no DEMO_STRIPE_* keys, so the payment account and payout accounts are skipped\n'),
   );
 });

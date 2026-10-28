@@ -256,7 +256,8 @@ describe('payments: paying partners', () => {
     const journal = await prisma.inTenant(tenant.id, (tx) => tx.ledgerJournal.findFirstOrThrow({ where: { kind: 'payout' }, include: { lines: true } }));
     expect(journal.lines.reduce((sum, line) => sum.plus(line.amount), d('0')).toFixed(2)).toBe('0.00');
     expect((await partnerCosts(tenant)).toFixed(2)).toBe(tenant.total);
-    expect(await raised(tenant, 'payout.paid')).toBe(1);
+    // The partner is told once the payout has committed.
+    await waitFor(async () => ((await raised(tenant, 'payout.paid')) === 1 ? true : undefined));
 
     // Both sides see it, with its jobs; the partner never sees the order behind them.
     const mine = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/payouts`).expect(200);
@@ -302,7 +303,7 @@ describe('payments: paying partners', () => {
     const failed = await settled(tenant, ((await pay(tenant).expect(202)).body as Payout).id);
 
     expect(failed).toMatchObject({ status: 'failed', failure: 'Insufficient funds in the platform balance', providerTransferId: null });
-    expect(await raised(tenant, 'payout.failed')).toBe(1);
+    await waitFor(async () => ((await raised(tenant, 'payout.failed')) === 1 ? true : undefined));
     expect(forJob(await owed(tenant), tenant.direct.group)).toMatchObject({ paid: '0.00', due: tenant.direct.cost });
     expect((await partnerCosts(tenant)).toFixed(2)).toBe('0.00');
 

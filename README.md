@@ -186,6 +186,36 @@ A walkthrough in Swagger, after the Partners walkthrough, on the demo data (`tes
 8. An assembly: as Ben, quote and order 2 `pendant_set` in brass. The order has one line with two parts. `POST /workflow/moves` `pass` at `assembly` for the line's pieces is a 409 until every piece of the pendant and the bail is finished; then assembly, final QC and packing pass and the order is `ready`.
 9. Due dates and comments: offer a new line to Northcast and, as Northcast, accept it. As Ben, `POST /portal/customers/{id}/orders/{id}/comments`; as the owner, `POST /orders/{id}/comments` twice on the line, one with `for_partner: true`. `GET .../jobs/{groupId}/comments` as Northcast lists only that one, never Luna. Once Northcast's pieces pass every step, `GET .../score` shows `on_time` at 1.
 
+## Payments
+
+Customers pay through each workspace's own Stripe account; partners are paid through Stripe Connect Express accounts. Every movement of money is a journal in an append-only, double-entry ledger (`GET /payments/ledger`): its lines sum to zero, or the database refuses it, and a mistake is corrected with a reversal. A customer pays first (the default) or later (`PUT /customers/{id}/payment-terms`: days to pay and a credit limit). A pay-first order, or a pay-later one past its limit, waits for payment: its workshop's capacity is held, nothing is made, and the customer gets a Checkout link (`payments.collection.payWithinHours`, then it is cancelled). Paid, it starts as if placed then; staff can release a held order with a reason, or record a payment made outside Stripe (`POST /orders/{id}/paid-by-hand`). A pay-later order is invoiced through Stripe when it ships, due in its days to pay, and staff are told of an overdue one. Cancelling a paid order refunds what staff decide, suggested from the work partners are owed for (`GET /orders/{id}/refund-suggestion`); a customer cancelling gets everything back, and so does a payment arriving for an order already cancelled. A partner connects its payout account through a Stripe onboarding link; staff pay it what is due (owed less paid) in one transfer, never twice, and a refused or reversed transfer makes the jobs due again. Webhooks arrive at `/webhooks/payments/{tenantId}` and `/webhooks/payments/{tenantId}/connect`, each checked against its own signing secret, stored once and applied by the worker. `PAYMENT_PROVIDER=fake` (the default, and every test) never calls Stripe. `npm run seed` makes Luna Jewels pay first and adds Brightline paying later (30 days, 5,000.00); with the `DEMO_STRIPE_*` test keys it also sets the demo's payment account and gives Northcast Foundry a payout account to onboard.
+
+### Payments in test mode
+
+1. In the Stripe dashboard, in test mode: copy the secret and publishable keys, and turn on Connect (Express).
+2. Set `PAYMENT_PROVIDER=stripe`, and either the four `DEMO_STRIPE_*` keys before `npm run seed`, or `PUT /payments/account` as the owner. `GET /payments/account` shows the two webhook URLs.
+3. Forward webhooks with the Stripe CLI, one listener per endpoint; each prints its signing secret (`whsec_...`) to set as `webhook_secret` and `connect_webhook_secret`:
+
+   ```bash
+   stripe listen --forward-to localhost:3000/webhooks/payments/<tenantId>
+   stripe listen --forward-connect-to localhost:3000/webhooks/payments/<tenantId>/connect
+   ```
+
+4. Test cards: `4242 4242 4242 4242` pays, `4000 0000 0000 9995` is declined, `4000 0025 0000 3155` asks for 3-D Secure; any future date and any CVC. A transfer fails for want of balance until test charges have settled, or with a card such as `4000 0000 0000 0077` that adds to the available balance at once.
+
+A walkthrough in Swagger, on the demo data with the keys set (`test/payments-slice.e2e-spec.ts` runs the same with the fake provider; it is the spec's "Done when"):
+
+1. As the owner: the keys are set; `PUT /customers/{id}/payment-terms` Brightline `pay_later`, 30 days, `credit_limit: "5000.00"`.
+2. As Anna (Luna, pay first): order a part. The order is `awaiting_payment` with a `pay_url`; nothing is in production. Pay with the test card: it starts, and `GET /orders/{id}/payments` shows it billed, paid and Stripe's fee, each journal balanced.
+3. A second order left unpaid past `pay_by` (set `payments.collection.payWithinHours: 1`) is cancelled within a minute, and Anna is told.
+4. `stripe events resend <id>` for the Checkout event: nothing changes. A request with a bad `Stripe-Signature`: 400.
+5. As staff for Brightline: an order starts at once. Make it ready and `POST /orders/{id}/ship`: an invoice is created; pay it from its page with the test card, and the order is `paid`. With a low limit, the next order waits for payment; `POST /orders/{id}/release` with a reason starts it.
+6. As Anna: cancel a paid order before any piece moved: refunded in full. As staff: a paid order whose partner has done some work: `GET /orders/{id}/refund-suggestion` is the price less what the partner is owed; `POST /orders/{id}/cancel` with `partner_owed` and a different `refund.amount`. `GET /payments/ledger` balances.
+7. As Northcast's owner: `POST /partner-portal/partners/{id}/payout-account/link`, complete Stripe's test onboarding; `GET .../payout-account` becomes `ready`.
+8. As staff: `GET /partners/{id}/owed` lists Northcast's two owed jobs, Brightline's with `customer_paid: false`. `POST /partners/{id}/payouts`: one transfer for both. Again: 409 `Nothing to pay`. Northcast sees the payout under `GET /partner-portal/partners/{id}/payouts`.
+9. With too little test balance, a transfer is refused: the payout is `failed`, staff are told, and the jobs are due again.
+10. The ledger: `UPDATE` or `DELETE` on `ledger_journal` or `ledger_line` is refused, and every journal sums to zero.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

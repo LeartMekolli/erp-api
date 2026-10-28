@@ -103,8 +103,26 @@ const envSchema = z
     METAL_PRICE_STALE_HOURS: z.coerce.number().int().min(1).max(720).default(48),
     // Where money moves (Payments spec). `fake` is in memory, for local work and tests; no test calls Stripe.
     PAYMENT_PROVIDER: z.enum(['fake', 'stripe']).default('fake'),
+    // The demo workspace's Stripe test keys, for the seed only; without them the seed skips payments.
+    DEMO_STRIPE_SECRET_KEY: z.string().startsWith('sk_test_').optional(),
+    DEMO_STRIPE_PUBLISHABLE_KEY: z.string().startsWith('pk_test_').optional(),
+    DEMO_STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
+    DEMO_STRIPE_CONNECT_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
   })
   .superRefine((env, ctx) => {
+    // The demo's Stripe keys are all given, or none.
+    const demoKeys = [
+      'DEMO_STRIPE_SECRET_KEY',
+      'DEMO_STRIPE_PUBLISHABLE_KEY',
+      'DEMO_STRIPE_WEBHOOK_SECRET',
+      'DEMO_STRIPE_CONNECT_WEBHOOK_SECRET',
+    ] as const;
+    const given = demoKeys.filter((key) => env[key] !== undefined);
+    if (given.length > 0 && given.length < demoKeys.length) {
+      for (const key of demoKeys.filter((one) => env[one] === undefined)) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'is required with the other DEMO_STRIPE_* keys' });
+      }
+    }
     // One leaked secret must not compromise both cursors and access tokens.
     if (env.JWT_SECRET === env.APP_SECRET) {
       ctx.addIssue({

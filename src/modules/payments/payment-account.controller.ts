@@ -43,6 +43,6 @@ export class PaymentAccountController {
     @CurrentUser() auth: TenantAuth,
     @Body(new ZodValidationPipe(setPaymentAccountSchema)) body: z.infer<typeof setPaymentAccountSchema>,
   ): Promise<PaymentAccountResponse> {
-    return this.prisma.inTenant(auth.tenantId, (tx) => this.account.set(tx, auth, body));
+    return this.prisma.inTenant(auth.tenantId, (tx) => this.account.set(tx, auth.tenantId, { type: 'user', id: auth.userId }, body));
   }
 }
