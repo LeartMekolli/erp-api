@@ -11,6 +11,7 @@ import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/reg
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { AllowancesService } from '../src/modules/payments/credits/allowances.service';
+import { CampaignsService } from '../src/modules/payments/credits/campaigns.service';
 import { CreditsService } from '../src/modules/payments/credits/credits.service';
 import type { FakePaymentProvider } from '../src/modules/payments/fake-payment-provider';
 import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
@@ -363,6 +364,10 @@ describe('payments: plans and credits, end to end', () => {
           select: { providerSubscriptionId: true, planPriceId: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true },
         }),
       }));
+    // The worker runs the real scheduled jobs: grant what they would, so one landing in the window below
+    // finds nothing left to grant and only the replays could change the counts.
+    await app.get(AllowancesService).grantDueInWorkspace(tenant.id, new Date());
+    await app.get(CampaignsService).run(tenant.id);
     const before = await snapshot();
     await send('invoice.paid', firstInvoice);
     await send('invoice.paid', upgradeInvoice);

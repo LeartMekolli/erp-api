@@ -16,6 +16,8 @@ import type { VectorStore } from './knowledge/vector-store';
 import { RunHandler } from './run.handler';
 import { RunsController } from './runs.controller';
 import { RunsService } from './runs.service';
+import { SearchController } from './search.controller';
+import { SearchService } from './search.service';
 import { customerTools } from './tools/customers.tool';
 import { invoiceTools } from './tools/invoices.tool';
 import { knowledgeTools } from './tools/knowledge.tool';
@@ -28,8 +30,9 @@ import type { AiTool } from './tools/tool';
 /** The staff AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing (AI spec). */
 @Module({
   imports: [NotificationsModule, ReportsModule, KnowledgeModule],
-  controllers: [RunsController],
+  controllers: [RunsController, SearchController],
   providers: [
+    SearchService,
     RunsService,
     RunHandler,
     AskService,
