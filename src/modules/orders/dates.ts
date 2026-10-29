@@ -84,6 +84,16 @@ export function workingDaysBefore(date: string, days: number, calendar: Business
   return day;
 }
 
+/** The day `days` open days after `date`. Zero days is `date` itself, even when it is a day off. */
+export function workingDaysAfter(date: string, days: number, calendar: BusinessCalendar): string {
+  let day = date;
+  for (let left = days; left > 0; left -= 1) {
+    do day = nextDay(day);
+    while (!isOpen(day, calendar));
+  }
+  return day;
+}
+
 /**
  * The day an order placed at `placedAt` is promised for (Orders spec, goal 8 and B1): counted from
  * the placing day in the workspace's timezone if it is open and before closing time, else from the

@@ -1,5 +1,23 @@
 import { z } from 'zod';
+import { ATTENTION_KINDS, MAX_ITEMS } from './attention.service';
 import { weekMetricsSchema } from './week-metrics';
+
+/** What needs attention now: every kind the reader may see, each with its total and its first items. */
+export const attentionSchema = z.array(
+  z.strictObject({
+    kind: z.enum(ATTENTION_KINDS),
+    total: z.number().int().min(0),
+    items: z
+      .array(
+        z.strictObject({
+          ref: z.strictObject({ type: z.enum(['order', 'customer', 'partner', 'invoice', 'job', 'article', 'step']), id: z.uuid() }),
+          label: z.string(),
+          since: z.string().nullable(),
+        }),
+      )
+      .max(MAX_ITEMS),
+  }),
+);
 
 const { orders, customers } = weekMetricsSchema.shape;
 
@@ -22,5 +40,6 @@ export const dashboardResponseSchema = z.strictObject({
   }),
   current: readerWeekSchema,
   previous: readerWeekSchema,
+  attention: attentionSchema,
 });
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>;

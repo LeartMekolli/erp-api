@@ -36,6 +36,28 @@ const zero = () => new Prisma.Decimal(0);
 const dateOnly = (date: string) => new Date(`${date}T00:00:00Z`);
 const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 
+/** Each partner's fullest step type now: what its open jobs hold, of one period's capacity, fullest first. */
+export async function partnerLoads(tx: Tx, eligibility: EligibilityService): Promise<WeekMetrics['partners']['load']> {
+  const partners = await tx.partner.findMany({
+    where: { capabilities: { some: {} } },
+    select: { id: true, name: true, capabilities: { select: { stepTypeId: true, capacity: true } } },
+  });
+  if (partners.length === 0) return [];
+  const loads = await eligibility.loads(tx, partners.map((partner) => partner.id));
+  return partners
+    .map((partner) => ({
+      id: partner.id,
+      name: partner.name,
+      percent: Math.max(
+        0,
+        ...partner.capabilities
+          .filter((capability) => capability.capacity > 0)
+          .map((capability) => Math.round(((loads.get(partner.id)?.get(capability.stepTypeId) ?? 0) * 100) / capability.capacity)),
+      ),
+    }))
+    .sort((a, b) => b.percent - a.percent);
+}
+
 /**
  * The dashboard's numbers (AI 1 spec, goals 4 and 5): this week and last, computed by `reports.refresh`
  * into `report_week` and read by staff with `report.read`. Reads other modules' tables, never writes them.
@@ -86,7 +108,7 @@ export class ReportsService {
   }
 
   /** This week and last as the reader may see them; empty weeks before the first refresh. */
-  async dashboardNumbers(auth: TenantAuth): Promise<DashboardResponse> {
+  async dashboardNumbers(auth: TenantAuth): Promise<Omit<DashboardResponse, 'attention'>> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { timezone: true, defaultCurrency: true } });
       const { start, previousStart } = weekOf(new Date(), tenant.timezone);
@@ -261,26 +283,8 @@ export class ReportsService {
     return orderingLess([...by.values()], span.asOf);
   }
 
-  /** Each partner's fullest step type now: what its open jobs hold, of one period's capacity. */
-  private async liveLoad(tx: Tx): Promise<WeekMetrics['partners']['load']> {
-    const partners = await tx.partner.findMany({
-      where: { capabilities: { some: {} } },
-      select: { id: true, name: true, capabilities: { select: { stepTypeId: true, capacity: true } } },
-    });
-    if (partners.length === 0) return [];
-    const loads = await this.eligibility.loads(tx, partners.map((partner) => partner.id));
-    return partners
-      .map((partner) => ({
-        id: partner.id,
-        name: partner.name,
-        percent: Math.max(
-          0,
-          ...partner.capabilities
-            .filter((capability) => capability.capacity > 0)
-            .map((capability) => Math.round(((loads.get(partner.id)?.get(capability.stepTypeId) ?? 0) * 100) / capability.capacity)),
-        ),
-      }))
-      .sort((a, b) => b.percent - a.percent);
+  private liveLoad(tx: Tx): Promise<WeekMetrics['partners']['load']> {
+    return partnerLoads(tx, this.eligibility);
   }
 
   /** An earlier week's fullest day per partner, from the daily capacity snapshots (D83). */
