@@ -36,6 +36,7 @@ export interface EventDefinition {
     | 'file_version'
     | 'material'
     | 'customer'
+    | 'credit_campaign'
     | 'order'
     | 'payout'
     | 'tenant';
@@ -411,6 +412,21 @@ export const EVENTS = {
       en: {
         subject: 'Welcome to {{ plan }}',
         body: 'Your {{ plan }} plan has started: {{ price }} a {{ interval }}. Its benefits apply from now on.',
+      },
+    },
+  },
+  'campaign.budget_used': {
+    audience: { kind: 'permission', permission: 'plan.write' },
+    channels: ['email', 'feed'],
+    subjectType: 'credit_campaign',
+    variables: {
+      campaign: { sample: 'Launch' },
+      budget: { sample: '25000' },
+    },
+    defaults: {
+      en: {
+        subject: 'Campaign {{ campaign }} has used its budget',
+        body: 'Campaign {{ campaign }} has granted what its budget of {{ budget }} credits allows; customers who qualify now get nothing.',
       },
     },
   },

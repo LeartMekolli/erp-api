@@ -12,6 +12,9 @@ import { CreditController } from './credit.controller';
 import { CreditService } from './credit.service';
 import { AllowancesHandler } from './credits/allowances.handler';
 import { AllowancesService } from './credits/allowances.service';
+import { CampaignsController } from './credits/campaigns.controller';
+import { CampaignsHandler } from './credits/campaigns.handler';
+import { CampaignsService } from './credits/campaigns.service';
 import { CreditExpiryHandler } from './credits/credit-expiry.handler';
 import { CreditPacksController } from './credits/credit-packs.controller';
 import { CreditPacksService } from './credits/credit-packs.service';
@@ -73,6 +76,7 @@ import { WebhooksController } from './webhooks.controller';
     CreditsController,
     SubscriptionsController,
     CreditPacksController,
+    CampaignsController,
   ],
   providers: [
     PaymentAccountService,
@@ -105,6 +109,8 @@ import { WebhooksController } from './webhooks.controller';
     AllowancesHandler,
     CreditPacksService,
     PackEvents,
+    CampaignsService,
+    CampaignsHandler,
     {
       provide: PAYMENT_PROVIDER,
       inject: [ConfigService],

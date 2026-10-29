@@ -105,6 +105,8 @@ model Tenant {
   subscriptionNotices   SubscriptionNotice[]
   creditPacks           CreditPack[]
   creditPackPurchases   CreditPackPurchase[]
+  creditCampaigns       CreditCampaign[]
+  creditCampaignTargets CreditCampaignTarget[]
 
   @@map("tenant")
 }
@@ -158,6 +160,7 @@ model User {
   payouts        Payout[]
   creditGrants   CreditGrant[]
   creditPackPurchases CreditPackPurchase[]
+  creditCampaigns     CreditCampaign[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1126,6 +1129,7 @@ model Customer {
   subscription  CustomerSubscription?
   subscriptionNotices SubscriptionNotice[]
   creditPackPurchases CreditPackPurchase[]
+  campaignTargets     CreditCampaignTarget[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2186,6 +2190,7 @@ model Plan {
   tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   prices PlanPrice[]
   speeds PlanSpeed[]
+  campaignTargets CreditCampaignTarget[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -2340,6 +2345,55 @@ model CreditPackPurchase {
   @@unique([tenantId, providerCheckoutId])
   @@index([tenantId, customerId])
   @@map("credit_pack_purchase")
+}
+
+// Free credits given automatically to the customers it targets, once each, within a budget (Payments 2
+// spec, goal 11). Its grants are the credit grants that name it.
+model CreditCampaign {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  tenantId           String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name               String
+  creditsPerCustomer Int       @map("credits_per_customer")
+  // How long a customer's credits last from the grant.
+  creditDays         Int       @map("credit_days")
+  startsAt           DateTime  @map("starts_at")
+  endsAt             DateTime  @map("ends_at")
+  // In credits; a grant is never split, so it stops when the next one no longer fits.
+  budget             Int
+  // draft | active | paused | ended
+  status             String    @default("draft")
+  // When a customer first found no room left; staff are told then, once.
+  budgetUsedAt       DateTime? @map("budget_used_at")
+  createdByUserId    String    @map("created_by_user_id") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User                   @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  targets   CreditCampaignTarget[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("credit_campaign")
+}
+
+// Who a campaign is for: the customers on a plan, or one customer by name. Exactly one of the two.
+model CreditCampaignTarget {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  tenantId   String  @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  campaignId String  @map("campaign_id") @db.Uuid
+  planId     String? @map("plan_id") @db.Uuid
+  customerId String? @map("customer_id") @db.Uuid
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign CreditCampaign @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade)
+  plan     Plan?          @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
+  customer Customer?      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, campaignId])
+  @@index([tenantId, planId])
+  @@index([tenantId, customerId])
+  @@map("credit_campaign_target")
 }
 
 // Credits given to a customer (Payments 2 spec, D48): a monthly allowance, a pack, a campaign or a staff

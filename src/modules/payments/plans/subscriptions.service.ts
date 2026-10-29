@@ -54,6 +54,7 @@ export type PlanChangeHook = (
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
   private readonly hooks: PlanChangeHook[] = [];
+  private readonly afterHooks: ((tenantId: string, customerId: string) => Promise<void>)[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -66,6 +67,11 @@ export class SubscriptionsService {
 
   onPlanChange(hook: PlanChangeHook): void {
     this.hooks.push(hook);
+  }
+
+  /** Runs once the transaction that changed a customer's plan has committed (campaigns, Task 8). */
+  afterPlanChange(hook: (tenantId: string, customerId: string) => Promise<void>): void {
+    this.afterHooks.push(hook);
   }
 
   /** The plans a customer can choose: every active one, and its own even when archived. */
@@ -272,7 +278,7 @@ export class SubscriptionsService {
     const keys = (await this.accounts.keysFor(tenantId)).keys;
     const now = await this.provider.getSubscription(keys, providerSubscriptionId);
 
-    const told = await this.prisma.inTenant(tenantId, async (tx): Promise<{ customerId: string; notices: Notice[] } | null> => {
+    const told = await this.prisma.inTenant(tenantId, async (tx): Promise<{ customerId: string; notices: Notice[]; planChanged: boolean } | null> => {
       const byProvider = await tx.customerPaymentTerms.findFirst({
         where: { providerCustomerId: now.providerCustomerId },
         select: { customerId: true },
@@ -347,7 +353,7 @@ export class SubscriptionsService {
           },
         );
       }
-      return { customerId, notices };
+      return { customerId, notices, planChanged: before.id !== after.id };
     });
 
     if (!told) return;
@@ -356,6 +362,12 @@ export class SubscriptionsService {
         this.notifications.raise(tenantId, notice.event, { type: 'customer', id: told.customerId }, notice.variables as never),
       );
     }
+    if (told.planChanged) {
+      for (const hook of this.afterHooks) {
+        // The plan change stands; a hook failing is logged, and its own job catches up.
+        await this.tell(tenantId, told.customerId, () => hook(tenantId, told.customerId));
+      }
+    }
   }
 
   /** The customer of one of our subscriptions, by its provider id; null when it isn't ours. */
@@ -363,7 +375,7 @@ export class SubscriptionsService {
     return this.prisma.inTenant(tenantId, (tx) => tx.customerSubscription.findFirst({ where: { providerSubscriptionId } }));
   }
 
-  /** A notice runs after its change committed; failing to tell never undoes the change. */
+  /** A step after a committed change (a notice, a hook); failing never undoes the change. */
   private async tell(tenantId: string, customerId: string, step: () => Promise<unknown>): Promise<void> {
     try {
       await step();

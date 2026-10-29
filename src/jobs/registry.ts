@@ -147,6 +147,9 @@ export const SCHEDULED_JOBS = {
   // Grants each customer the monthly allowance it is owed (Payments 2 spec, goal 9); granted once per
   // month by its source key, however often this runs.
   'payments.credits.allowances': { queue: 'payments', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
+  // Grants running campaigns to the customers they target and haven't reached yet (Payments 2 spec);
+  // once per customer and campaign, however often this runs.
+  'payments.campaigns.grant': { queue: 'payments', schedule: { every: 300_000 }, lockTtlMs: 280_000 },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;

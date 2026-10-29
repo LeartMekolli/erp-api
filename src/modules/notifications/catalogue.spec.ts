@@ -7,6 +7,7 @@ describe('notification catalogue', () => {
   it('declares the events of the foundation, the catalog, customers, partners, orders and payments', () => {
     expect(events.sort()).toEqual([
       'auth.password_reset_requested',
+      'campaign.budget_used',
       'credits.added',
       'customer.invited',
       'file.measured',
@@ -98,6 +99,12 @@ describe('notification catalogue', () => {
     expect(EVENTS['credits.added'].audience).toEqual({ kind: 'customer' });
     expect(EVENTS['credits.added'].subjectType).toBe('customer');
     expect(Object.keys(variablesOf('credits.added')).sort()).toEqual(['credits', 'expires_on', 'source']);
+  });
+
+  it('tells staff who manage plans when a campaign has used its budget', () => {
+    expect(EVENTS['campaign.budget_used'].audience).toEqual({ kind: 'permission', permission: 'plan.write' });
+    expect(EVENTS['campaign.budget_used'].subjectType).toBe('credit_campaign');
+    expect(Object.keys(variablesOf('campaign.budget_used')).sort()).toEqual(['budget', 'campaign']);
   });
 
   it.each(events)('%s: every sample is non-empty', (event) => {
