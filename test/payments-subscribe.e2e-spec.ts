@@ -15,6 +15,7 @@ import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
 import { payLinkResponseSchema } from '../src/modules/payments/payment-response';
 import { planOf } from '../src/modules/payments/plans/plan-of';
 import { planResponseSchema, portalPlanListResponseSchema, subscriptionResponseSchema } from '../src/modules/payments/plans/plan-response';
+import { SubscriptionsService } from '../src/modules/payments/plans/subscriptions.service';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -24,6 +25,8 @@ import { pricedCastPart } from './pricing-fixtures';
 import { startTestWorker } from './worker-harness';
 
 const PASSWORD = 'a-long-customer-password';
+const NO_KEYS = { secretKey: 'unused' };
+const d = (value: string) => new Prisma.Decimal(value);
 const KEYS = {
   secret_key: 'sk_test_51SecretValueAAAA',
   publishable_key: 'pk_test_51PublishableBBBB',
@@ -66,6 +69,7 @@ describe('payments: subscribing to a plan', () => {
   let prisma: PrismaService;
   let tokens: AccessTokenService;
   let fake: FakePaymentProvider;
+  let subscriptions: SubscriptionsService;
   const notifier = new CapturingIdentityNotifier();
   const createdTenants: string[] = [];
   const previousPrefix = process.env.QUEUE_PREFIX;
@@ -85,6 +89,7 @@ describe('payments: subscribing to a plan', () => {
     prisma = app.get(PrismaService);
     tokens = app.get(AccessTokenService);
     fake = app.get<FakePaymentProvider>(PAYMENT_PROVIDER);
+    subscriptions = app.get(SubscriptionsService);
     // The worker applies the webhooks with its own provider instance, which sees what the app's saw.
     worker = await startTestWorker((builder) => builder.overrideProvider(JOB_REGISTRY).useValue(fixture));
   });
@@ -142,6 +147,8 @@ describe('payments: subscribing to a plan', () => {
     prisma.inTenant(w.id, (tx) => tx.customerSubscription.findFirst({ where: { customerId: w.luna } }));
   const started = (w: Workspace) =>
     prisma.inTenant(w.id, (tx) => tx.notification.count({ where: { eventKey: 'subscription.started', subjectId: w.luna } }));
+  const changed = (w: Workspace) =>
+    prisma.inTenant(w.id, (tx) => tx.notification.count({ where: { eventKey: 'subscription.changed', subjectId: w.luna } }));
   const invoiceJournals = (w: Workspace, invoiceId: string) =>
     prisma.inTenant(w.id, (tx) =>
       tx.ledgerJournal.findMany({ where: { providerObjectId: invoiceId }, include: { lines: true }, orderBy: { id: 'asc' } }),
@@ -301,6 +308,83 @@ describe('payments: subscribing to a plan', () => {
     // A customer whose payment is late keeps the plan.
     expect((await prisma.inTenant(w.id, (tx) => planOf(tx, w.luna))).key).toBe('pro');
     expect(await started(w)).toBe(1);
+  });
+
+  it('keeps the newer state when an older read commits last (Review Focus 1)', async () => {
+    const w = await workspace();
+    const { checkoutId, subscriptionId } = await buyPro(w);
+    await sendEvent(app, w.id, event('checkout.session.completed', checkoutId));
+    const startedBefore = await started(w);
+    const changedBefore = await changed(w);
+
+    // Sync A reads the subscription while it is active, then waits before writing.
+    const stale = await fake.getSubscription(NO_KEYS, subscriptionId);
+    let reached!: () => void;
+    const asked = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const spy = jest.spyOn(fake, 'getSubscription').mockImplementationOnce(async () => {
+      reached();
+      await gate;
+      return stale;
+    });
+    const older = subscriptions.sync(w.id, subscriptionId);
+    await asked;
+    // Read times are kept to the millisecond: B reads at least one later.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Sync B reads the newer state and commits first.
+    fake.setSubscriptionStatus(subscriptionId, 'past_due');
+    const newerFrom = new Date();
+    await subscriptions.sync(w.id, subscriptionId);
+    release();
+    await older;
+    spy.mockRestore();
+
+    const row = await subscriptionRow(w);
+    expect(row!.status).toBe('past_due');
+    expect(row!.providerReadAt!.getTime()).toBeGreaterThanOrEqual(newerFrom.getTime());
+    expect(await started(w)).toBe(startedBefore);
+    expect(await changed(w)).toBe(changedBefore);
+  });
+
+  it('journals a negative invoice as customer credit and a balance-paid one without cash (Review Focus 3)', async () => {
+    const w = await workspace();
+    const { checkoutId, subscriptionId, invoiceId } = await buyPro(w);
+    await sendEvent(app, w.id, event('checkout.session.completed', checkoutId));
+    await sendEvent(app, w.id, event('invoice.paid', invoiceId));
+
+    // A move from a dearer plan mid-period: the provider gives the difference back as the customer's balance…
+    const { invoiceId: credited } = fake.issueInvoice(subscriptionId, { total: d('-166.00'), reason: 'update', paid: true });
+    await sendEvent(app, w.id, event('invoice.paid', credited));
+    await sendEvent(app, w.id, event('invoice.paid', credited));
+    // …which pays the next invoice, so no payment is taken.
+    const { invoiceId: fromBalance } = fake.issueInvoice(subscriptionId, {
+      total: d('99.00'),
+      reason: 'cycle',
+      paid: true,
+      amountPaid: d('0'),
+    });
+    await sendEvent(app, w.id, event('invoice.paid', fromBalance));
+    await sendEvent(app, w.id, event('invoice.paid', fromBalance));
+
+    const creditedJournals = await invoiceJournals(w, credited);
+    expect(creditedJournals.map((journal) => journal.kind)).toEqual(['plan_credited']);
+    const balanceJournals = await invoiceJournals(w, fromBalance);
+    expect(balanceJournals.map((journal) => journal.kind)).toEqual(['plan_billed', 'credit_applied']);
+    expect(balanceJournals[1].lines.find((line) => line.account === 'customer_credit')!.amount.toFixed(2)).toBe('99.00');
+    for (const journal of [...creditedJournals, ...balanceJournals]) {
+      expect(journal.lines.reduce((sum, line) => sum.plus(line.amount), new Prisma.Decimal(0)).toFixed(2)).toBe('0.00');
+      expect(journal.customerId).toBe(w.luna);
+    }
+    const credit = await prisma.inTenant(w.id, (tx) =>
+      tx.ledgerLine.aggregate({ _sum: { amount: true }, where: { account: 'customer_credit', customerId: w.luna } }),
+    );
+    expect(credit._sum.amount!.toFixed(2)).toBe('-67.00');
   });
 
   it('journals one paid subscription invoice once, and leaves order invoices to their own handler', async () => {

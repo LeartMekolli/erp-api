@@ -103,6 +103,7 @@ model Tenant {
   creditEntries   CreditEntry[]
   customerSubscriptions CustomerSubscription[]
   subscriptionNotices   SubscriptionNotice[]
+  subscriptionPaidPeriods SubscriptionPaidPeriod[]
   creditPacks           CreditPack[]
   creditPackPurchases   CreditPackPurchase[]
   creditCampaigns       CreditCampaign[]
@@ -1128,6 +1129,7 @@ model Customer {
   creditEntries CreditEntry[]
   subscription  CustomerSubscription?
   subscriptionNotices SubscriptionNotice[]
+  subscriptionPaidPeriods SubscriptionPaidPeriod[]
   creditPackPurchases CreditPackPurchase[]
   campaignTargets     CreditCampaignTarget[]
 
@@ -2260,6 +2262,8 @@ model CustomerSubscription {
   pendingPlanPriceId     String?   @map("pending_plan_price_id") @db.Uuid
   // Where monthly allowances count from: set when the subscription becomes active from no paid plan.
   allowanceAnchor        DateTime? @map("allowance_anchor")
+  // When `sync` asked the provider for what this row holds; an older read never overwrites it.
+  providerReadAt         DateTime? @map("provider_read_at")
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -2292,6 +2296,28 @@ model SubscriptionNotice {
   @@unique([tenantId, providerInvoiceId])
   @@index([tenantId, customerId])
   @@map("subscription_notice")
+}
+
+// A period of a subscription the provider has been paid for, one per paid invoice (an invoice of 0
+// counts): a paid plan's monthly allowance is granted only inside one. Insert only (ADR 0003).
+model SubscriptionPaidPeriod {
+  id                     String   @id @default(uuid(7)) @db.Uuid
+  tenantId               String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId             String   @map("customer_id") @db.Uuid
+  providerSubscriptionId String   @map("provider_subscription_id")
+  providerInvoiceId      String   @map("provider_invoice_id")
+  periodStart            DateTime @map("period_start")
+  periodEnd              DateTime @map("period_end")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerInvoiceId])
+  @@index([tenantId, providerSubscriptionId])
+  @@index([tenantId, customerId])
+  @@map("subscription_paid_period")
 }
 
 // Credits a customer buys once, on any plan (Payments 2 spec, goal 10). Workspace data, sold through a

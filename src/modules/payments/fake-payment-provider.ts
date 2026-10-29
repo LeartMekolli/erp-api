@@ -7,7 +7,6 @@ import type {
   PaymentProvider,
   ProviderEvent,
   ProviderKeys,
-  ProviderPayment,
   ProviderSubscription,
   ProviderSubscriptionStatus,
 } from './payment-provider';
@@ -18,6 +17,7 @@ interface FakeCheckout {
   amount: Prisma.Decimal;
   status: 'open' | 'complete' | 'expired';
   paymentId: string | null;
+  metadata: Record<string, string>;
   /** On a subscription's checkout: what completing it subscribes to. */
   subscribes: { priceId: string; providerCustomerId: string; metadata: Record<string, string> } | null;
   subscriptionId: string | null;
@@ -30,6 +30,8 @@ interface FakePrice {
 }
 interface FakeInvoice {
   amount: Prisma.Decimal;
+  /** What its payment took when not all of a positive total, the rest coming from the customer's balance. */
+  amountPaid: Prisma.Decimal | null;
   status: 'open' | 'paid' | 'void';
   paidOutside: boolean;
   paymentId: string | null;
@@ -95,6 +97,7 @@ export class FakePaymentProvider implements PaymentProvider {
 
   payInvoice(id: string): void {
     const invoice = this.must(this.invoices, id);
+    if (invoice.status === 'void') throw new Error(`${id} is void and can't be paid`);
     invoice.status = 'paid';
     invoice.paymentId = this.nextId('payment');
   }
@@ -180,8 +183,10 @@ export class FakePaymentProvider implements PaymentProvider {
   /**
    * The next period starts: a subscription cancelled at the period end ends, with no invoice;
    * otherwise a scheduled price takes effect and the period is invoiced. Unpaid, it is past due.
+   * `'pending'` is the provider's window before it first charges a renewal (about an hour): the
+   * subscription is active in its new period, its invoice still open until `payInvoice`.
    */
-  renew(id: string, paid: boolean): { invoiceId: string | null } {
+  renew(id: string, paid: boolean | 'pending'): { invoiceId: string | null } {
     const subscription = this.must(store.subscriptions, id);
     if (subscription.cancelAtPeriodEnd) {
       subscription.status = 'ended';
@@ -194,10 +199,39 @@ export class FakePaymentProvider implements PaymentProvider {
     const price = this.price(subscription.priceId);
     subscription.currentPeriodStart = subscription.currentPeriodEnd;
     subscription.currentPeriodEnd = periodAfter(subscription.currentPeriodStart, price.interval);
-    subscription.status = paid ? 'active' : 'past_due';
+    subscription.status = paid === false ? 'past_due' : 'active';
     return {
-      invoiceId: this.subscriptionInvoice(id, price.amount, 'cycle', paid, subscription.currentPeriodStart, subscription.currentPeriodEnd),
+      invoiceId: this.subscriptionInvoice(
+        id,
+        price.amount,
+        'cycle',
+        paid === true,
+        subscription.currentPeriodStart,
+        subscription.currentPeriodEnd,
+      ),
     };
+  }
+
+  /**
+   * Any invoice of a subscription for its current period, as the provider makes them on its own: a
+   * negative total when a change gives money back, or one paid from the customer's balance
+   * (`amountPaid` below the total; by default all of a positive total once paid).
+   */
+  issueInvoice(
+    subscriptionId: string,
+    input: { total: Prisma.Decimal; reason: InvoiceReason; paid: boolean; amountPaid?: Prisma.Decimal },
+  ): { invoiceId: string } {
+    const subscription = this.must(store.subscriptions, subscriptionId);
+    const invoiceId = this.subscriptionInvoice(
+      subscriptionId,
+      input.total,
+      input.reason,
+      input.paid,
+      subscription.currentPeriodStart,
+      subscription.currentPeriodEnd,
+      input.amountPaid ?? null,
+    );
+    return { invoiceId };
   }
 
   /** The provider stops retrying a late payment and ends the subscription. */
@@ -252,16 +286,20 @@ export class FakePaymentProvider implements PaymentProvider {
     return Promise.resolve(
       this.once(input.idempotencyKey, () => {
         const id = this.nextId('checkout');
-        this.checkouts.set(id, { amount: input.amount, status: 'open', paymentId: null, subscribes: null, subscriptionId: null });
+        this.checkouts.set(id, {
+          amount: input.amount,
+          status: 'open',
+          paymentId: null,
+          metadata: input.metadata,
+          subscribes: null,
+          subscriptionId: null,
+        });
         return { id, url: `https://fake.pay.test/checkout/${id}` };
       }),
     );
   }
 
-  getCheckout(
-    _keys: ProviderKeys,
-    id: string,
-  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null }> {
+  getCheckout(_keys: ProviderKeys, id: string): ReturnType<PaymentProvider['getCheckout']> {
     const checkout = this.must(this.checkouts, id);
     const paid = checkout.status === 'complete';
     return Promise.resolve({
@@ -271,6 +309,7 @@ export class FakePaymentProvider implements PaymentProvider {
       fee: paid ? fee(checkout.amount) : new Prisma.Decimal(0),
       paymentId: checkout.paymentId,
       subscriptionId: checkout.subscriptionId,
+      metadata: { ...checkout.metadata },
     });
   }
 
@@ -285,6 +324,7 @@ export class FakePaymentProvider implements PaymentProvider {
           amount: this.price(input.priceId).amount,
           status: 'open',
           paymentId: null,
+          metadata: input.metadata,
           subscribes: { priceId: input.priceId, providerCustomerId: input.providerCustomerId, metadata: input.metadata },
           subscriptionId: null,
         });
@@ -300,6 +340,17 @@ export class FakePaymentProvider implements PaymentProvider {
   upgradeSubscription(_keys: ProviderKeys, id: string, input: Parameters<PaymentProvider['upgradeSubscription']>[2]): Promise<void> {
     this.price(input.priceId);
     this.must(store.subscriptions, id).pendingPriceId = input.priceId;
+    return Promise.resolve();
+  }
+
+  /** As the provider does when the upgrade's open invoice is voided: the pending price is dropped. */
+  withdrawUpgrade(_keys: ProviderKeys, id: string): Promise<void> {
+    const subscription = this.must(store.subscriptions, id);
+    if (!subscription.pendingPriceId) return Promise.resolve();
+    subscription.pendingPriceId = null;
+    for (const invoice of this.invoices.values()) {
+      if (invoice.subscriptionId === id && invoice.reason === 'update' && invoice.status === 'open') invoice.status = 'void';
+    }
     return Promise.resolve();
   }
 
@@ -341,6 +392,7 @@ export class FakePaymentProvider implements PaymentProvider {
         const amount = input.lines.reduce((sum, line) => sum.add(line.amount), input.tax);
         this.invoices.set(id, {
           amount,
+          amountPaid: null,
           status: 'open',
           paidOutside: false,
           paymentId: null,
@@ -358,11 +410,15 @@ export class FakePaymentProvider implements PaymentProvider {
   getInvoice(_keys: ProviderKeys, id: string): ReturnType<PaymentProvider['getInvoice']> {
     const invoice = this.must(this.invoices, id);
     const paid = invoice.status === 'paid';
+    const zero = new Prisma.Decimal(0);
+    // Nothing before it is paid; then all of a positive total, unless told otherwise.
+    const amountPaid = paid ? (invoice.amountPaid ?? (invoice.amount.gt(0) ? invoice.amount : zero)) : zero;
     return Promise.resolve({
       status: invoice.status,
       paid,
       amount: invoice.amount,
-      fee: paid && !invoice.paidOutside ? fee(invoice.amount) : new Prisma.Decimal(0),
+      amountPaid,
+      fee: paid && !invoice.paidOutside && amountPaid.gt(0) ? fee(amountPaid) : zero,
       paymentId: invoice.paymentId,
       subscriptionId: invoice.subscriptionId,
       reason: invoice.reason,
@@ -463,10 +519,12 @@ export class FakePaymentProvider implements PaymentProvider {
     paid: boolean,
     periodStart: Date,
     periodEnd: Date,
+    amountPaid: Prisma.Decimal | null = null,
   ): string {
     const id = this.nextId('invoice');
     this.invoices.set(id, {
       amount,
+      amountPaid,
       status: paid ? 'paid' : 'open',
       paidOutside: false,
       paymentId: paid ? this.nextId('payment') : null,

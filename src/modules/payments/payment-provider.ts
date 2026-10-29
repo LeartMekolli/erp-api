@@ -89,11 +89,16 @@ export interface PaymentProvider {
       idempotencyKey: string;
     },
   ): Promise<{ id: string; url: string }>;
-  /** `subscriptionId` is set on a subscription's checkout once it is complete. Unknown: `ProviderNotFoundError`. */
+  /**
+   * `subscriptionId` is set on a subscription's checkout once it is complete; `metadata` is what it
+   * was made with. Unknown: `ProviderNotFoundError`.
+   */
   getCheckout(
     keys: ProviderKeys,
     id: string,
-  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null }>;
+  ): Promise<
+    ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null; metadata: Record<string, string> }
+  >;
   /** Already expired or complete: no error. */
   expireCheckout(keys: ProviderKeys, id: string): Promise<void>;
   ensureCustomer(
@@ -115,13 +120,16 @@ export interface PaymentProvider {
   ): Promise<{ id: string; url: string; dueOn: string }>;
   /**
    * A subscription's invoice names it, why it was made and the period it pays for; an order's has
-   * none of these. Unknown: `ProviderNotFoundError`.
+   * none of these. `amount` is the invoice's total, below zero when it gives money back;
+   * `amountPaid` is what a payment took, apart from the customer's balance at the provider (an
+   * order's: all of it). Unknown: `ProviderNotFoundError`.
    */
   getInvoice(
     keys: ProviderKeys,
     id: string,
   ): Promise<
     ProviderPayment & {
+      amountPaid: Prisma.Decimal;
       status: 'open' | 'paid' | 'void';
       subscriptionId: string | null;
       reason: InvoiceReason | null;
@@ -170,6 +178,11 @@ export interface PaymentProvider {
    * invoice is paid, and stays as it was when it isn't.
    */
   upgradeSubscription(keys: ProviderKeys, id: string, input: { priceId: string; idempotencyKey: string }): Promise<void>;
+  /**
+   * Ends a pending upgrade by voiding its open invoice, so paying that invoice later changes nothing.
+   * No upgrade pending: no error.
+   */
+  withdrawUpgrade(keys: ProviderKeys, id: string): Promise<void>;
   /** The price from the next period on; null removes a scheduled change. */
   scheduleSubscriptionPrice(keys: ProviderKeys, id: string, input: { priceId: string | null; idempotencyKey: string }): Promise<void>;
   setCancelAtPeriodEnd(keys: ProviderKeys, id: string, cancel: boolean): Promise<void>;

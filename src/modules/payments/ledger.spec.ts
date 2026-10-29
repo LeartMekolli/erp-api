@@ -1,7 +1,34 @@
 import { Prisma } from '../../generated/prisma/client';
-import { buildJournal } from './ledger';
+import { buildJournal, creditAppliedJournal, planCreditedJournal } from './ledger';
+import type { JournalDraft } from './ledger';
 
 const d = (value: string) => new Prisma.Decimal(value);
+const lines = (draft: JournalDraft) => draft.entries.map((entry) => [entry.account, entry.amount.toFixed(2), entry.customerId]);
+const sum = (draft: JournalDraft) => draft.entries.reduce((total, entry) => total.add(entry.amount), d('0')).toFixed(2);
+
+describe('plan journals', () => {
+  it('gives back a negative plan invoice as the customer credit at the provider', () => {
+    const draft = planCreditedJournal('c', d('166.00'));
+
+    expect(draft.kind).toBe('plan_credited');
+    expect(lines(draft)).toEqual([
+      ['subscription_sales', '166.00', 'c'],
+      ['customer_credit', '-166.00', 'c'],
+    ]);
+    expect(sum(draft)).toBe('0.00');
+  });
+
+  it('pays a plan invoice from that credit, without cash', () => {
+    const draft = creditAppliedJournal('c', d('99.00'));
+
+    expect(draft.kind).toBe('credit_applied');
+    expect(lines(draft)).toEqual([
+      ['customer_credit', '99.00', 'c'],
+      ['customer_receivable', '-99.00', 'c'],
+    ]);
+    expect(sum(draft)).toBe('0.00');
+  });
+});
 
 describe('buildJournal', () => {
   it('accepts an order billed for 119.00, with 100.00 of sales and 19.00 of tax', () => {

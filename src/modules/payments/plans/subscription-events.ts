@@ -3,7 +3,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import type { PaymentEvent } from '../../../generated/prisma/client';
 import { lockCustomer } from '../../customers/customers.service';
 import { AllowancesService } from '../credits/allowances.service';
-import { feeJournal, planBilledJournal, receivedJournal } from '../ledger';
+import { creditAppliedJournal, feeJournal, planBilledJournal, planCreditedJournal, receivedJournal } from '../ledger';
 import { LedgerService } from '../ledger.service';
 import { PaymentAccountService } from '../payment-account.service';
 import { registerEventHandler } from '../payment-events.service';
@@ -80,9 +80,9 @@ export class SubscriptionEvents implements OnModuleInit {
   }
 
   /**
-   * A paid invoice of one of our subscriptions: the subscription is synced, then the period is billed,
-   * paid and the provider's fee journalled, each once, and the month it pays for brings its allowance.
-   * An order's invoice is skipped.
+   * A paid invoice of one of our subscriptions: the subscription is synced, the period it pays for is
+   * recorded as paid and brings its allowance, and the invoice is journalled by what was paid, each
+   * journal once. An order's invoice is skipped.
    */
   async invoicePaid(tenantId: string, event: PaymentEvent): Promise<void> {
     const invoice = await this.subscriptionInvoice(tenantId, event.objectId);
@@ -94,6 +94,21 @@ export class SubscriptionEvents implements OnModuleInit {
 
     await this.prisma.inTenant(tenantId, async (tx) => {
       await lockCustomer(tx, subscription.customerId);
+      // The provider makes a renewal active before it charges it: the month is owed only from here.
+      if (invoice.periodStart && invoice.periodEnd && invoice.periodEnd > invoice.periodStart) {
+        await tx.subscriptionPaidPeriod.createMany({
+          data: [
+            {
+              customerId: subscription.customerId,
+              providerSubscriptionId: subscription.providerSubscriptionId,
+              providerInvoiceId: event.objectId,
+              periodStart: invoice.periodStart,
+              periodEnd: invoice.periodEnd,
+            },
+          ],
+          skipDuplicates: true,
+        });
+      }
       await this.allowances.grantDue(tx, subscription.customerId, invoice.periodStart ?? new Date());
       // Nothing to journal for a period that cost nothing.
       if (invoice.amount.isZero()) return;
@@ -104,16 +119,37 @@ export class SubscriptionEvents implements OnModuleInit {
         customerId: subscription.customerId,
         providerObjectId: event.objectId,
       };
+      // Below zero (a cheaper plan mid-period): the provider keeps the difference as the customer's
+      // balance, and no money moves.
+      if (invoice.amount.lt(0)) {
+        await this.ledger.post(tx, {
+          ...planCreditedJournal(subscription.customerId, invoice.amount.neg()),
+          ...common,
+          memo: `Plan ${price.plan.name} credited`,
+        });
+        return;
+      }
       await this.ledger.post(tx, {
         ...planBilledJournal(subscription.customerId, invoice.amount),
         ...common,
         memo: `Plan ${price.plan.name} billed`,
       });
-      await this.ledger.post(tx, {
-        ...receivedJournal(subscription.customerId, invoice.amount, 'stripe_balance'),
-        ...common,
-        memo: `Plan ${price.plan.name} paid`,
-      });
+      // What a payment took arrived as cash; the rest came out of the customer's balance.
+      if (invoice.amountPaid.gt(0)) {
+        await this.ledger.post(tx, {
+          ...receivedJournal(subscription.customerId, invoice.amountPaid, 'stripe_balance'),
+          ...common,
+          memo: `Plan ${price.plan.name} paid`,
+        });
+      }
+      const fromCredit = invoice.amount.sub(invoice.amountPaid);
+      if (fromCredit.gt(0)) {
+        await this.ledger.post(tx, {
+          ...creditAppliedJournal(subscription.customerId, fromCredit),
+          ...common,
+          memo: `Plan ${price.plan.name} paid from credit`,
+        });
+      }
       if (invoice.fee.gt(0)) {
         await this.ledger.post(tx, { ...feeJournal(invoice.fee), ...common, memo: `Fee on plan ${price.plan.name}` });
       }

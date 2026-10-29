@@ -125,7 +125,8 @@ export class AllowancesService implements OnModuleInit {
 
   /**
    * How the customer's months are counted at `at`; null when a paid plan has nothing to give then:
-   * its subscription isn't active, or hasn't paid for `at` yet (a monthly one waits for its renewal).
+   * its subscription isn't active, or no paid invoice covers `at` yet (a monthly one waits for its
+   * renewal to be charged, which the provider does after the new period has begun).
    */
   private async clockOf(tx: Prisma.TransactionClient, customerId: string, at: Date): Promise<AllowanceClock | null> {
     const subscription = await tx.customerSubscription.findFirst({
@@ -137,6 +138,11 @@ export class AllowancesService implements OnModuleInit {
     }
     const anchor = subscription.allowanceAnchor ?? subscription.currentPeriodStart;
     if (subscription.status !== 'active' || at < anchor || at >= subscription.currentPeriodEnd) return null;
+    const paid = await tx.subscriptionPaidPeriod.findFirst({
+      where: { providerSubscriptionId: subscription.providerSubscriptionId, periodStart: { lte: at }, periodEnd: { gt: at } },
+      select: { id: true },
+    });
+    if (!paid) return null;
     return { kind: 'paid', anchor };
   }
 }

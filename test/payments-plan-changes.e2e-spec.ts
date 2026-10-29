@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
+import { Prisma } from '../src/generated/prisma/client';
 import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
@@ -26,6 +27,8 @@ const KEYS = {
   webhook_secret: 'whsec_paymentsCCCC',
   connect_webhook_secret: 'whsec_connectDDDD',
 };
+const NO_KEYS = { secretKey: 'unused' };
+const d = (value: string) => new Prisma.Decimal(value);
 const plan = (key: string, name: string, position: number, monthly: string, yearly: string) => ({
   key,
   name,
@@ -186,6 +189,41 @@ describe('payments: changing plans and failed payments', () => {
     expect(failed).toHaveLength(1);
     expect(failed[0].payload).toMatchObject({ plan: 'Business' });
     expect(await told(w, 'subscription.payment_failed')).toHaveLength(0);
+    expect(await told(w, 'subscription.changed')).toHaveLength(0);
+  });
+
+  it('tells a failed update invoice without a pending upgrade as a late payment', async () => {
+    const w = await workspace();
+    const id = await subscribe(w, w.pro);
+
+    // Stripe makes such an invoice on its own, for a change that resets the billing period.
+    const { invoiceId } = fake.issueInvoice(id, { total: d('29.00'), reason: 'update', paid: false });
+    fake.setSubscriptionStatus(id, 'past_due');
+    await send(w, 'invoice.payment_failed', invoiceId);
+    await send(w, 'invoice.payment_failed', invoiceId);
+
+    expect(await told(w, 'subscription.payment_failed')).toHaveLength(1);
+    expect(await told(w, 'subscription.upgrade_failed')).toHaveLength(0);
+  });
+
+  it('withdraws a failed upgrade before a new choice (Review Focus 5)', async () => {
+    const w = await workspace();
+    const id = await subscribe(w, w.pro);
+    await change(w, w.business).expect(202);
+    const { invoiceId } = fake.settleUpgrade(id, false);
+    await send(w, 'invoice.payment_failed', invoiceId);
+    expect(await told(w, 'subscription.upgrade_failed')).toHaveLength(1);
+
+    await change(w, w.starter).expect(200);
+
+    expect(fake.subscription(id).pendingPriceId).toBeNull();
+    expect((await fake.getInvoice(NO_KEYS, invoiceId)).status).toBe('void');
+    // Told late that the upgrade's invoice is paid: it was voided, so nothing changes.
+    await send(w, 'invoice.paid', invoiceId);
+    expect(await subscription(w)).toMatchObject({ plan: { key: 'pro' }, cancel_at_period_end: true, change: { plan: { key: 'starter' } } });
+    expect(await planKey(w)).toBe('pro');
+    const row = await prisma.inTenant(w.id, (tx) => tx.customerSubscription.findFirstOrThrow({ where: { customerId: w.brightline } }));
+    expect(row.pendingPlanPriceId).toBeNull();
     expect(await told(w, 'subscription.changed')).toHaveLength(0);
   });
 

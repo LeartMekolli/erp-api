@@ -175,6 +175,7 @@ describe('FakePaymentProvider', () => {
       periodEnd: nextMonth,
     });
     expect(invoice.amount.toFixed(2)).toBe('29.00');
+    expect(invoice.amountPaid.toFixed(2)).toBe('29.00');
     expect(invoice.fee.toFixed(2)).toBe('1.14');
   });
 
@@ -297,6 +298,77 @@ describe('FakePaymentProvider', () => {
       provider.giveUp(subscriptionId);
       expect(provider.subscription(subscriptionId).status).toBe('ended');
     });
+
+    it('is active in its new period before the renewal is charged, as Stripe is for about an hour', async () => {
+      const { provider, subscriptionId } = await subscribed('pending');
+      const end = provider.subscription(subscriptionId).currentPeriodEnd;
+
+      const { invoiceId } = provider.renew(subscriptionId, 'pending');
+
+      expect(provider.subscription(subscriptionId)).toMatchObject({ status: 'active', currentPeriodStart: end });
+      expect(await provider.getInvoice(keys, invoiceId!)).toMatchObject({ status: 'open', paid: false, reason: 'cycle' });
+      provider.payInvoice(invoiceId!);
+      expect(await provider.getInvoice(keys, invoiceId!)).toMatchObject({ status: 'paid', paid: true });
+    });
+
+    it('issues any invoice of the current period, as the provider makes them on its own', async () => {
+      const { provider, subscriptionId } = await subscribed('issue');
+      const { currentPeriodStart, currentPeriodEnd } = provider.subscription(subscriptionId);
+
+      const { invoiceId } = provider.issueInvoice(subscriptionId, { total: new Prisma.Decimal('12.00'), reason: 'update', paid: false });
+
+      const invoice = await provider.getInvoice(keys, invoiceId);
+      expect(invoice).toMatchObject({
+        status: 'open',
+        paid: false,
+        reason: 'update',
+        subscriptionId,
+        periodStart: currentPeriodStart,
+        periodEnd: currentPeriodEnd,
+      });
+      expect(invoice.amount.toFixed(2)).toBe('12.00');
+    });
+
+    it('tells what a payment took apart from the total, for an invoice paid from the balance', async () => {
+      const { provider, subscriptionId } = await subscribed('balance');
+
+      const { invoiceId } = provider.issueInvoice(subscriptionId, {
+        total: new Prisma.Decimal('99.00'),
+        reason: 'cycle',
+        paid: true,
+        amountPaid: new Prisma.Decimal('0'),
+      });
+      const { invoiceId: credited } = provider.issueInvoice(subscriptionId, { total: new Prisma.Decimal('-166.00'), reason: 'update', paid: true });
+
+      const invoice = await provider.getInvoice(keys, invoiceId);
+      expect(invoice.paid).toBe(true);
+      expect(invoice.amount.toFixed(2)).toBe('99.00');
+      expect(invoice.amountPaid.toFixed(2)).toBe('0.00');
+      expect(invoice.fee.toFixed(2)).toBe('0.00');
+      const negative = await provider.getInvoice(keys, credited);
+      expect(negative.amount.toFixed(2)).toBe('-166.00');
+      expect(negative.amountPaid.toFixed(2)).toBe('0.00');
+    });
+
+    it('withdraws a pending upgrade by voiding its invoice', async () => {
+      const { provider, subscriptionId, current, next } = await subscribed('withdraw');
+      await provider.upgradeSubscription(keys, subscriptionId, { priceId: next, idempotencyKey: 'withdraw-1' });
+      const { invoiceId } = provider.settleUpgrade(subscriptionId, false);
+
+      await provider.withdrawUpgrade(keys, subscriptionId);
+      await provider.withdrawUpgrade(keys, subscriptionId);
+
+      expect(provider.subscription(subscriptionId)).toMatchObject({ priceId: current, pendingPriceId: null });
+      expect((await provider.getInvoice(keys, invoiceId)).status).toBe('void');
+      expect(() => provider.payInvoice(invoiceId)).toThrow(/void/);
+    });
+  });
+
+  it('gives back the metadata a checkout was made with', async () => {
+    const provider = new FakePaymentProvider();
+    const { id } = await provider.createCheckout(keys, checkoutInput('k-metadata'));
+
+    expect((await provider.getCheckout(keys, id)).metadata).toEqual({ order_id: 'o1' });
   });
 
   it('has no subscription on an order checkout or an order invoice', async () => {

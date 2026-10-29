@@ -227,8 +227,9 @@ Credits are whole units the AI tools will spend, held in three insert-only table
 On top of [Payments in test mode](#payments-in-test-mode):
 
 1. `stripe listen` needs no new endpoint: subscription, invoice and checkout events arrive at the same `/webhooks/payments/<tenantId>`.
-2. Turn on Stripe's customer portal in test mode (Settings → Billing → Customer portal), or `POST /portal/customers/{id}/billing-portal` fails at Stripe.
-3. A failed renewal: in the billing portal, make `4000 0000 0000 0341` the default card (it attaches, then every charge is declined), and start the next period now with `stripe subscriptions update <sub_id> --billing-cycle-anchor=now --proration-behavior=none`. Stripe giving up is `stripe subscriptions cancel <sub_id>`.
+2. Turn on Stripe's customer portal in test mode (Settings → Billing → Customer portal), or `POST /portal/customers/{id}/billing-portal` fails at Stripe. Turn payment methods and invoice history on, and **switching plans and cancelling off**: plan changes go through our API, which withdraws a pending upgrade before any new choice.
+3. Settings → Billing → Subscriptions → Manage failed payments: after all retries, **cancel the subscription**. With "leave as unpaid" a customer keeps its plan for ever, since `unpaid` counts as past due here.
+4. A failed renewal, on a test clock (Billing → Test clocks): create the customer on the clock, subscribe it, make `4000 0000 0000 0341` its default card (it attaches, then every charge is declined), and advance the clock past the period end. Advancing it past the last retry is Stripe giving up.
 
 A walkthrough in Swagger, on the demo data with the keys set (`test/payments-2-slice.e2e-spec.ts` runs the same with the fake provider; it is the spec's "Done when"):
 

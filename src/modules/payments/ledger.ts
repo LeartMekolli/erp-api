@@ -12,6 +12,8 @@ export const ACCOUNTS = [
   // Plans and credit packs (Payments 2 spec), apart from what orders sell.
   'subscription_sales',
   'credit_sales',
+  // What the provider holds for a customer as its balance, owed to it: a credit is negative.
+  'customer_credit',
 ] as const;
 export type Account = (typeof ACCOUNTS)[number];
 
@@ -24,6 +26,8 @@ export const JOURNAL_KINDS = [
   'reversal',
   'plan_billed',
   'pack_billed',
+  'plan_credited',
+  'credit_applied',
 ] as const;
 export type JournalKind = (typeof JOURNAL_KINDS)[number];
 
@@ -72,6 +76,25 @@ export function planBilledJournal(customerId: string, amount: Prisma.Decimal): J
   return buildJournal('plan_billed', [
     { account: 'customer_receivable', amount, customerId },
     { account: 'subscription_sales', amount: amount.neg(), customerId },
+  ]);
+}
+
+/**
+ * A plan invoice below zero (a move to a cheaper plan mid-period): `amount` of what the plan was paid
+ * is given back as the customer's balance at the provider, which pays its next invoices.
+ */
+export function planCreditedJournal(customerId: string, amount: Prisma.Decimal): JournalDraft {
+  return buildJournal('plan_credited', [
+    { account: 'subscription_sales', amount, customerId },
+    { account: 'customer_credit', amount: amount.neg(), customerId },
+  ]);
+}
+
+/** `amount` of an invoice paid from the customer's balance at the provider, not by a payment. */
+export function creditAppliedJournal(customerId: string, amount: Prisma.Decimal): JournalDraft {
+  return buildJournal('credit_applied', [
+    { account: 'customer_credit', amount, customerId },
+    { account: 'customer_receivable', amount: amount.neg(), customerId },
   ]);
 }
 

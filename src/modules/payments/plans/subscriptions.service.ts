@@ -168,7 +168,8 @@ export class SubscriptionsService {
    * Asks the provider to move the customer's subscription to another plan (spec B3): costing as
    * much or more a month, at once on payment (`pending: true`); costing less, at the period end; the
    * free plan, by cancelling at the period end; the current plan and interval, by undoing any of
-   * those. Never writes the row itself: `sync` reads what the provider made of it.
+   * those, a pending upgrade included. Never writes the row itself: `sync` reads what the provider
+   * made of it.
    */
   async change(tenantId: string, customerId: string, input: SubscriptionChange): Promise<{ pending: boolean; view: SubscriptionResponse }> {
     const prepared = await this.prisma.inTenant(tenantId, async (tx) => {
@@ -196,7 +197,9 @@ export class SubscriptionsService {
     const { keys, row } = prepared;
     const id = row.providerSubscriptionId;
     try {
-      // Whatever was asked before is replaced by this.
+      // Whatever was asked before is replaced by this. An upgrade still waiting for its payment is
+      // withdrawn first, so paying its invoice later can't undo this choice.
+      if (row.pendingPlanPriceId) await this.provider.withdrawUpgrade(keys, id);
       if (prepared.action !== 'cancel' && row.cancelAtPeriodEnd) await this.provider.setCancelAtPeriodEnd(keys, id, false);
       if (row.scheduledPlanPriceId && prepared.action !== 'schedule') {
         await this.provider.scheduleSubscriptionPrice(keys, id, { priceId: null, idempotencyKey: newId() });
@@ -217,6 +220,8 @@ export class SubscriptionsService {
   /**
    * A subscription invoice the provider couldn't charge: the customer hears of it once per invoice,
    * as a failed upgrade (the plan stays) or a late payment (the plan stays while the provider retries).
+   * Only a change of price with an upgrade still pending is a failed upgrade: the provider also makes
+   * `update` invoices of its own, such as when a change resets the billing period.
    */
   async paymentFailed(tenantId: string, providerSubscriptionId: string, invoice: { id: string; reason: InvoiceReason | null }): Promise<void> {
     await this.sync(tenantId, providerSubscriptionId);
@@ -227,7 +232,7 @@ export class SubscriptionsService {
       });
       if (!row) return null;
       await lockCustomer(tx, row.customerId);
-      const kind = invoice.reason === 'update' ? ('upgrade_failed' as const) : ('payment_failed' as const);
+      const kind = invoice.reason === 'update' && row.pendingPlanPriceId ? ('upgrade_failed' as const) : ('payment_failed' as const);
       const [created] = await tx.subscriptionNotice.createManyAndReturn({
         data: [{ customerId: row.customerId, kind, providerInvoiceId: invoice.id }],
         skipDuplicates: true,
@@ -272,10 +277,13 @@ export class SubscriptionsService {
 
   /**
    * Makes `customer_subscription` what the provider says now, whatever event brought us here and in
-   * whatever order. The only writer of that table. A subscription that isn't ours is ignored.
+   * whatever order. The only writer of that table. A subscription that isn't ours is ignored, and so
+   * is a read older than the one the row already holds: two syncs at once may commit in either order.
    */
   async sync(tenantId: string, providerSubscriptionId: string): Promise<void> {
     const keys = (await this.accounts.keysFor(tenantId)).keys;
+    // Taken before asking, so a read that started later is always the newer one.
+    const readAt = new Date();
     const now = await this.provider.getSubscription(keys, providerSubscriptionId);
 
     const told = await this.prisma.inTenant(tenantId, async (tx): Promise<{ customerId: string; notices: Notice[]; planChanged: boolean } | null> => {
@@ -304,6 +312,10 @@ export class SubscriptionsService {
       if (existing && existing.providerSubscriptionId !== providerSubscriptionId && holding(existing) && now.status === 'ended') {
         return null;
       }
+      // A newer read of the same subscription has committed already: this one is out of date.
+      if (existing?.providerSubscriptionId === providerSubscriptionId && existing.providerReadAt && existing.providerReadAt > readAt) {
+        return null;
+      }
       const fresh = !existing || existing.providerSubscriptionId !== providerSubscriptionId || existing.status === 'ended' || existing.status === 'incomplete';
       const before = await planOf(tx, customerId);
       const data = {
@@ -315,6 +327,7 @@ export class SubscriptionsService {
         cancelAtPeriodEnd: now.cancelAtPeriodEnd,
         scheduledPlanPriceId: scheduled?.id ?? null,
         pendingPlanPriceId: pending?.id ?? null,
+        providerReadAt: readAt,
         // Monthly allowances count from when the subscription became active from no paid plan.
         allowanceAnchor: now.status === 'active' && fresh ? now.currentPeriodStart : (existing?.allowanceAnchor ?? null),
       };

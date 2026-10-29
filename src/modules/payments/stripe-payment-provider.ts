@@ -6,7 +6,6 @@ import type {
   PaymentProvider,
   ProviderEvent,
   ProviderKeys,
-  ProviderPayment,
   ProviderSubscription,
   ProviderSubscriptionStatus,
 } from './payment-provider';
@@ -121,10 +120,7 @@ export class StripePaymentProvider implements PaymentProvider {
     return { id: session.id, url: session.url ?? '' };
   }
 
-  async getCheckout(
-    keys: ProviderKeys,
-    id: string,
-  ): Promise<ProviderPayment & { status: 'open' | 'complete' | 'expired'; subscriptionId: string | null }> {
+  async getCheckout(keys: ProviderKeys, id: string): ReturnType<PaymentProvider['getCheckout']> {
     const stripe = this.client(keys);
     let session: Stripe.Checkout.Session;
     try {
@@ -145,6 +141,7 @@ export class StripePaymentProvider implements PaymentProvider {
       fee: paid && paymentIntent ? await this.feeOf(stripe, paymentIntent, currency) : new Prisma.Decimal(0),
       paymentId: paymentIntent ?? null,
       subscriptionId: idOf(session.subscription),
+      metadata: session.metadata ?? {},
     };
   }
 
@@ -197,6 +194,16 @@ export class StripePaymentProvider implements PaymentProvider {
       },
       { idempotencyKey: input.idempotencyKey },
     );
+  }
+
+  /** Stripe discards a pending update once its open invoice is voided. */
+  async withdrawUpgrade(keys: ProviderKeys, id: string): Promise<void> {
+    const stripe = this.client(keys);
+    const subscription = await stripe.subscriptions.retrieve(id);
+    const invoiceId = idOf(subscription.latest_invoice);
+    if (!subscription.pending_update || !invoiceId) return;
+    const invoice = await stripe.invoices.retrieve(invoiceId);
+    if (invoice.status === 'open' && invoice.billing_reason === 'subscription_update') await stripe.invoices.voidInvoice(invoiceId);
   }
 
   /** A schedule of two phases: the current price to the period end, then the new one; released after. */
@@ -316,6 +323,7 @@ export class StripePaymentProvider implements PaymentProvider {
       status: paid ? 'paid' : invoice.status === 'void' ? 'void' : 'open',
       paid,
       amount: fromMinorUnits(invoice.total, invoice.currency),
+      amountPaid: fromMinorUnits(invoice.amount_paid, invoice.currency),
       fee: paid && paymentId ? await this.feeOf(stripe, paymentId, invoice.currency) : new Prisma.Decimal(0),
       paymentId,
       subscriptionId,

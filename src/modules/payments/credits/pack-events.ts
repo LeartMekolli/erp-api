@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { z } from 'zod';
 import { PrismaService } from '../../../database/prisma.service';
 import type { PaymentEvent } from '../../../generated/prisma/client';
 import { lockCustomer } from '../../customers/customers.service';
@@ -7,12 +8,14 @@ import { feeJournal, packBilledJournal, receivedJournal } from '../ledger';
 import { LedgerService } from '../ledger.service';
 import { PaymentAccountService } from '../payment-account.service';
 import { registerEventHandler } from '../payment-events.service';
-import { PAYMENT_PROVIDER } from '../payment-provider';
+import { PAYMENT_PROVIDER, ProviderNotFoundError } from '../payment-provider';
 import type { PaymentProvider } from '../payment-provider';
 import { CreditsService } from './credits.service';
 
 const OWNER = 'packs';
 const DAY_MS = 86_400_000;
+
+const isUuid = (value: string | undefined): value is string => value !== undefined && z.uuid().safeParse(value).success;
 
 /**
  * The checkout webhooks of credit packs (Payments 2 spec, goal 10). Each acts only on a checkout of
@@ -43,9 +46,9 @@ export class PackEvents implements OnModuleInit {
    * its credits granted to last `valid_days` from payment, and the sale, payment and fee journalled.
    */
   async paid(tenantId: string, event: PaymentEvent): Promise<void> {
-    const purchase = await this.purchaseOf(tenantId, event.objectId);
-    if (!purchase) return;
-    const checkout = await this.provider.getCheckout((await this.accounts.keysFor(tenantId)).keys, event.objectId);
+    const found = await this.purchaseOf(tenantId, event.objectId);
+    if (!found) return;
+    const { purchase, checkout } = found;
     if (!checkout.paid) return;
 
     const granted = await this.prisma.inTenant(tenantId, async (tx) => {
@@ -91,19 +94,44 @@ export class PackEvents implements OnModuleInit {
 
   /** A purchase's checkout that expired unpaid: the purchase is expired, and nothing is granted. */
   async expired(tenantId: string, event: PaymentEvent): Promise<void> {
-    const purchase = await this.purchaseOf(tenantId, event.objectId);
-    if (!purchase) return;
-    const checkout = await this.provider.getCheckout((await this.accounts.keysFor(tenantId)).keys, event.objectId);
-    if (checkout.status !== 'expired') return;
+    const found = await this.purchaseOf(tenantId, event.objectId);
+    if (!found || found.checkout.status !== 'expired') return;
     await this.prisma.inTenant(tenantId, (tx) =>
-      tx.creditPackPurchase.updateMany({ where: { id: purchase.id, status: 'open' }, data: { status: 'expired' } }),
+      tx.creditPackPurchase.updateMany({ where: { id: found.purchase.id, status: 'open' }, data: { status: 'expired' } }),
     );
   }
 
-  /** Our purchase for the provider's checkout; another's checkout, or an order's, is not ours. */
-  private purchaseOf(tenantId: string, providerCheckoutId: string) {
-    return this.prisma.inTenant(tenantId, (tx) =>
-      tx.creditPackPurchase.findFirst({ where: { providerCheckoutId }, select: { id: true, customerId: true } }),
-    );
+  /**
+   * Our purchase for the provider's checkout, with the checkout as the provider holds it; another's
+   * checkout, or an order's, is not ours. A purchase whose checkout id was never stored (the buy
+   * stopped after the provider made the checkout) is found by the purchase id in the checkout's
+   * metadata, while still open and without a checkout, and given this checkout's id.
+   */
+  private async purchaseOf(tenantId: string, providerCheckoutId: string) {
+    const keys = (await this.accounts.keysFor(tenantId)).keys;
+    const select = { id: true, customerId: true };
+    const stored = await this.prisma.inTenant(tenantId, (tx) => tx.creditPackPurchase.findFirst({ where: { providerCheckoutId }, select }));
+    if (stored) return { purchase: stored, checkout: await this.provider.getCheckout(keys, providerCheckoutId) };
+
+    let checkout: Awaited<ReturnType<PaymentProvider['getCheckout']>>;
+    try {
+      checkout = await this.provider.getCheckout(keys, providerCheckoutId);
+    } catch (error) {
+      // Made by someone else on the same account: not ours, and asking again won't change that.
+      if (error instanceof ProviderNotFoundError) return null;
+      throw error;
+    }
+    const purchaseId = checkout.metadata.credit_pack_purchase_id;
+    if (!isUuid(purchaseId)) return null;
+    const claimed = await this.prisma.inTenant(tenantId, async (tx) => {
+      const { count } = await tx.creditPackPurchase.updateMany({
+        where: { id: purchaseId, status: 'open', providerCheckoutId: null },
+        data: { providerCheckoutId },
+      });
+      return count > 0 ? tx.creditPackPurchase.findFirst({ where: { id: purchaseId }, select }) : null;
+    });
+    if (!claimed) return null;
+    this.logger.warn({ tenantId, purchaseId }, 'a pack purchase was given the checkout id it never stored');
+    return { purchase: claimed, checkout };
   }
 }

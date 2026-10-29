@@ -236,6 +236,48 @@ describe('payments: monthly allowances', () => {
     expect((await balance(w, thirdMonth)).total).toBe(100);
   });
 
+  it("grants a renewal's month only once it is paid (Review Focus 2)", async () => {
+    const w = await workspace();
+    const { subscriptionId } = await subscribe(w, w.pro);
+
+    // Stripe starts the new period, active, and charges it about an hour later.
+    const { invoiceId } = fake.renew(subscriptionId, 'pending');
+    await send(w, 'customer.subscription.updated', subscriptionId);
+    const inNewMonth = new Date(fake.subscription(subscriptionId).currentPeriodStart.getTime() + HOUR);
+    await runJob(w, inNewMonth);
+    await runJob(w, inNewMonth);
+
+    expect((await allowanceGrants(w)).map((grant) => grant.amount)).toEqual([100]);
+
+    fake.payInvoice(invoiceId!);
+    await send(w, 'invoice.paid', invoiceId!);
+    await send(w, 'invoice.paid', invoiceId!);
+    await runJob(w, inNewMonth);
+
+    expect((await allowanceGrants(w)).map((grant) => grant.amount)).toEqual([100, 100]);
+    expect((await balance(w, inNewMonth)).total).toBe(100);
+  });
+
+  it('grants nothing for a downgrade taking effect at a renewal not yet paid, then the new plan once paid', async () => {
+    const w = await workspace();
+    const { subscriptionId } = await subscribe(w, w.business);
+    await w.anna.post(`/portal/customers/${w.luna}/subscription/change`, { plan_id: w.pro, interval: 'month' }).expect(200);
+
+    const { invoiceId } = fake.renew(subscriptionId, 'pending');
+    await send(w, 'customer.subscription.updated', subscriptionId);
+    const inNewMonth = new Date(fake.subscription(subscriptionId).currentPeriodStart.getTime() + HOUR);
+    await runJob(w, inNewMonth);
+
+    expect((await allowanceGrants(w)).map((grant) => grant.amount)).toEqual([400]);
+
+    fake.payInvoice(invoiceId!);
+    await send(w, 'invoice.paid', invoiceId!);
+    await send(w, 'invoice.paid', invoiceId!);
+
+    expect((await allowanceGrants(w)).map((grant) => grant.amount)).toEqual([400, 100]);
+    expect((await balance(w, inNewMonth)).total).toBe(100);
+  });
+
   it("gives the plan's new number of credits from the next month on", async () => {
     const w = await workspace();
     const { subscriptionId } = await subscribe(w, w.pro);

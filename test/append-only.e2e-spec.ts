@@ -103,6 +103,15 @@ describe('append-only tables', () => {
     }
   });
 
+  it('protects the paid subscription periods, even from the owner', async () => {
+    const table = 'subscription_paid_period';
+    await expect(app.$executeRawUnsafe(`UPDATE ${table} SET id = id`)).rejects.toThrow(/permission denied/i);
+    await expect(app.$executeRawUnsafe(`DELETE FROM ${table}`)).rejects.toThrow(/permission denied/i);
+    await expect(owner.$executeRawUnsafe(`UPDATE ${table} SET id = id`)).rejects.toThrow(/append-only/i);
+    await expect(owner.$executeRawUnsafe(`DELETE FROM ${table}`)).rejects.toThrow(/append-only/i);
+    await expect(owner.$executeRawUnsafe(`TRUNCATE ${table}`)).rejects.toThrow(/append-only/i);
+  });
+
   it('can be applied twice without failing', async () => {
     await expect(
       owner.$executeRawUnsafe(`SELECT make_append_only('append_only_fixture')`),

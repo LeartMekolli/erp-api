@@ -199,6 +199,24 @@ describe('payments: credit packs', () => {
     expect(told[0].payload).toMatchObject({ credits: '100', source: 'pack' });
   });
 
+  it('grants a paid pack whose checkout id was never stored', async () => {
+    const w = await workspace();
+    const pack = ((await w.staff.post('/payments/credit-packs', PACK).expect(201)).body as { id: string }).id;
+    const checkoutId = checkoutIdOf((await buy(w, pack).expect(200)).body);
+    // As the buy stopping right after the provider made the checkout leaves it.
+    const { id: purchaseId } = await purchaseOf(w, checkoutId);
+    await prisma.inTenant(w.id, (tx) => tx.creditPackPurchase.update({ where: { id: purchaseId }, data: { providerCheckoutId: null } }));
+
+    fake.completeCheckout(checkoutId);
+    await send(w, 'checkout.session.completed', checkoutId);
+    await send(w, 'checkout.session.completed', checkoutId);
+
+    expect(await balance(w)).toMatchObject({ total: 100, by_source: { pack: 100 } });
+    expect(await purchaseOf(w, checkoutId)).toMatchObject({ id: purchaseId, status: 'paid' });
+    expect((await journals(w, checkoutId)).map((journal) => journal.kind)).toEqual(['pack_billed', 'payment_received', 'provider_fee']);
+    expect(await added(w)).toHaveLength(1);
+  });
+
   it('grants nothing for a checkout that expired, and sells no archived pack', async () => {
     const w = await workspace();
     const pack = ((await w.staff.post('/payments/credit-packs', PACK).expect(201)).body as { id: string }).id;
