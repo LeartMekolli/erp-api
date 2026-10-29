@@ -5,10 +5,11 @@ on:
     branches: [master]
   pull_request:
 
-# A newer push to the same branch makes the running check obsolete.
+# A newer push to a pull request makes the running check obsolete. On master a
+# run is never cancelled: it may be migrating staging.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -100,3 +101,37 @@ jobs:
         run: |
           node dist/cli/seed.js
           node dist/cli/seed.js
+
+  # Staging's database is migrated before Render deploys the code that needs it:
+  # Render deploys master only after every check on the commit passes, this one
+  # included (staging spec, OD4). The owner's URL lives only in the `staging`
+  # environment's secrets, never on Render (ADR 0001). Migrations are additive,
+  # so the version still running works on the migrated database until replaced.
+  migrate-staging:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: staging
+    # One at a time, never cancelled halfway.
+    concurrency:
+      group: migrate-staging
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Neon's direct host, not `-pooler`: migrate takes an advisory lock, which
+      # the pooler doesn't support.
+      - name: Migrate staging
+        env:
+          DATABASE_MIGRATE_URL: ${{ secrets.STAGING_DATABASE_MIGRATE_URL }}
+        run: |
+          test -n "$DATABASE_MIGRATE_URL" || { echo 'STAGING_DATABASE_MIGRATE_URL is not set in the staging environment'; exit 1; }
+          npx prisma migrate deploy
