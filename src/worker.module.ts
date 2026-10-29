@@ -12,6 +12,7 @@ import { IdempotencyModule } from './modules/idempotency/idempotency.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { ReportsModule } from './modules/reporting/reporting.module';
 import { RedisModule } from './redis/redis.module';
 import { StorageModule } from './storage/storage.module';
 
@@ -36,6 +37,7 @@ import { StorageModule } from './storage/storage.module';
     PartnersModule,
     PaymentsModule,
     AiModule,
+    ReportsModule,
   ],
 })
 export class WorkerModule {}

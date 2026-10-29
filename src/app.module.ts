@@ -22,6 +22,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { PartnersModule } from './modules/partners/partners.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { PricingModule } from './modules/pricing/pricing.module';
+import { ReportsModule } from './modules/reporting/reporting.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { UsersModule } from './modules/users/users.module';
@@ -58,6 +59,7 @@ import { StorageModule } from './storage/storage.module';
     OrdersModule,
     PaymentsModule,
     AiModule,
+    ReportsModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [

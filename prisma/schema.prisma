@@ -114,6 +114,7 @@ model Tenant {
   aiRuns                AiRun[]
   aiRunResults          AiRunResult[]
   aiLimitNotices        AiLimitNotice[]
+  reportWeeks           ReportWeek[]
 
   @@map("tenant")
 }
@@ -2575,4 +2576,24 @@ model AiLimitNotice {
 
   @@unique([tenantId, month, level])
   @@map("ai_limit_notice")
+}
+
+// ---------------------------------------------------------------------------
+// Reporting (AI 1 spec, goal 4). Read models: rewritten by the `reports.refresh`
+// job, never by a client (D63).
+// ---------------------------------------------------------------------------
+
+// One ISO week's dashboard numbers, from its Monday in the workspace's time zone.
+model ReportWeek {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  weekStart  DateTime @map("week_start") @db.Date
+  // Validated by weekMetricsSchema (src/modules/reporting/week-metrics.ts) on write and on read.
+  data       Json
+  computedAt DateTime @map("computed_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, weekStart])
+  @@map("report_week")
 }
