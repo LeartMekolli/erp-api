@@ -141,6 +141,16 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
   });
 
+  it('defaults VECTOR_STORE to fake, and needs a Pinecone key and index for pinecone', () => {
+    expect(loadEnv({ ...valid }).VECTOR_STORE).toBe('fake');
+    expect(() => loadEnv({ ...valid, VECTOR_STORE: 'pinecone' })).toThrow(/PINECONE_API_KEY[\s\S]*PINECONE_INDEX/);
+    expect(loadEnv({ ...valid, VECTOR_STORE: 'pinecone', PINECONE_API_KEY: 'pk', PINECONE_INDEX: 'knowledge' })).toMatchObject({
+      VECTOR_STORE: 'pinecone',
+      PINECONE_INDEX: 'knowledge',
+    });
+    expect(() => loadEnv({ ...valid, VECTOR_STORE: 'other' })).toThrow(/VECTOR_STORE/);
+  });
+
   it('defaults API_DOCS to false and reads true', () => {
     expect(loadEnv({ ...valid }).API_DOCS).toBe(false);
     expect(loadEnv({ ...valid, API_DOCS: 'true' }).API_DOCS).toBe(true);

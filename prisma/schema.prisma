@@ -115,6 +115,8 @@ model Tenant {
   aiRunResults          AiRunResult[]
   aiLimitNotices        AiLimitNotice[]
   reportWeeks           ReportWeek[]
+  knowledgeArticles     KnowledgeArticle[]
+  knowledgeAttachments  KnowledgeAttachment[]
 
   @@map("tenant")
 }
@@ -170,6 +172,7 @@ model User {
   creditPackPurchases CreditPackPurchase[]
   creditCampaigns     CreditCampaign[]
   aiRuns              AiRun[]
+  knowledgeArticles   KnowledgeArticle[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -502,6 +505,7 @@ model File {
   tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy User          @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
   versions  FileVersion[]
+  knowledgeAttachments KnowledgeAttachment[]
 
   @@unique([tenantId, id])
   @@index([tenantId, ownerType, ownerId])
@@ -2596,4 +2600,51 @@ model ReportWeek {
 
   @@unique([tenantId, weekStart])
   @@map("report_week")
+}
+
+// ---------------------------------------------------------------------------
+// The knowledge base (AI 1 spec, goal 14). Postgres is the source of truth; the
+// vector store's passages are derived from published articles and rebuilt by
+// `npm run knowledge:reindex`.
+// ---------------------------------------------------------------------------
+
+// An article staff write in the ERP: how things are done.
+model KnowledgeArticle {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  title           String
+  // Markdown.
+  body            String
+  tags            String[]
+  // draft | published | archived
+  status          String   @default("draft")
+  createdByUserId String   @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   User                  @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  attachments KnowledgeAttachment[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("knowledge_article")
+}
+
+// A PDF or plain text file attached to an article; its text is indexed with the article.
+model KnowledgeAttachment {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  articleId String   @map("article_id") @db.Uuid
+  fileId    String   @map("file_id") @db.Uuid
+  // From 0, in the order given.
+  position  Int
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  article KnowledgeArticle @relation(fields: [tenantId, articleId], references: [tenantId, id], onDelete: Cascade)
+  file    File             @relation(fields: [tenantId, fileId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, articleId, fileId])
+  @@index([tenantId, fileId])
+  @@map("knowledge_attachment")
 }

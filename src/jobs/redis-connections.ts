@@ -1,10 +1,9 @@
 import type { ConnectionOptions } from 'bullmq';
+import Redis from 'ioredis';
+import type { RedisOptions } from 'ioredis';
 import { ConfigService } from '../config/config.service';
 
-/**
- * BullMQ is handed plain options, not an ioredis instance: it creates and owns
- * its connections, which avoids a type clash between ioredis versions.
- */
+/** Plain options for a URL; the shared clients below are built from them. */
 function fromUrl(url: string): ConnectionOptions {
   const parsed = new URL(url);
   const db = parsed.pathname.replace(/^\//, '');
@@ -36,4 +35,24 @@ export function createProducerConnection(config: ConfigService): ConnectionOptio
  */
 export function createWorkerConnection(config: ConfigService): ConnectionOptions {
   return { ...fromUrl(config.get('REDIS_URL')), maxRetriesPerRequest: null };
+}
+
+/**
+ * One client shared by every queue of a process, and one by every worker. Hosted Redis plans count
+ * connections and a deploy runs two processes side by side, so a connection per queue adds up; only
+ * each worker's blocking connection, which BullMQ opens itself, is per queue. BullMQ never closes a
+ * client it was given: the owner quits it after the queues or workers have closed.
+ */
+export function createSharedClient(config: ConfigService, role: 'producer' | 'worker'): Redis {
+  const options = role === 'producer' ? createProducerConnection(config) : createWorkerConnection(config);
+  return new Redis({ ...(options as RedisOptions), connectionName: `${config.get('QUEUE_PREFIX')}:jobs:${role}` });
+}
+
+/** Quits a shared client, or drops its socket when it never connected. */
+export async function closeSharedClient(client: Redis): Promise<void> {
+  try {
+    await client.quit();
+  } catch {
+    client.disconnect();
+  }
 }

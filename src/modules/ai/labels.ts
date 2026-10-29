@@ -12,7 +12,7 @@ const SEEN_WITH: Record<RecordRef['type'], TenantPermission | null> = {
   invoice: 'payment.read',
   job: 'partner.read',
   step: 'workflow.read',
-  // Published articles are read by every staff member (Task 6 labels them).
+  // Published articles are read by every staff member.
   article: null,
 };
 
@@ -51,6 +51,12 @@ export async function labelled(tx: Tx, permissions: ReadonlySet<TenantPermission
   for (const row of await tx.stepType.findMany({ where: { id: { in: ids('step') } }, select: { id: true, name: true } })) {
     put('step', row.id, row.name);
   }
+  // A draft or archived article only for those who write them, as on the knowledge screens.
+  const articles = await tx.knowledgeArticle.findMany({
+    where: { id: { in: ids('article') }, ...(permissions.has('knowledge.write') ? {} : { status: 'published' }) },
+    select: { id: true, title: true },
+  });
+  for (const row of articles) put('article', row.id, row.title);
 
   return visible.flatMap((ref) => {
     const label = labels.get(`${ref.type}:${ref.id}`);

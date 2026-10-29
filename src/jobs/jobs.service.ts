@@ -1,7 +1,8 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Queue } from 'bullmq';
+import type Redis from 'ioredis';
 import { ConfigService } from '../config/config.service';
-import { createProducerConnection } from './redis-connections';
+import { closeSharedClient, createSharedClient } from './redis-connections';
 import {
   buildJobId,
   FAILED_JOB_RETENTION_SECONDS,
@@ -16,12 +17,16 @@ import type { JobRegistry } from './registry';
 @Injectable()
 export class JobsService implements OnModuleDestroy {
   private readonly queues: Record<QueueName, Queue>;
+  private readonly connection: Redis;
 
   constructor(
     config: ConfigService,
     @Inject(JOB_REGISTRY) private readonly registry: JobRegistry,
   ) {
-    const connection = createProducerConnection(config);
+    const connection = createSharedClient(config, 'producer');
+    // Without a listener, a connection error is an unhandled 'error' event; each queue reports its own.
+    connection.on('error', () => undefined);
+    this.connection = connection;
     const prefix = config.get('QUEUE_PREFIX');
     this.queues = Object.fromEntries(
       QUEUES.map((name) => {
@@ -77,7 +82,8 @@ export class JobsService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    // Each queue owns its connection and closes it.
+    // The queues share one connection, which they never close themselves.
     await Promise.all(Object.values(this.queues).map((queue) => queue.close()));
+    await closeSharedClient(this.connection);
   }
 }

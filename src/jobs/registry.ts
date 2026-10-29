@@ -107,6 +107,13 @@ export const JOBS = {
     jobId: (p) => [p.runId],
     attempts: 3,
   }),
+  // Puts one article's passages in the vector store as it reads now: published, or removed (AI 1 spec).
+  // `version` is the article's updated_at, so each edit indexes once.
+  'knowledge.index': defineJob({
+    queue: 'ai',
+    payload: z.object({ tenantId: z.uuid(), articleId: z.uuid(), version: z.string().regex(/^\d+$/) }),
+    jobId: (p) => [p.articleId, p.version],
+  }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 
 export const SCHEDULED_JOBS = {

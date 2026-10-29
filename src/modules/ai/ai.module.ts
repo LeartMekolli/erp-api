@@ -10,11 +10,15 @@ import type { AiProvider } from './ai-provider';
 import { AskService } from './ask.service';
 import { ClaudeAiProvider } from './claude-ai-provider';
 import { FakeAiProvider } from './fake-ai-provider';
+import { KnowledgeModule } from './knowledge/knowledge.module';
+import { VECTOR_STORE } from './knowledge/vector-store';
+import type { VectorStore } from './knowledge/vector-store';
 import { RunHandler } from './run.handler';
 import { RunsController } from './runs.controller';
 import { RunsService } from './runs.service';
 import { customerTools } from './tools/customers.tool';
 import { invoiceTools } from './tools/invoices.tool';
+import { knowledgeTools } from './tools/knowledge.tool';
 import { orderTools } from './tools/orders.tool';
 import { partnerTools } from './tools/partners.tool';
 import { reportTools } from './tools/reports.tool';
@@ -23,7 +27,7 @@ import type { AiTool } from './tools/tool';
 
 /** The staff AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing (AI spec). */
 @Module({
-  imports: [NotificationsModule, ReportsModule],
+  imports: [NotificationsModule, ReportsModule, KnowledgeModule],
   controllers: [RunsController],
   providers: [
     RunsService,
@@ -46,16 +50,17 @@ import type { AiTool } from './tools/tool';
     {
       // Read-only, each running as the asking user; offered only to someone holding its permissions.
       provide: AI_TOOLS,
-      inject: [PrismaService, ReportsService, AttentionService],
-      useFactory: (prisma: PrismaService, reports: ReportsService, attention: AttentionService): AiTool<unknown>[] => [
+      inject: [PrismaService, ReportsService, AttentionService, VECTOR_STORE],
+      useFactory: (prisma: PrismaService, reports: ReportsService, attention: AttentionService, store: VectorStore): AiTool<unknown>[] => [
         ...orderTools(prisma),
         ...customerTools(prisma),
         ...partnerTools(prisma),
         ...invoiceTools(prisma),
         ...reportTools(reports, attention),
+        ...knowledgeTools(prisma, store),
       ],
     },
   ],
-  exports: [AI_PROVIDER, RunsService, AI_TOOLS],
+  exports: [AI_PROVIDER, RunsService, AI_TOOLS, KnowledgeModule],
 })
 export class AiModule {}

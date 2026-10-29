@@ -120,6 +120,11 @@ const envSchema = z
       .refine((model) => Object.hasOwn(AI_MODELS, model), {
         message: `must be one of ${Object.keys(AI_MODELS).join(', ')}`,
       }),
+    // Where knowledge passages are searched. `fake` is in memory; no test calls Pinecone.
+    VECTOR_STORE: z.enum(['fake', 'pinecone']).default('fake'),
+    // Both required with pinecone; the index embeds the field `text` (integrated embedding). The key is never logged.
+    PINECONE_API_KEY: z.string().min(1).optional(),
+    PINECONE_INDEX: z.string().min(1).optional(),
   })
   .superRefine((env, ctx) => {
     // The demo's Stripe keys are all given, or none.
@@ -156,6 +161,11 @@ const envSchema = z
         path: ['ANTHROPIC_API_KEY'],
         message: 'required when AI_PROVIDER is claude',
       });
+    }
+    if (env.VECTOR_STORE === 'pinecone') {
+      for (const key of ['PINECONE_API_KEY', 'PINECONE_INDEX'] as const) {
+        if (!env[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when VECTOR_STORE is pinecone' });
+      }
     }
   });
 

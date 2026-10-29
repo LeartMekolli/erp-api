@@ -74,6 +74,7 @@ describe('ConfigService', () => {
       PAYMENT_PROVIDER: 'fake',
       AI_PROVIDER: 'fake',
       AI_MODEL: 'claude-haiku-4-5',
+      VECTOR_STORE: 'fake',
       SENTRY_DSN: undefined,
       SENTRY_ENVIRONMENT: undefined,
     });

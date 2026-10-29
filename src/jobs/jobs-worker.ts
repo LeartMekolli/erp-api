@@ -1,6 +1,7 @@
 import { Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { DiscoveryService, Reflector } from '@nestjs/core';
 import { Job, UnrecoverableError, Worker } from 'bullmq';
+import type Redis from 'ioredis';
 import type { Logger } from 'pino';
 import { LOGGER } from '../common/logging/logger';
 import { requestContext } from '../common/request-context/request-context';
@@ -10,7 +11,7 @@ import { ConfigService } from '../config/config.service';
 import { HANDLES_JOB, JobContext, JobHandler } from './handles-job';
 import { JobsService } from './jobs.service';
 import { RedisLock } from './redis-lock';
-import { createWorkerConnection } from './redis-connections';
+import { closeSharedClient, createSharedClient } from './redis-connections';
 import { JOB_REGISTRY } from './registry';
 import { upsertSchedulers } from './schedulers';
 import type { JobRegistry } from './registry';
@@ -32,6 +33,8 @@ function tenantOf(payload: unknown): string | undefined {
 export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly workers: Worker[] = [];
   private handlers = new Map<string, JobHandler<unknown>>();
+  /** Shared by every worker; each opens its own blocking connection besides. */
+  private connection: Redis | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -47,7 +50,9 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
   async onApplicationBootstrap(): Promise<void> {
     this.handlers = this.discoverHandlers();
 
-    const connection = createWorkerConnection(this.config);
+    const connection = createSharedClient(this.config, 'worker');
+    connection.on('error', (error) => this.logger.error({ err: error }, 'worker connection error'));
+    this.connection = connection;
     const prefix = this.config.get('QUEUE_PREFIX');
     const queues = new Set(
       [...Object.values(this.registry.jobs), ...Object.values(this.registry.scheduled)].map(
@@ -77,6 +82,8 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
    */
   async onModuleDestroy(): Promise<void> {
     await Promise.all(this.workers.map((worker) => worker.close()));
+    // The workers never close the connection they were given.
+    if (this.connection) await closeSharedClient(this.connection);
   }
 
   /** Every registry job has exactly one handler, and every handler a job; anything else refuses boot. */
