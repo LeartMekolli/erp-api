@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AI_MODELS } from '../modules/ai/ai-models';
 
 function splitOrigins(value: string): string[] {
   return value
@@ -108,6 +109,17 @@ const envSchema = z
     DEMO_STRIPE_PUBLISHABLE_KEY: z.string().startsWith('pk_test_').optional(),
     DEMO_STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
     DEMO_STRIPE_CONNECT_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
+    // The staff AI's model (AI spec). `fake` answers what a test scripted; no test calls Anthropic.
+    AI_PROVIDER: z.enum(['fake', 'claude']).default('fake'),
+    // Required with claude. Never logged.
+    ANTHROPIC_API_KEY: z.string().min(1).optional(),
+    // One of the models priced in AI_MODELS.
+    AI_MODEL: z
+      .string()
+      .default('claude-haiku-4-5')
+      .refine((model) => Object.hasOwn(AI_MODELS, model), {
+        message: `must be one of ${Object.keys(AI_MODELS).join(', ')}`,
+      }),
   })
   .superRefine((env, ctx) => {
     // The demo's Stripe keys are all given, or none.
@@ -136,6 +148,13 @@ const envSchema = z
         code: 'custom',
         path: ['METAL_PRICE_API_KEY'],
         message: 'required when METAL_PRICE_PROVIDER is metalsdev',
+      });
+    }
+    if (env.AI_PROVIDER === 'claude' && !env.ANTHROPIC_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ANTHROPIC_API_KEY'],
+        message: 'required when AI_PROVIDER is claude',
       });
     }
   });

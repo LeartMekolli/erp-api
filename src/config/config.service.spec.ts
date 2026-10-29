@@ -72,6 +72,8 @@ describe('ConfigService', () => {
       METAL_PRICE_MAX_CURRENCIES: 3,
       METAL_PRICE_STALE_HOURS: 48,
       PAYMENT_PROVIDER: 'fake',
+      AI_PROVIDER: 'fake',
+      AI_MODEL: 'claude-haiku-4-5',
       SENTRY_DSN: undefined,
       SENTRY_ENVIRONMENT: undefined,
     });

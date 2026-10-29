@@ -116,6 +116,31 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, PAYMENT_PROVIDER: 'other' })).toThrow(/PAYMENT_PROVIDER/);
   });
 
+  it('defaults AI_PROVIDER to fake and AI_MODEL to Haiku 4.5, with no Anthropic key', () => {
+    expect(loadEnv({ ...valid })).toMatchObject({ AI_PROVIDER: 'fake', AI_MODEL: 'claude-haiku-4-5' });
+    expect(loadEnv({ ...valid }).ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('requires ANTHROPIC_API_KEY for the claude provider', () => {
+    expect(() => loadEnv({ ...valid, AI_PROVIDER: 'claude' })).toThrow(
+      /ANTHROPIC_API_KEY: required when AI_PROVIDER is claude/,
+    );
+    expect(loadEnv({ ...valid, AI_PROVIDER: 'claude', ANTHROPIC_API_KEY: 'sk-ant-test' }).ANTHROPIC_API_KEY).toBe(
+      'sk-ant-test',
+    );
+  });
+
+  it('accepts an AI_MODEL from the model table', () => {
+    expect(loadEnv({ ...valid, AI_MODEL: 'claude-sonnet-5-5' }).AI_MODEL).toBe('claude-sonnet-5-5');
+  });
+
+  it.each([
+    ['AI_PROVIDER', 'other'],
+    ['AI_MODEL', 'some-other-model'],
+  ])('rejects %s=%s', (name, value) => {
+    expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
+  });
+
   it('defaults API_DOCS to false and reads true', () => {
     expect(loadEnv({ ...valid }).API_DOCS).toBe(false);
     expect(loadEnv({ ...valid, API_DOCS: 'true' }).API_DOCS).toBe(true);

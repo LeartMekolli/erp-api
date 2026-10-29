@@ -8,6 +8,7 @@ import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { JobsWorkerModule } from './jobs/jobs-worker.module';
 import { JobsModule } from './jobs/jobs.module';
+import { AiModule } from './modules/ai/ai.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CustomersModule } from './modules/customers/customers.module';
@@ -56,6 +57,7 @@ import { StorageModule } from './storage/storage.module';
     PartnersModule,
     OrdersModule,
     PaymentsModule,
+    AiModule,
   ],
   // Order matters: the first is outermost, so replayed responses are stripped too.
   providers: [
