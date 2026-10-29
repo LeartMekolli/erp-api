@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-export const QUEUES = ['notifications', 'maintenance', 'files', 'payments'] as const;
+export const QUEUES = ['notifications', 'maintenance', 'files', 'payments', 'ai'] as const;
 export type QueueName = (typeof QUEUES)[number];
 
 const DEFAULT_ATTEMPTS = 5;
@@ -99,6 +99,13 @@ export const JOBS = {
     queue: 'payments',
     payload: z.object({ tenantId: z.uuid(), payoutId: z.uuid() }),
     jobId: (p) => [p.payoutId],
+  }),
+  // Runs one AI call and writes its result; after the last attempt, a failed result (AI 1 spec).
+  'ai.run': defineJob({
+    queue: 'ai',
+    payload: z.object({ tenantId: z.uuid(), runId: z.uuid() }),
+    jobId: (p) => [p.runId],
+    attempts: 3,
   }),
 } satisfies Record<string, JobDefinition<z.ZodType>>;
 

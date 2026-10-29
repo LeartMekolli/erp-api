@@ -1,13 +1,19 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AI_PROVIDER } from './ai-provider';
 import type { AiProvider } from './ai-provider';
 import { ClaudeAiProvider } from './claude-ai-provider';
 import { FakeAiProvider } from './fake-ai-provider';
+import { RunHandler } from './run.handler';
+import { RunsService } from './runs.service';
 
 /** The staff AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing (AI spec). */
 @Module({
+  imports: [NotificationsModule],
   providers: [
+    RunsService,
+    RunHandler,
     {
       provide: AI_PROVIDER,
       inject: [ConfigService],
@@ -23,6 +29,6 @@ import { FakeAiProvider } from './fake-ai-provider';
       },
     },
   ],
-  exports: [AI_PROVIDER],
+  exports: [AI_PROVIDER, RunsService],
 })
 export class AiModule {}

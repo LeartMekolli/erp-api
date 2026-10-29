@@ -112,6 +112,16 @@ describe('append-only tables', () => {
     await expect(owner.$executeRawUnsafe(`TRUNCATE ${table}`)).rejects.toThrow(/append-only/i);
   });
 
+  it('protects the AI run log, even from the owner', async () => {
+    for (const [table, column] of [['ai_run', 'created_at'], ['ai_run_result', 'finished_at']]) {
+      await expect(app.$executeRawUnsafe(`UPDATE ${table} SET ${column} = ${column}`)).rejects.toThrow(/permission denied/i);
+      await expect(app.$executeRawUnsafe(`DELETE FROM ${table}`)).rejects.toThrow(/permission denied/i);
+      await expect(owner.$executeRawUnsafe(`UPDATE ${table} SET ${column} = ${column}`)).rejects.toThrow(/append-only/i);
+      await expect(owner.$executeRawUnsafe(`DELETE FROM ${table}`)).rejects.toThrow(/append-only/i);
+      await expect(owner.$executeRawUnsafe(`TRUNCATE ${table}`)).rejects.toThrow(/append-only|referenced in a foreign key/i);
+    }
+  });
+
   it('can be applied twice without failing', async () => {
     await expect(
       owner.$executeRawUnsafe(`SELECT make_append_only('append_only_fixture')`),

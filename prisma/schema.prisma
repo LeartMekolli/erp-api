@@ -24,6 +24,9 @@ model Tenant {
   // The workspace's customer site, such as https://shop.example: customer emails link there and
   // it may call the API (Customers spec, goal 13). Platform-level, so CORS can read it per request.
   customerSiteOrigin String? @map("customer_site_origin")
+  // What the workspace's staff AI may cost per UTC month, in USD, set by a platform admin (AI spec).
+  // Null: no AI.
+  aiMonthlyLimitUsd Decimal? @map("ai_monthly_limit_usd") @db.Decimal(12, 2)
   createdAt       DateTime @default(now()) @map("created_at")
 
   settings        TenantSetting[]
@@ -108,6 +111,9 @@ model Tenant {
   creditPackPurchases   CreditPackPurchase[]
   creditCampaigns       CreditCampaign[]
   creditCampaignTargets CreditCampaignTarget[]
+  aiRuns                AiRun[]
+  aiRunResults          AiRunResult[]
+  aiLimitNotices        AiLimitNotice[]
 
   @@map("tenant")
 }
@@ -162,6 +168,7 @@ model User {
   creditGrants   CreditGrant[]
   creditPackPurchases CreditPackPurchase[]
   creditCampaigns     CreditCampaign[]
+  aiRuns              AiRun[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -2500,4 +2507,72 @@ model CreditEntry {
   @@index([tenantId, grantId])
   @@index([tenantId, spendId])
   @@map("credit_entry")
+}
+
+// ---------------------------------------------------------------------------
+// AI (AI 1 spec). The run log is insert only (ADR 0003): a run is its request,
+// and its result is a second row once the job has finished. A run without a
+// result is pending.
+// ---------------------------------------------------------------------------
+
+// One AI call, queued as the `ai.run` job. `input` is what the job needs to run it; never content
+// the asking user could not see.
+model AiRun {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // Null for the scheduled briefing.
+  userId    String?  @map("user_id") @db.Uuid
+  // ask | briefing
+  kind      String
+  model     String
+  input     Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?        @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: NoAction)
+  result AiRunResult?
+
+  @@unique([tenantId, id])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, userId, createdAt])
+  @@map("ai_run")
+}
+
+// How a run ended, what it cost and the ids of the records its tools returned (never their content).
+model AiRunResult {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  runId        String   @unique @map("run_id") @db.Uuid
+  // done | failed
+  status       String
+  inputTokens  Int      @map("input_tokens")
+  outputTokens Int      @map("output_tokens")
+  costUsd      Decimal  @map("cost_usd") @db.Decimal(12, 6)
+  output       Json?
+  // RecordRef[]: { type, id }
+  refs         Json
+  error        String?
+  finishedAt   DateTime @default(now()) @map("finished_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run    AiRun  @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, runId])
+  @@index([tenantId, finishedAt])
+  @@map("ai_run_result")
+}
+
+// A notice that the month's AI spend reached 80 % or 100 % of the limit: once per level and month.
+model AiLimitNotice {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // YYYY-MM, UTC
+  month     String   @db.Char(7)
+  level     Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, month, level])
+  @@map("ai_limit_notice")
 }

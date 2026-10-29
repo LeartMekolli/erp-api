@@ -430,6 +430,37 @@ export const EVENTS = {
       },
     },
   },
+  // The workspace's AI spend this UTC month reached 80 % of its limit, then all of it (AI 1 spec).
+  'ai.limit_nearly_used': {
+    audience: { kind: 'permission', permission: 'settings.write' },
+    channels: ['email', 'feed'],
+    subjectType: 'tenant',
+    variables: {
+      limit: { sample: '20.00' },
+      spent: { sample: '16.40' },
+    },
+    defaults: {
+      en: {
+        subject: "80 % of this month's AI limit is used",
+        body: 'Staff AI has cost {{ spent }} USD this month, of a limit of {{ limit }} USD. Once it is used, asking the AI and the briefing stop until next month.',
+      },
+    },
+  },
+  'ai.limit_used': {
+    audience: { kind: 'permission', permission: 'settings.write' },
+    channels: ['email', 'feed'],
+    subjectType: 'tenant',
+    variables: {
+      limit: { sample: '20.00' },
+      spent: { sample: '20.10' },
+    },
+    defaults: {
+      en: {
+        subject: "This month's AI limit is used",
+        body: 'Staff AI has cost {{ spent }} USD this month, reaching its limit of {{ limit }} USD. Asking the AI and the briefing stop until next month, or until a platform admin raises the limit.',
+      },
+    },
+  },
   'credits.added': {
     audience: { kind: 'customer' },
     channels: ['email', 'feed'],

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { pageSchema, paginationQuerySchema } from '../common/pagination/page';
 import type { Page } from '../common/pagination/page';
@@ -16,6 +16,14 @@ const listSchema = paginationQuerySchema.extend({
 });
 
 const idSchema = z.uuid();
+
+const aiLimitSchema = z.strictObject({
+  // USD, at most 2 decimal places; null removes the limit, and with it the workspace's AI.
+  monthly_usd: z
+    .string()
+    .regex(/^\d{1,10}(\.\d{1,2})?$/, 'must be an amount in USD, such as 20.00')
+    .nullable(),
+});
 
 @Controller('platform/tenants')
 export class PlatformTenantsController {
@@ -63,5 +71,24 @@ export class PlatformTenantsController {
     @CurrentPlatformAdmin() admin: PlatformAuth,
   ): Promise<void> {
     await this.tenants.suspend(id, { type: 'platform_admin', id: admin.platformAdminId });
+  }
+
+  @ApiDoc({
+    summary: "Set or remove a tenant's monthly AI limit in USD.",
+    description:
+      'A tenant without a limit has no AI. Runs are refused once the UTC month\'s spend reaches the limit; ' +
+      "answers the tenant view with the month's spend.",
+    body: aiLimitSchema,
+    response: tenantResponseSchema,
+    errors: [400, 401, 403, 404],
+  })
+  @RequirePermission('platform.tenant.ai')
+  @Put(':id/ai-limit')
+  setAiLimit(
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @Body(new ZodValidationPipe(aiLimitSchema)) body: z.infer<typeof aiLimitSchema>,
+    @CurrentPlatformAdmin() admin: PlatformAuth,
+  ): Promise<TenantResponse> {
+    return this.tenants.setAiLimit(id, body.monthly_usd, { type: 'platform_admin', id: admin.platformAdminId });
   }
 }

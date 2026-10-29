@@ -125,7 +125,7 @@ describe('platform jobs', () => {
     const response = await get('queues').expect(200);
     const queues = (response.body as { data: { queue: string; failed: number }[] }).data;
 
-    expect(queues.map((entry) => entry.queue).sort()).toEqual(['files', 'maintenance', 'notifications', 'payments']);
+    expect(queues.map((entry) => entry.queue).sort()).toEqual(['ai', 'files', 'maintenance', 'notifications', 'payments']);
     expect(queues.find((entry) => entry.queue === 'maintenance')).toEqual({
       queue: 'maintenance',
       waiting: expect.any(Number),

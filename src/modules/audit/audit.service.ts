@@ -6,6 +6,7 @@ import type { Prisma } from '../../generated/prisma/client';
 export type AuditAction =
   | 'tenant.created'
   | 'tenant.suspended'
+  | 'tenant.ai_limit_set'
   | 'role.created'
   | 'role.permissions_changed'
   | 'role.deleted'

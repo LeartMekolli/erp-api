@@ -4,8 +4,10 @@ import { validateTemplate } from './render';
 const events = Object.keys(EVENTS) as EventKey[];
 
 describe('notification catalogue', () => {
-  it('declares the events of the foundation, the catalog, customers, partners, orders and payments', () => {
+  it('declares the events of the foundation, the catalog, customers, partners, orders, payments and the AI', () => {
     expect(events.sort()).toEqual([
+      'ai.limit_nearly_used',
+      'ai.limit_used',
       'auth.password_reset_requested',
       'campaign.budget_used',
       'credits.added',
@@ -105,6 +107,17 @@ describe('notification catalogue', () => {
     expect(EVENTS['campaign.budget_used'].audience).toEqual({ kind: 'permission', permission: 'plan.write' });
     expect(EVENTS['campaign.budget_used'].subjectType).toBe('credit_campaign');
     expect(Object.keys(variablesOf('campaign.budget_used')).sort()).toEqual(['budget', 'campaign']);
+  });
+
+  it("tells staff who manage settings when the workspace's AI limit is nearly or fully used", () => {
+    for (const event of ['ai.limit_nearly_used', 'ai.limit_used'] as const) {
+      expect([event, EVENTS[event].audience, EVENTS[event].subjectType]).toEqual([
+        event,
+        { kind: 'permission', permission: 'settings.write' },
+        'tenant',
+      ]);
+      expect([event, Object.keys(variablesOf(event)).sort()]).toEqual([event, ['limit', 'spent']]);
+    }
   });
 
   it.each(events)('%s: every sample is non-empty', (event) => {

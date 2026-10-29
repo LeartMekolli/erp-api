@@ -54,6 +54,12 @@ export const TENANT_PERMISSIONS = [
   'plan.write',
   // Sensitive: gives a customer credits by hand, with a reason, audited.
   'credit.grant',
+  // The staff dashboard's numbers and attention list (AI 1 spec).
+  'report.read',
+  // Asking the AI and refreshing the briefing, paid by the workspace within its monthly limit.
+  'ai.use',
+  // Writing, publishing and archiving knowledge base articles.
+  'knowledge.write',
 ] as const;
 
 /** Held only by platform admins, through platform-scoped tokens (ADR 0001). */
@@ -64,6 +70,8 @@ export const PLATFORM_PERMISSIONS = [
   'platform.jobs.read',
   'platform.jobs.retry',
   'platform.diagnostics',
+  // Sets a workspace's monthly AI limit (AI 1 spec).
+  'platform.tenant.ai',
 ] as const;
 
 export type TenantPermission = (typeof TENANT_PERMISSIONS)[number];
