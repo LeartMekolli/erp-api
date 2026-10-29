@@ -1,0 +1,159 @@
+import { z } from 'zod';
+import type { TenantPermission } from '../identity/permissions';
+import { MAX_TOOL_ROUNDS, runTools } from './ask';
+import { FakeAiProvider, fakeText, fakeToolUse } from './fake-ai-provider';
+import type { AiTool, RecordRef, ToolContext } from './tools/tool';
+
+const ORDER = '01900000-0000-7000-8000-000000000001';
+const OTHER_ORDER = '01900000-0000-7000-8000-000000000002';
+const JOB = '01900000-0000-7000-8000-000000000003';
+const PARTNER = '01900000-0000-7000-8000-000000000004';
+
+const ctx: ToolContext = {
+  tenantId: '01900000-0000-7000-8000-0000000000aa',
+  permissions: new Set<TenantPermission>(['order.read']),
+  userId: null,
+};
+
+/** Returns the order and the waiting job; records what it was asked. */
+function stubTools() {
+  const asked: unknown[] = [];
+  const findOrders: AiTool<{ late?: boolean }> = {
+    name: 'find_orders',
+    description: 'Find orders.',
+    permissions: ['order.read'],
+    input: z.strictObject({ late: z.boolean().optional() }),
+    run: (_ctx, input) => {
+      asked.push(input);
+      const refs: RecordRef[] = [
+        { type: 'order', id: ORDER },
+        { type: 'job', id: JOB },
+      ];
+      return Promise.resolve({ data: [{ id: ORDER, number: 1042, late: true, job_id: JOB }], refs });
+    },
+  };
+  const getPartner: AiTool<{ id: string }> = {
+    name: 'get_partner',
+    description: 'One partner.',
+    permissions: ['partner.read'],
+    input: z.strictObject({ id: z.uuid() }),
+    run: () => Promise.resolve({ data: null, refs: [] }),
+  };
+  return { asked, tools: [findOrders, getPartner] as AiTool<unknown>[] };
+}
+
+const answer = (input: object) => fakeToolUse('answer', { text: 'Order 1042 is late.', refs: [], action: null, ...input });
+
+async function ask(provider: FakeAiProvider, tools: AiTool<unknown>[]) {
+  return runTools(provider, { model: 'claude-haiku-4-5', system: 'Answer from tool results.', question: 'Which orders are late?', tools, ctx });
+}
+
+describe('runTools', () => {
+  it('runs the tools the model calls, then returns its answer with the usage of every turn summed', async () => {
+    const provider = new FakeAiProvider();
+    const { asked, tools } = stubTools();
+    provider.script(fakeToolUse('find_orders', { late: true }, 'call_1'), answer({ refs: [{ type: 'order', id: ORDER }] }));
+
+    const outcome = await ask(provider, tools);
+
+    expect(asked).toEqual([{ late: true }]);
+    expect(outcome).toMatchObject({
+      status: 'done',
+      usage: { inputTokens: 200, outputTokens: 100 },
+      output: { text: 'Order 1042 is late.', refs: [{ type: 'order', id: ORDER }], action: null },
+      error: null,
+    });
+    expect(outcome.refs).toEqual([
+      { type: 'order', id: ORDER },
+      { type: 'job', id: JOB },
+    ]);
+    // The second turn carries the tool's result back, and every turn offers the tools and `answer`.
+    const second = provider.calls[1];
+    expect(second.messages.at(-1)).toEqual({
+      role: 'user',
+      content: [{ type: 'tool_result', toolUseId: 'call_1', content: expect.stringContaining('1042') }],
+    });
+    expect(second.tools.map((tool) => tool.name)).toEqual(['find_orders', 'get_partner', 'answer']);
+  });
+
+  it('drops a cited record the tools never returned (Review Focus 3)', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(
+      fakeToolUse('find_orders', {}),
+      answer({ refs: [{ type: 'order', id: ORDER }, { type: 'order', id: OTHER_ORDER }] }),
+    );
+
+    const outcome = await ask(provider, stubTools().tools);
+
+    expect(outcome.output).toMatchObject({ refs: [{ type: 'order', id: ORDER }] });
+  });
+
+  it('drops an action whose targets the tools did not all return (Review Focus 3)', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(
+      fakeToolUse('find_orders', {}),
+      answer({ action: { kind: 'offer_job', targets: [{ type: 'job', id: JOB }, { type: 'partner', id: PARTNER }] } }),
+    );
+
+    expect((await ask(provider, stubTools().tools)).output).toMatchObject({ action: null });
+  });
+
+  it('keeps an action whose targets were all returned and are of its kind', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(fakeToolUse('find_orders', {}), answer({ action: { kind: 'release_order', targets: [{ type: 'order', id: ORDER }] } }));
+
+    expect((await ask(provider, stubTools().tools)).output).toMatchObject({
+      action: { kind: 'release_order', targets: [{ type: 'order', id: ORDER }] },
+    });
+  });
+
+  it('drops an action naming a target of the wrong type', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(fakeToolUse('find_orders', {}), answer({ action: { kind: 'chase_invoice', targets: [{ type: 'order', id: ORDER }] } }));
+
+    expect((await ask(provider, stubTools().tools)).output).toMatchObject({ action: null });
+  });
+
+  it('gives an invalid tool input and an unknown tool back to the model as errors', async () => {
+    const provider = new FakeAiProvider();
+    const { asked, tools } = stubTools();
+    provider.script(fakeToolUse('find_orders', { late: 'yes' }, 'call_1'), fakeToolUse('drop_tables', {}, 'call_2'), answer({}));
+
+    const outcome = await ask(provider, tools);
+
+    expect(asked).toEqual([]);
+    expect(provider.calls[1].messages.at(-1)).toMatchObject({ content: [{ toolUseId: 'call_1', content: expect.stringContaining('late') }] });
+    expect(provider.calls[2].messages.at(-1)).toMatchObject({ content: [{ toolUseId: 'call_2', content: expect.stringContaining('drop_tables') }] });
+    expect(outcome.status).toBe('done');
+  });
+
+  it(`forces the answer after ${MAX_TOOL_ROUNDS} rounds of tools, and fails a run that still gives none`, async () => {
+    const provider = new FakeAiProvider();
+    provider.script(...Array.from({ length: MAX_TOOL_ROUNDS + 1 }, () => fakeToolUse('find_orders', {})));
+
+    const outcome = await ask(provider, stubTools().tools);
+
+    expect(provider.calls).toHaveLength(MAX_TOOL_ROUNDS + 1);
+    expect(provider.calls.slice(0, MAX_TOOL_ROUNDS).every((call) => call.forceTool === undefined)).toBe(true);
+    expect(provider.calls[MAX_TOOL_ROUNDS].forceTool).toBe('answer');
+    expect(outcome).toMatchObject({ status: 'failed', output: null, error: 'The model gave no answer' });
+    expect(outcome.usage).toEqual({ inputTokens: 100 * (MAX_TOOL_ROUNDS + 1), outputTokens: 50 * (MAX_TOOL_ROUNDS + 1) });
+  });
+
+  it('forces the answer on the next turn when the model replies with text alone', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(fakeText('Let me think.'), answer({}));
+
+    const outcome = await ask(provider, stubTools().tools);
+
+    expect(provider.calls[1].forceTool).toBe('answer');
+    expect(outcome.status).toBe('done');
+  });
+
+  it('fails a run whose provider refuses', async () => {
+    const provider = new FakeAiProvider();
+    provider.script({ content: [], stopReason: 'refusal', usage: { inputTokens: 10, outputTokens: 0 } });
+
+    expect(await ask(provider, stubTools().tools)).toMatchObject({ status: 'failed', error: 'The model declined to answer' });
+  });
+});
