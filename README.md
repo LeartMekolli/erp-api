@@ -216,6 +216,32 @@ A walkthrough in Swagger, on the demo data with the keys set (`test/payments-sli
 9. With too little test balance, a transfer is refused: the payout is `failed`, staff are told, and the jobs are due again.
 10. The ledger: `UPDATE` or `DELETE` on `ledger_journal` or `ledger_line` is refused, and every journal sums to zero.
 
+### Plans and credits
+
+Plans are workspace data (`/payments/plans`): a price per month and per year, a discount applied after the customer group's, the delivery speeds offered beyond the workspace's default one (each at the speed's own surcharge or the plan's), monthly credits, a member limit and switches (`progress_emails`, `pay_later`). Every workspace has a free default plan, Starter, that every customer without a subscription is on. A paid plan is a Stripe product with a Stripe price per amount; changing a price adds one, and subscribers keep theirs. A customer's owner subscribes through a Stripe checkout and manages cards and invoices in Stripe's billing portal. The subscription is only ever written from Stripe's webhooks: an upgrade applies once its prorated payment is taken, a downgrade or the drop to Starter at the period end, and a late payment keeps the plan until Stripe gives up.
+
+Credits are whole units the AI tools will spend, held in three insert-only tables (grants, spends and their entries); a balance is always worked out, never stored. They come from the plan's monthly allowance, packs bought at any plan (`/payments/credit-packs`), campaigns that grant automatically to targeted plans and customers within a budget (`/payments/campaigns`), and staff grants with a reason. Spending takes campaign and staff credits first, then the allowance, then packs, the soonest to expire first, and never below zero. `npm run seed` gives Starter 10 credits and 2 members without pay later, adds Pro and Business, packs of 100 and 500 credits and the "Welcome to Pro" campaign; with the `DEMO_STRIPE_*` keys the plans are published.
+
+### Plans and credits in test mode
+
+On top of [Payments in test mode](#payments-in-test-mode):
+
+1. `stripe listen` needs no new endpoint: subscription, invoice and checkout events arrive at the same `/webhooks/payments/<tenantId>`.
+2. Turn on Stripe's customer portal in test mode (Settings → Billing → Customer portal), or `POST /portal/customers/{id}/billing-portal` fails at Stripe.
+3. A failed renewal: in the billing portal, make `4000 0000 0000 0341` the default card (it attaches, then every charge is declined), and start the next period now with `stripe subscriptions update <sub_id> --billing-cycle-anchor=now --proration-behavior=none`. Stripe giving up is `stripe subscriptions cancel <sub_id>`.
+
+A walkthrough in Swagger, on the demo data with the keys set (`test/payments-2-slice.e2e-spec.ts` runs the same with the fake provider; it is the spec's "Done when"):
+
+1. As the owner: `GET /payments/plans` lists Starter, Pro and Business, `published: true`. `PATCH /payments/plans/{id}` Pro's `yearly_price`: a new Stripe price exists, and the old one is kept for its subscribers.
+2. As Anna (Luna, on Starter): a quote with `delivery_speed: express` is refused naming Starter; without it, there is no plan discount. `GET /portal/customers/{id}/credits` shows Starter's 10 credits once the allowance job has run (every 15 minutes).
+3. As Anna: `POST /portal/customers/{id}/credit-packs/{packId}/buy` and pay with `4242 4242 4242 4242`. The 100 credits arrive once, and `GET /payments/ledger` shows the pack billed, paid and Stripe's fee, each balanced.
+4. Invite an owner to Brightline and, as them, `POST /portal/customers/{id}/subscription/checkout` for Pro monthly and pay. `GET .../subscription` is `active` on Pro; the credits show Pro's 100 and the campaign's 50; a staff quote for Brightline has the group line, then Pro's, and offers express.
+5. `POST .../subscription/change` to Business: 202, and Business once Stripe has taken the difference, with a top-up of 300 credits and rush at 20 %. A change to Pro is shown as `change` on the period end; choosing Business again takes it back.
+6. A failed renewal (above): `past_due`, still Business, and Brightline is told. Once Stripe gives up: Starter, staff are told (`pay_later: yes`), and the pack and campaign credits are still there.
+7. Credits are spent by the AI tools, which aren't built yet: the slice test spends through `CreditsService`, campaign first, then the allowance, then packs; too much is refused, and a give-back restores them.
+8. `POST /payments/campaigns` for three named customers, 50 credits each, budget 100, then `.../activate`: two are granted, `budget_left` is 0, and staff are told once.
+9. `stripe events resend <id>` for any subscription or invoice event: nothing changes. `UPDATE` or `DELETE` on `credit_grant`, `credit_spend` or `credit_entry` is refused, like the money ledger.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

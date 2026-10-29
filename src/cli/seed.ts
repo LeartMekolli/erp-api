@@ -6,7 +6,10 @@ import { PrismaService } from '../database/prisma.service';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
 import { PaymentAccountService } from '../modules/payments/payment-account.service';
 import { PaymentsModule } from '../modules/payments/payments.module';
+import { CampaignsService } from '../modules/payments/credits/campaigns.service';
+import { CreditPacksService } from '../modules/payments/credits/credit-packs.service';
 import { PayoutAccountsService } from '../modules/payments/payout-accounts.service';
+import { PlansService } from '../modules/payments/plans/plans.service';
 import type { CreateTenantInput } from '../platform/tenant-input';
 import { TenantService } from '../platform/tenant.service';
 import { StorageModule } from '../storage/storage.module';
@@ -17,6 +20,7 @@ import { seedCustomers } from './seed-customers';
 import { seedOrders } from './seed-orders';
 import { seedPartners } from './seed-partners';
 import { seedPayments } from './seed-payments';
+import { seedPlans } from './seed-plans';
 import { seedPricing } from './seed-pricing';
 import { seedWorkflows } from './seed-workflows';
 
@@ -54,7 +58,8 @@ class SeedModule {}
  * Idempotent: existing records are skipped, any other failure stops the run.
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
- * (`seed-orders.ts`) and its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`). The admin's, the
+ * (`seed-orders.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`) and its plans, packs
+ * and campaign (`seed-plans.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
@@ -160,5 +165,17 @@ void runCli(async (app) => {
       (keys
         ? `, ${payments.account} payment accounts, ${payments.payoutAccounts} payout accounts\n`
         : '; no DEMO_STRIPE_* keys, so the payment account and payout accounts are skipped\n'),
+  );
+
+  // Audited as the demo's catalog user, which can't sign in, like the catalog's uploads.
+  const plans = await seedPlans(
+    { prisma, plans: app.get(PlansService), packs: app.get(CreditPacksService), campaigns: app.get(CampaignsService) },
+    demo.id,
+    uploader.id,
+  );
+  process.stdout.write(
+    `plans for demo: ${plans.starter ? 'set Starter to 10 credits and 2 members, ' : ''}` +
+      `created ${plans.plans} plans, ${plans.packs} credit packs, ${plans.campaigns} campaigns` +
+      (keys ? ', published to Stripe\n' : '; no DEMO_STRIPE_* keys, so the plans are not published\n'),
   );
 }, SeedModule);
