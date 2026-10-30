@@ -16,7 +16,8 @@ interface Payload {
   version: string;
 }
 
-async function bytesOf(stream: Readable): Promise<Buffer> {
+/** A stored object's whole body, read into memory. */
+export async function bytesOf(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
   return Buffer.concat(chunks);

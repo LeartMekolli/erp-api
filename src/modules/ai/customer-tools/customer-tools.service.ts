@@ -50,7 +50,8 @@ function toResponse(row: ResultRow): CustomerResultResponse {
     credits_given_back: row.spend.givenBack !== null,
     error: result?.status === 'failed' ? CUSTOMER_FAILED_MESSAGE : null,
     parent_id: row.parentId,
-    file_id: row.fileId,
+    // Written as the image is stored, just before the run finishes; shown once it has.
+    file_id: result?.status === 'done' ? row.fileId : null,
     asked_by: row.createdBy,
     created_at: row.createdAt.toISOString(),
     finished_at: result?.finishedAt.toISOString() ?? null,

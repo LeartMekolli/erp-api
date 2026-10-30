@@ -12,11 +12,19 @@ import {
   brandContentBodySchema,
   customerResultListQuerySchema,
   customerResultSchema,
+  imagesBodySchema,
   recommendationsBodySchema,
   startedSchema,
 } from './customer-result-response';
-import type { BrandContentBody, CustomerResultListQuery, CustomerResultResponse, RecommendationsBody } from './customer-result-response';
+import type {
+  BrandContentBody,
+  CustomerResultListQuery,
+  CustomerResultResponse,
+  ImagesBody,
+  RecommendationsBody,
+} from './customer-result-response';
 import { CustomerToolsService } from './customer-tools.service';
+import { ImagesService } from './images';
 import { MarketingService } from './marketing';
 import { RecommendationsService } from './recommendations';
 
@@ -36,7 +44,25 @@ export class CustomerToolsController {
     private readonly brandContent: BrandContentService,
     private readonly marketing: MarketingService,
     private readonly recommendations: RecommendationsService,
+    private readonly images: ImagesService,
   ) {}
+
+  @ApiDoc({
+    summary: 'A concept image of one piece from a description, made so it can become a 3D model; or a change to an earlier one.',
+    description:
+      "The image is saved as a file of the customer. With `from_id`, an image of the customer's AI history is refined into a new " +
+      'one linked to it: an unknown one is a 404, a deleted or unfinished one a 409. A refinement costs the same as a new image. ' +
+      PAID,
+    body: imagesBodySchema,
+    response: startedSchema,
+    errors: [400, 404, 409],
+  })
+  @CustomerAccess('buyer')
+  @Post('images')
+  @HttpCode(202)
+  startImage(@CurrentCustomer() customer: CustomerAuth, @Body(new ZodValidationPipe(imagesBodySchema)) body: ImagesBody): Promise<{ id: string }> {
+    return this.images.start(customer, body);
+  }
 
   @ApiDoc({
     summary: 'Product ideas and general advice, informed by current trends found on the web, each with its source links.',

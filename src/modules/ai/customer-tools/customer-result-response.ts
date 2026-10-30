@@ -54,6 +54,16 @@ export const recommendationsOutputSchema = z.strictObject({
 });
 export type RecommendationsOutput = z.infer<typeof recommendationsOutputSchema>;
 
+export const imagesBodySchema = z.strictObject({
+  description: z.string().trim().min(1).max(1000),
+  /** An image of this customer's history to change; absent: a new image. */
+  from_id: z.uuid().optional(),
+});
+export type ImagesBody = z.infer<typeof imagesBodySchema>;
+
+/** What an image run stores: the prompt Claude wrote (before the 3D rules), and the image's file. */
+export const imageOutputSchema = z.strictObject({ prompt: z.string(), file_id: z.uuid() });
+
 const base = {
   id: z.uuid(),
   status: z.enum(['pending', 'done', 'failed']),
@@ -80,6 +90,7 @@ export const TOOL_OUTPUTS = {
   brand_content: brandContentOutputSchema,
   marketing: marketingOutputSchema,
   recommendations: recommendationsOutputSchema,
+  image: imageOutputSchema,
 } as const;
 
 /** One use of a customer AI tool, for the customer's people: the run's status and, once done, its output. */
@@ -87,6 +98,7 @@ export const customerResultSchema = z.discriminatedUnion('tool', [
   member('brand_content', TOOL_OUTPUTS.brand_content),
   member('marketing', TOOL_OUTPUTS.marketing),
   member('recommendations', TOOL_OUTPUTS.recommendations),
+  member('image', TOOL_OUTPUTS.image),
 ]);
 export type CustomerResultResponse = z.infer<typeof customerResultSchema>;
 
