@@ -121,6 +121,7 @@ model Tenant {
   aiSuggestions         AiSuggestion[]
   aiSuggestionDismissals AiSuggestionDismissal[]
   aiCustomerResults     AiCustomerResult[]
+  aiBrandProfiles       AiBrandProfile[]
 
   @@map("tenant")
 }
@@ -180,6 +181,7 @@ model User {
   aiSuggestionDismissals AiSuggestionDismissal[]
   aiCustomerResults      AiCustomerResult[] @relation("ai_customer_result_created_by")
   aiCustomerResultsDeleted AiCustomerResult[] @relation("ai_customer_result_deleted_by")
+  aiBrandProfiles        AiBrandProfile[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1153,6 +1155,7 @@ model Customer {
   creditPackPurchases CreditPackPurchase[]
   campaignTargets     CreditCampaignTarget[]
   aiResults           AiCustomerResult[]
+  aiBrandProfile      AiBrandProfile?
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2685,6 +2688,27 @@ model AiCustomerResult {
   @@unique([tenantId, spendId])
   @@index([tenantId, customerId, runId])
   @@map("ai_customer_result")
+}
+
+// A customer's brand (AI 2 spec, goals 8–9): context for its AI tools, given to the model as data.
+model AiBrandProfile {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  tenantId        String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId      String   @map("customer_id") @db.Uuid
+  name            String
+  sells           String
+  audience        String
+  tone            String
+  notes           String   @default("")
+  updatedByUserId String   @map("updated_by_user_id") @db.Uuid
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer  Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  updatedBy User     @relation(fields: [tenantId, updatedByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, customerId])
+  @@map("ai_brand_profile")
 }
 
 // ---------------------------------------------------------------------------

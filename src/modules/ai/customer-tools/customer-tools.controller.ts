@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, HttpCode, Param, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { pageSchema } from '../../../common/pagination/page';
 import type { Page } from '../../../common/pagination/page';
@@ -7,16 +7,43 @@ import { ApiDoc } from '../../../docs/api-doc';
 import { CurrentCustomer } from '../../identity/auth-context';
 import type { CustomerAuth } from '../../identity/auth-context';
 import { CustomerAccess } from '../../identity/route-markers';
-import { customerResultListQuerySchema, customerResultSchema } from './customer-result-response';
-import type { CustomerResultListQuery, CustomerResultResponse } from './customer-result-response';
+import { BrandContentService } from './brand-content';
+import { brandContentBodySchema, customerResultListQuerySchema, customerResultSchema, startedSchema } from './customer-result-response';
+import type { BrandContentBody, CustomerResultListQuery, CustomerResultResponse } from './customer-result-response';
 import { CustomerToolsService } from './customer-tools.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
+/** Said of every tool: how it is paid, and when it is refused. */
+const PAID =
+  'Answers 202 with the run id; poll `GET …/ai/runs/{id}` for the result. Charged when queued, given back if the run fails. ' +
+  "403 when the customer's plan doesn't include the tool; 409 without enough credits or when the workspace's AI limit is used, " +
+  'and nothing is charged.';
+
 /** The customer AI tools and their history, in the portal (AI 2 spec). */
 @Controller('portal/customers/:customerId/ai')
 export class CustomerToolsController {
-  constructor(private readonly tools: CustomerToolsService) {}
+  constructor(
+    private readonly tools: CustomerToolsService,
+    private readonly brandContent: BrandContentService,
+  ) {}
+
+  @ApiDoc({
+    summary: 'Catalog text for a product, written from the brand profile: names, a short and a long description, tags.',
+    description: `Give one of \`product_id\` (a product of the customer's catalog) or \`description\`. Needs a brand profile (409). ${PAID}`,
+    body: brandContentBodySchema,
+    response: startedSchema,
+    errors: [400, 404, 409],
+  })
+  @CustomerAccess('buyer')
+  @Post('brand-content')
+  @HttpCode(202)
+  startBrandContent(
+    @CurrentCustomer() customer: CustomerAuth,
+    @Body(new ZodValidationPipe(brandContentBodySchema)) body: BrandContentBody,
+  ): Promise<{ id: string }> {
+    return this.brandContent.start(customer, body);
+  }
 
   @ApiDoc({
     summary: 'One use of an AI tool, with its result once it is done.',

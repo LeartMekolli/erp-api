@@ -2,6 +2,19 @@ import { z } from 'zod';
 import { CUSTOMER_TOOLS } from './customer-tools';
 import type { CustomerTool } from './customer-tools';
 
+/** What starting a tool answers: the run to poll at `GET …/ai/runs/{id}`. */
+export const startedSchema = z.strictObject({ id: z.uuid() });
+
+export const brandContentBodySchema = z
+  .strictObject({
+    product_id: z.uuid().optional(),
+    description: z.string().trim().min(1).max(500).optional(),
+  })
+  .refine((body) => (body.product_id === undefined) !== (body.description === undefined), {
+    message: 'Give either product_id or description',
+  });
+export type BrandContentBody = z.infer<typeof brandContentBodySchema>;
+
 /** Catalog text written from the brand profile, as the `brand_content` final tool returns it. */
 export const brandContentOutputSchema = z.strictObject({
   names: z.array(z.string().max(80)).min(1).max(3),
@@ -9,6 +22,7 @@ export const brandContentOutputSchema = z.strictObject({
   long: z.string().max(2000),
   tags: z.array(z.string().max(30)).max(10),
 });
+export type BrandContentOutput = z.infer<typeof brandContentOutputSchema>;
 
 const base = {
   id: z.uuid(),

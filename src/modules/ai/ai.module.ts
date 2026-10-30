@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
+import { AuditModule } from '../audit/audit.module';
+import { CustomersModule } from '../customers/customers.module';
 import { FilesModule } from '../files/files.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -15,6 +17,9 @@ import { AskService } from './ask.service';
 import { BriefingHandler } from './briefing.handler';
 import { BriefingService } from './briefing.service';
 import { ClaudeAiProvider } from './claude-ai-provider';
+import { BrandContentService } from './customer-tools/brand-content';
+import { BrandProfileController } from './customer-tools/brand-profile.controller';
+import { BrandProfileService } from './customer-tools/brand-profile.service';
 import { CustomerToolsController } from './customer-tools/customer-tools.controller';
 import { CustomerToolsService } from './customer-tools/customer-tools.service';
 import { FakeAiProvider } from './fake-ai-provider';
@@ -46,11 +51,13 @@ import type { AiTool } from './tools/tool';
  * and the customer tools paid in credits (AI 2 spec).
  */
 @Module({
-  imports: [NotificationsModule, ReportsModule, KnowledgeModule, PaymentsModule, FilesModule, SettingsModule],
+  imports: [NotificationsModule, ReportsModule, KnowledgeModule, PaymentsModule, FilesModule, SettingsModule, AuditModule, CustomersModule],
   // The dashboard's controller lives here: it shows the briefing, and this module imports ReportsModule.
-  controllers: [RunsController, SearchController, DashboardController, CustomerToolsController],
+  controllers: [RunsController, SearchController, DashboardController, CustomerToolsController, BrandProfileController],
   providers: [
     CustomerToolsService,
+    BrandProfileService,
+    BrandContentService,
     GiveBackHandler,
     SearchService,
     RunsService,

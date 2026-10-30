@@ -32,7 +32,8 @@ export type AuditAction =
   | 'credit_pack.changed'
   | 'credit_campaign.changed'
   | 'credits.granted'
-  | 'knowledge.changed';
+  | 'knowledge.changed'
+  | 'brand_profile.changed';
 
 export interface AuditInput {
   actor: { type: 'user' | 'platform_admin' | 'system'; id?: string };
