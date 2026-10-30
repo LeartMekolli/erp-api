@@ -8,9 +8,11 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { monthBounds, noticeLevel } from './ai-limit';
 import { costOf, worstRunCost } from './ai-models';
 import type { AiResponse } from './ai-provider';
+import type { CustomerTool } from './customer-tools/customer-tools';
+import { extraWorstCost } from './extra-costs';
 import type { RecordRef } from './tools/tool';
 
-export type RunKind = 'ask' | 'briefing';
+export type RunKind = 'ask' | 'briefing' | CustomerTool;
 
 export interface RunResult {
   status: 'done' | 'failed';
@@ -19,12 +21,15 @@ export interface RunResult {
   output: object | null;
   refs: RecordRef[];
   error: string | null;
+  /** What the run cost beyond its tokens in USD: web searches, an image. */
+  extraCostUsd?: Prisma.Decimal;
 }
 
 /** What a kind's handler gives back; the model is the run's. A failed outcome still pays its tokens. */
 export type RunOutcome = Omit<RunResult, 'model'>;
 
 type KindHandler = (tenantId: string, run: AiRun) => Promise<RunOutcome>;
+type FailedHook = (tenantId: string, runId: string) => Promise<void>;
 
 /** A run waiting longer than this is taken as lost: it no longer holds back its reserve, and is never run. */
 const PENDING_WINDOW_MS = 60 * 60 * 1000;
@@ -34,7 +39,10 @@ type Tx = Prisma.TransactionClient;
 /** The notice levels newly crossed this month, with the figures they are told with; null without a limit. */
 type Crossed = { raised: number[]; limit: Prisma.Decimal; spent: Prisma.Decimal } | null;
 
-/** Takes the workspace's AI-limit lock for the transaction. Always taken alone, never with another lock. */
+/**
+ * Takes the workspace's AI-limit lock for the transaction. Always the last lock taken: a customer run
+ * takes the customer's first; nothing takes another lock after this one.
+ */
 function lockLimit(tx: Tx, tenantId: string): Promise<number> {
   return tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${tenantId}:ai_limit`}::text, 0))`;
 }
@@ -55,6 +63,7 @@ export async function aiSpent(tx: Prisma.TransactionClient, at: Date): Promise<P
 export class RunsService {
   private readonly logger = new Logger(RunsService.name);
   private readonly handlers = new Map<RunKind, KindHandler>();
+  private readonly failedHooks = new Map<RunKind, FailedHook>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -69,47 +78,77 @@ export class RunsService {
   }
 
   /**
-   * Refused with a 409, writing nothing, when the workspace has no limit or the month's spend and the
-   * worst case of each run still waiting reach it, so at most one run is accepted past the limit.
-   * `check` runs under the limit's lock first (the briefing's refresh interval).
+   * Called after commit whenever a run of `kind` gets a failed result, once per run. One hook per kind;
+   * a hook that throws is logged.
+   */
+  onFailed(kind: RunKind, hook: FailedHook): void {
+    this.failedHooks.set(kind, hook);
+  }
+
+  /**
+   * Queues a run in its own transaction, then its job. `check` runs under the limit's lock first (the
+   * briefing's refresh interval).
    */
   async queue(
     tenantId: string,
     input: { userId: string | null; kind: RunKind; payload: object },
     check?: (tx: Tx) => Promise<void>,
   ): Promise<{ runId: string }> {
-    const runId = await this.prisma.inTenant(tenantId, async (tx) => {
-      await lockLimit(tx, tenantId);
-      await check?.(tx);
-      const { aiMonthlyLimitUsd: limit } = await tx.tenant.findUniqueOrThrow({
-        where: { id: tenantId },
-        select: { aiMonthlyLimitUsd: true },
-      });
-      if (limit === null) {
-        throw new ConflictException('AI is not set up for this workspace');
-      }
-      const now = new Date();
-      // Counted before the spend: a run finishing in between is counted twice, never missed.
-      const pending = await tx.aiRun.findMany({
-        where: { result: { is: null }, createdAt: { gte: new Date(now.getTime() - PENDING_WINDOW_MS) } },
-        select: { model: true },
-      });
-      const reserved = pending.reduce((sum, run) => sum.add(worstRunCost(run.model)), new Prisma.Decimal(0));
-      if ((await aiSpent(tx, now)).add(reserved).gte(limit)) {
-        throw new ConflictException("This month's AI limit is used");
-      }
-      const run = await tx.aiRun.create({
-        data: {
-          userId: input.userId,
-          kind: input.kind,
-          model: this.config.get('AI_MODEL'),
-          input: input.payload as Prisma.InputJsonObject,
-        },
-      });
-      return run.id;
-    });
-    await this.jobs.enqueue('ai.run', { tenantId, runId });
+    const runId = await this.prisma.inTenant(tenantId, (tx) => this.queueIn(tx, tenantId, input, check));
+    await this.enqueueRun(tenantId, runId);
     return { runId };
+  }
+
+  /**
+   * Writes a run on the caller's transaction, which takes the limit's lock here, after any lock of its
+   * own; the caller queues its job with `enqueueRun` once committed. Refused with a 409, writing nothing,
+   * when the workspace has no limit or the month's spend and the worst case of each run still waiting
+   * reach it, so at most one run is accepted past the limit.
+   */
+  async queueIn(
+    tx: Tx,
+    tenantId: string,
+    input: { id?: string; userId: string | null; kind: RunKind; payload: object },
+    check?: (tx: Tx) => Promise<void>,
+  ): Promise<string> {
+    await lockLimit(tx, tenantId);
+    await check?.(tx);
+    const { aiMonthlyLimitUsd: limit } = await tx.tenant.findUniqueOrThrow({
+      where: { id: tenantId },
+      select: { aiMonthlyLimitUsd: true },
+    });
+    if (limit === null) {
+      throw new ConflictException('AI is not set up for this workspace');
+    }
+    const now = new Date();
+    // Counted before the spend: a run finishing in between is counted twice, never missed.
+    const pending = await tx.aiRun.findMany({
+      where: { result: { is: null }, createdAt: { gte: new Date(now.getTime() - PENDING_WINDOW_MS) } },
+      select: { model: true, kind: true },
+    });
+    const imageModel = this.config.get('IMAGE_MODEL');
+    const reserved = pending.reduce(
+      (sum, run) => sum.add(worstRunCost(run.model)).add(extraWorstCost(run.kind as RunKind, imageModel)),
+      new Prisma.Decimal(0),
+    );
+    if ((await aiSpent(tx, now)).add(reserved).gte(limit)) {
+      throw new ConflictException("This month's AI limit is used");
+    }
+    const run = await tx.aiRun.create({
+      data: {
+        id: input.id,
+        userId: input.userId,
+        kind: input.kind,
+        model: this.config.get('AI_MODEL'),
+        input: input.payload as Prisma.InputJsonObject,
+      },
+    });
+    return run.id;
+  }
+
+  /** Queues the `ai.run` job of a committed run. */
+  async enqueueRun(tenantId: string, runId: string): Promise<void> {
+    await this.jobs.enqueue('ai.run', { tenantId, runId });
   }
 
   /** The `ai.run` job: runs it by its kind and writes the result. A run already finished is left alone. */
@@ -146,20 +185,21 @@ export class RunsService {
   }
 
   /**
-   * Writes the run's result once, then tells staff of each notice level the month has newly crossed.
-   * Under the limit's lock, so two runs finishing together each see the other's cost.
+   * Writes the run's result once, then tells staff of each notice level the month has newly crossed and,
+   * for a failed result, calls its kind's `onFailed` hook. Under the limit's lock, so two runs finishing
+   * together each see the other's cost.
    */
   async finish(tenantId: string, runId: string, result: RunResult): Promise<void> {
-    const crossed = await this.prisma.inTenant(tenantId, async (tx) => {
+    const written = await this.prisma.inTenant(tenantId, async (tx) => {
       await lockLimit(tx, tenantId);
-      const written = await tx.aiRunResult.createMany({
+      const rows = await tx.aiRunResult.createMany({
         data: [
           {
             runId,
             status: result.status,
             inputTokens: result.usage.inputTokens,
             outputTokens: result.usage.outputTokens,
-            costUsd: costOf(result.model, result.usage),
+            costUsd: costOf(result.model, result.usage).add(result.extraCostUsd ?? 0),
             output: result.output === null ? Prisma.DbNull : (result.output as Prisma.InputJsonObject),
             refs: result.refs.map((ref) => ({ type: ref.type, id: ref.id })),
             error: result.error,
@@ -167,10 +207,20 @@ export class RunsService {
         ],
         skipDuplicates: true,
       });
-      if (written.count === 0) return null;
-      return this.crossedLevels(tx, tenantId);
+      if (rows.count === 0) return null;
+      const { kind } = await tx.aiRun.findUniqueOrThrow({ where: { id: runId }, select: { kind: true } });
+      return { kind: kind as RunKind, crossed: await this.crossedLevels(tx, tenantId) };
     });
-    await this.tell(tenantId, crossed);
+    if (!written) return;
+    await this.tell(tenantId, written.crossed);
+    const hook = this.failedHooks.get(written.kind);
+    if (result.status === 'failed' && hook) {
+      try {
+        await hook(tenantId, runId);
+      } catch (error) {
+        this.logger.error({ err: error, tenantId, runId }, 'a hook for a failed AI run failed');
+      }
+    }
   }
 
   /**

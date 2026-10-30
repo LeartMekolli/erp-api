@@ -120,6 +120,7 @@ model Tenant {
   aiBriefings           AiBriefing[]
   aiSuggestions         AiSuggestion[]
   aiSuggestionDismissals AiSuggestionDismissal[]
+  aiCustomerResults     AiCustomerResult[]
 
   @@map("tenant")
 }
@@ -177,6 +178,8 @@ model User {
   aiRuns              AiRun[]
   knowledgeArticles   KnowledgeArticle[]
   aiSuggestionDismissals AiSuggestionDismissal[]
+  aiCustomerResults      AiCustomerResult[] @relation("ai_customer_result_created_by")
+  aiCustomerResultsDeleted AiCustomerResult[] @relation("ai_customer_result_deleted_by")
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -510,6 +513,7 @@ model File {
   createdBy User          @relation(fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
   versions  FileVersion[]
   knowledgeAttachments KnowledgeAttachment[]
+  aiCustomerResults    AiCustomerResult[]
 
   @@unique([tenantId, id])
   @@index([tenantId, ownerType, ownerId])
@@ -1148,6 +1152,7 @@ model Customer {
   subscriptionPaidPeriods SubscriptionPaidPeriod[]
   creditPackPurchases CreditPackPurchase[]
   campaignTargets     CreditCampaignTarget[]
+  aiResults           AiCustomerResult[]
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -2487,6 +2492,7 @@ model CreditSpend {
   givesBack  CreditSpend?  @relation("credit_give_back", fields: [tenantId, givesBackId], references: [tenantId, id], onDelete: NoAction)
   givenBack  CreditSpend?  @relation("credit_give_back")
   entries    CreditEntry[]
+  aiResult   AiCustomerResult?
 
   @@unique([tenantId, id])
   @@unique([tenantId, customerId, reference])
@@ -2531,16 +2537,17 @@ model AiRun {
   tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
   // Null for the scheduled briefing.
   userId    String?  @map("user_id") @db.Uuid
-  // ask | briefing
+  // ask | briefing | recommendations | marketing | brand_content | image
   kind      String
   model     String
   input     Json
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant   Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user     User?        @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: NoAction)
-  result   AiRunResult?
-  briefing AiBriefing?
+  tenant         Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user           User?             @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: NoAction)
+  result         AiRunResult?
+  briefing       AiBriefing?
+  customerResult AiCustomerResult?
 
   @@unique([tenantId, id])
   @@index([tenantId, createdAt])
@@ -2643,6 +2650,41 @@ model AiSuggestionDismissal {
 
   @@unique([tenantId, fingerprint])
   @@map("ai_suggestion_dismissal")
+}
+
+// A customer's use of one AI tool (AI 2 spec): its price, the spend that paid it and its place in the
+// customer's history. The run and its result are the run log's; deleting hides this row only.
+model AiCustomerResult {
+  runId           String    @id @map("run_id") @db.Uuid
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId      String    @map("customer_id") @db.Uuid
+  // recommendations | marketing | brand_content | image
+  tool            String
+  credits         Int
+  spendId         String    @map("spend_id") @db.Uuid
+  // The image a refinement was made from.
+  parentId        String?   @map("parent_id") @db.Uuid
+  // The image an image run made, set when it finishes.
+  fileId          String?   @map("file_id") @db.Uuid
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+  deletedAt       DateTime? @map("deleted_at")
+  deletedByUserId String?   @map("deleted_by_user_id") @db.Uuid
+
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run         AiRun              @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction)
+  customer    Customer           @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  spend       CreditSpend        @relation(fields: [tenantId, spendId], references: [tenantId, id], onDelete: NoAction)
+  parent      AiCustomerResult?  @relation("ai_refinement", fields: [tenantId, parentId], references: [tenantId, runId], onDelete: NoAction)
+  refinements AiCustomerResult[] @relation("ai_refinement")
+  file        File?              @relation(fields: [tenantId, fileId], references: [tenantId, id], onDelete: NoAction)
+  createdBy   User               @relation("ai_customer_result_created_by", fields: [tenantId, createdByUserId], references: [tenantId, id], onDelete: NoAction)
+  deletedBy   User?              @relation("ai_customer_result_deleted_by", fields: [tenantId, deletedByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, runId])
+  @@unique([tenantId, spendId])
+  @@index([tenantId, customerId, runId])
+  @@map("ai_customer_result")
 }
 
 // ---------------------------------------------------------------------------

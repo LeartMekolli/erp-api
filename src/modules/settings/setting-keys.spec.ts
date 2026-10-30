@@ -73,6 +73,15 @@ describe('setting keys', () => {
     expect(() => parseSetting('partners.scoreWeights', { ...weights, scrap: -1 })).toThrow(ZodError);
   });
 
+  it('accepts AI tool prices as whole credits from 1 to 1000, one for each tool', () => {
+    const prices = { recommendations: 10, marketing: 5, brand_content: 3, image: 5 };
+    expect(parseSetting('ai.toolPrices', prices)).toEqual(prices);
+    for (const image of [0, 2.5, 1001]) {
+      expect(() => parseSetting('ai.toolPrices', { ...prices, image })).toThrow(ZodError);
+    }
+    expect(() => parseSetting('ai.toolPrices', { recommendations: 10, marketing: 5, brand_content: 3 })).toThrow(ZodError);
+  });
+
   it('accepts one to five Google client ids, and nothing else', () => {
     expect(parseSetting('auth.google', { clientIds: ['web.apps.example.test'] })).toEqual({
       clientIds: ['web.apps.example.test'],

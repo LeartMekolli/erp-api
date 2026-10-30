@@ -59,6 +59,14 @@ export const SETTING_KEYS = {
     checkoutSuccessUrl: z.url().optional(),
     checkoutCancelUrl: z.url().optional(),
   }),
+  // Credits per use of each customer AI tool (AI 2 spec, goal 2); a refinement costs an image. Unset:
+  // DEFAULT_TOOL_PRICES in src/modules/ai/customer-tools/customer-tools.ts.
+  'ai.toolPrices': z.object({
+    recommendations: z.number().int().min(1).max(1000),
+    marketing: z.number().int().min(1).max(1000),
+    brand_content: z.number().int().min(1).max(1000),
+    image: z.number().int().min(1).max(1000),
+  }),
   // The workspace's own Google OAuth client ids; Sign in with Google is off without it.
   'auth.google': z.object({
     clientIds: z.array(z.string().min(1).max(200)).min(1).max(5),

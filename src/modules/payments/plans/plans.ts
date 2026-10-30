@@ -2,9 +2,9 @@ import { Prisma } from '../../../generated/prisma/client';
 
 /**
  * The switches a plan turns on (Payments 2 spec, goal 1). Code checks them, so they are code; each
- * plan's choice of them is data. The AI module adds its own here.
+ * plan's choice of them is data. The `ai_*` switches turn on the customer AI tools (AI 2 spec, goal 1).
  */
-export const PLAN_FEATURES = ['progress_emails', 'pay_later'] as const;
+export const PLAN_FEATURES = ['progress_emails', 'pay_later', 'ai_recommendations', 'ai_marketing', 'ai_brand', 'ai_images'] as const;
 export type PlanFeature = (typeof PLAN_FEATURES)[number];
 
 export const PLAN_INTERVALS = ['month', 'year'] as const;

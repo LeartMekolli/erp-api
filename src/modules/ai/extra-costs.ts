@@ -1,4 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
+import type { RunKind } from './runs.service';
 
 /**
  * The image models customers' images may be made with, and what one image costs in USD (AI 2 spec, goal
@@ -22,3 +23,13 @@ export const WEB_SEARCH_USD = '0.01';
 
 /** The most web searches one run may make. */
 export const MAX_WEB_SEARCHES = 5;
+
+/**
+ * The most a run of `kind` can cost beyond its tokens: an image run makes one image on `imageModel`, a
+ * recommendations run every search it may. Held back from the limit with the tokens' worst case.
+ */
+export function extraWorstCost(kind: RunKind, imageModel: string): Prisma.Decimal {
+  if (kind === 'image') return imageCost(imageModel);
+  if (kind === 'recommendations') return new Prisma.Decimal(WEB_SEARCH_USD).mul(MAX_WEB_SEARCHES);
+  return new Prisma.Decimal(0);
+}

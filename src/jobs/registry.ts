@@ -107,6 +107,13 @@ export const JOBS = {
     jobId: (p) => [p.runId],
     attempts: 3,
   }),
+  // Gives a failed customer run's credits back (AI 2 spec, goal 5); a second time gives nothing.
+  'ai.credits.give_back': defineJob({
+    queue: 'ai',
+    payload: z.object({ tenantId: z.uuid(), runId: z.uuid() }),
+    jobId: (p) => [p.runId],
+    attempts: 5,
+  }),
   // Tells staff of the AI-limit notice levels crossed once a platform admin has set the limit (AI 1 review
   // fixes). `at` is when it was set, in ms, so each change checks once.
   'ai.limit.check': defineJob({

@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
+import { CUSTOMER_TOOLS } from './customer-tools/customer-tools';
 import { SUGGESTION_KINDS } from './suggestions';
 import { RECORD_TYPES, recordRefSchema } from './tools/tool';
+
+/** Every run kind (`RunKind`): staff's, and one per customer tool. */
+const RUN_KINDS = ['ask', 'briefing', ...CUSTOMER_TOOLS] as const;
 
 export const askSchema = z.strictObject({ question: z.string().trim().min(1).max(500) });
 export type AskBody = z.infer<typeof askSchema>;
@@ -13,7 +17,7 @@ const labelledRefSchema = z.strictObject({ type: z.enum(RECORD_TYPES), id: z.uui
 /** One run, for the user who asked. Labels are read now; a record the reader may no longer see is left out. */
 export const aiRunResponseSchema = z.strictObject({
   id: z.uuid(),
-  kind: z.enum(['ask', 'briefing']),
+  kind: z.enum(RUN_KINDS),
   status: z.enum(['pending', 'done', 'failed']),
   answer: z
     .strictObject({
@@ -33,7 +37,7 @@ export const aiRunListQuerySchema = paginationQuerySchema;
 /** The workspace's run log: what each run cost, never what it said. */
 export const aiRunListItemSchema = z.strictObject({
   id: z.uuid(),
-  kind: z.enum(['ask', 'briefing']),
+  kind: z.enum(RUN_KINDS),
   user: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
   model: z.string(),
   input_tokens: z.number().int().nullable(),

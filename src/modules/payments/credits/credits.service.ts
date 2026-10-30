@@ -75,23 +75,30 @@ export class CreditsService {
    * returns the same spend. Not enough usable credits: a 409, and nothing is written.
    */
   async spend(tenantId: string, customerId: string, input: { amount: number; reason: string; reference: string }): Promise<{ spendId: string }> {
-    if (!Number.isInteger(input.amount) || input.amount <= 0) throw new Error(`A spend is a whole number above 0, not ${input.amount}`);
-    return this.prisma.inTenant(tenantId, async (tx) => {
-      await lockCustomer(tx, customerId);
-      const existing = await tx.creditSpend.findFirst({ where: { customerId, reference: input.reference }, select: { id: true } });
-      if (existing) return { spendId: existing.id };
+    return this.prisma.inTenant(tenantId, (tx) => this.spendIn(tx, customerId, input));
+  }
 
-      const now = new Date();
-      const parts = takeFrom(await this.usable(tx, customerId, now), input.amount);
-      if (!parts) throw new ConflictException('Not enough credits');
-      const spend = await tx.creditSpend.create({
-        data: { customerId, kind: 'spend', amount: input.amount, reason: input.reason, reference: input.reference, occurredAt: now },
-      });
-      await tx.creditEntry.createMany({
-        data: parts.map((part) => ({ customerId, grantId: part.grantId, spendId: spend.id, kind: 'spend', amount: -part.amount, occurredAt: now })),
-      });
-      return { spendId: spend.id };
+  /** `spend` on the caller's transaction, which takes the customer's lock here unless it holds it. */
+  async spendIn(
+    tx: Prisma.TransactionClient,
+    customerId: string,
+    input: { amount: number; reason: string; reference: string },
+  ): Promise<{ spendId: string }> {
+    if (!Number.isInteger(input.amount) || input.amount <= 0) throw new Error(`A spend is a whole number above 0, not ${input.amount}`);
+    await lockCustomer(tx, customerId);
+    const existing = await tx.creditSpend.findFirst({ where: { customerId, reference: input.reference }, select: { id: true } });
+    if (existing) return { spendId: existing.id };
+
+    const now = new Date();
+    const parts = takeFrom(await this.usable(tx, customerId, now), input.amount);
+    if (!parts) throw new ConflictException('Not enough credits');
+    const spend = await tx.creditSpend.create({
+      data: { customerId, kind: 'spend', amount: input.amount, reason: input.reason, reference: input.reference, occurredAt: now },
     });
+    await tx.creditEntry.createMany({
+      data: parts.map((part) => ({ customerId, grantId: part.grantId, spendId: spend.id, kind: 'spend', amount: -part.amount, occurredAt: now })),
+    });
+    return { spendId: spend.id };
   }
 
   /**

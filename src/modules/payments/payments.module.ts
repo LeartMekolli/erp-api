@@ -118,6 +118,6 @@ import { WebhooksController } from './webhooks.controller';
         config.get('PAYMENT_PROVIDER') === 'stripe' ? new StripePaymentProvider() : new FakePaymentProvider(),
     },
   ],
-  exports: [PaymentAccountService, LedgerService, PaymentEventsService, PAYMENT_PROVIDER],
+  exports: [PaymentAccountService, LedgerService, PaymentEventsService, PAYMENT_PROVIDER, CreditsService],
 })
 export class PaymentsModule {}

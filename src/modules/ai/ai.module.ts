@@ -1,7 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
+import { FilesModule } from '../files/files.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PaymentsModule } from '../payments/payments.module';
+import { SettingsModule } from '../settings/settings.module';
 import { AttentionService } from '../reporting/attention.service';
 import { DashboardController } from '../reporting/dashboard.controller';
 import { ReportsService } from '../reporting/reports.service';
@@ -12,8 +15,11 @@ import { AskService } from './ask.service';
 import { BriefingHandler } from './briefing.handler';
 import { BriefingService } from './briefing.service';
 import { ClaudeAiProvider } from './claude-ai-provider';
+import { CustomerToolsController } from './customer-tools/customer-tools.controller';
+import { CustomerToolsService } from './customer-tools/customer-tools.service';
 import { FakeAiProvider } from './fake-ai-provider';
 import { FakeImageProvider } from './fake-image-provider';
+import { GiveBackHandler } from './give-back.handler';
 import { IMAGE_PROVIDER } from './image-provider';
 import type { ImageProvider } from './image-provider';
 import { OpenAiImageProvider } from './openai-image-provider';
@@ -35,12 +41,17 @@ import { reportTools } from './tools/reports.tool';
 import { AI_TOOLS } from './tools/tool';
 import type { AiTool } from './tools/tool';
 
-/** The staff AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing (AI spec). */
+/**
+ * The AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing for staff (AI 1 spec),
+ * and the customer tools paid in credits (AI 2 spec).
+ */
 @Module({
-  imports: [NotificationsModule, ReportsModule, KnowledgeModule],
+  imports: [NotificationsModule, ReportsModule, KnowledgeModule, PaymentsModule, FilesModule, SettingsModule],
   // The dashboard's controller lives here: it shows the briefing, and this module imports ReportsModule.
-  controllers: [RunsController, SearchController, DashboardController],
+  controllers: [RunsController, SearchController, DashboardController, CustomerToolsController],
   providers: [
+    CustomerToolsService,
+    GiveBackHandler,
     SearchService,
     RunsService,
     RunHandler,
@@ -90,6 +101,6 @@ import type { AiTool } from './tools/tool';
       ],
     },
   ],
-  exports: [AI_PROVIDER, IMAGE_PROVIDER, RunsService, AI_TOOLS, KnowledgeModule],
+  exports: [AI_PROVIDER, IMAGE_PROVIDER, RunsService, AI_TOOLS, KnowledgeModule, CustomerToolsService],
 })
 export class AiModule {}
