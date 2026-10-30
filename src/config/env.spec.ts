@@ -134,9 +134,15 @@ describe('loadEnv', () => {
     expect(loadEnv({ ...valid, AI_MODEL: 'claude-sonnet-5-5' }).AI_MODEL).toBe('claude-sonnet-5-5');
   });
 
+  it('runs the scheduled briefing unless AI_BRIEFINGS is false', () => {
+    expect(loadEnv({ ...valid }).AI_BRIEFINGS).toBe(true);
+    expect(loadEnv({ ...valid, AI_BRIEFINGS: 'false' }).AI_BRIEFINGS).toBe(false);
+  });
+
   it.each([
     ['AI_PROVIDER', 'other'],
     ['AI_MODEL', 'some-other-model'],
+    ['AI_BRIEFINGS', 'yes'],
   ])('rejects %s=%s', (name, value) => {
     expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
   });

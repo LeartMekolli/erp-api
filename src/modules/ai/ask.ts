@@ -5,9 +5,20 @@ import { SUGGESTION_KINDS, targetsFit } from './suggestions';
 import { recordRefSchema, toolSpec } from './tools/tool';
 import type { AiTool, RecordRef, ToolContext } from './tools/tool';
 
-/** Rounds of tool calls before `answer` is forced. */
+/** Rounds of tool calls before the final tool is forced. */
 export const MAX_TOOL_ROUNDS = 6;
 const MAX_TOKENS = 2_000;
+
+/**
+ * The tool a run ends with: its input is the run's output. `check` keeps only what the run's tools
+ * returned (`known`), so the model can't cite or act on anything else.
+ */
+export interface FinalTool<T> {
+  name: string;
+  description: string;
+  input: z.ZodType<T>;
+  check(output: T, known: (ref: RecordRef) => boolean): T;
+}
 
 /** The model's final output: text, the records it cites, and at most one proposed action. */
 export const answerSchema = z.strictObject({
@@ -17,27 +28,33 @@ export const answerSchema = z.strictObject({
 });
 export type Answer = z.infer<typeof answerSchema>;
 
-export const ANSWER_TOOL = {
+export const ANSWER_TOOL: FinalTool<Answer> = {
   name: 'answer',
   description:
     'Give your final answer. Cite in `refs` every record your answer relies on, only from tool results of this ' +
     'conversation. `action` proposes at most one action for a person to confirm, or null.',
   input: answerSchema,
+  check: (answer, known) => ({
+    text: answer.text,
+    refs: answer.refs.filter(known),
+    action: answer.action && answer.action.targets.every(known) && targetsFit(answer.action.kind, answer.action.targets) ? answer.action : null,
+  }),
 };
 
 const key = (ref: RecordRef) => `${ref.type}:${ref.id}`;
 
 /**
- * Asks the model with `tools` until it calls `answer` (AI 1 spec, goals 12 and 13). Every input is
- * validated; an invalid one, or an unknown tool, is given back as an error. After `MAX_TOOL_ROUNDS` the
- * answer is forced. Before returning, a cited record the tools never returned is dropped, and so is an
- * action unless every target was returned and fits its kind (Review Focus 3).
+ * Asks the model with `tools` until it calls the final tool, `answer` unless told otherwise (AI 1 spec,
+ * goals 12 and 13). Every input is validated; an invalid one, or an unknown tool, is given back as an
+ * error. After `MAX_TOOL_ROUNDS` the final tool is forced. Before returning, the final tool's `check`
+ * drops whatever the tools never returned (Review Focus 3).
  */
-export async function runTools(
+export async function runTools<T = Answer>(
   provider: AiProvider,
-  request: { model: string; system: string; question: string; tools: AiTool<unknown>[]; ctx: ToolContext },
+  request: { model: string; system: string; question: string; tools: AiTool<unknown>[]; ctx: ToolContext; final?: FinalTool<T> },
 ): Promise<RunOutcome> {
-  const specs = [...request.tools.map(toolSpec), toolSpec(ANSWER_TOOL)];
+  const final = (request.final ?? ANSWER_TOOL) as FinalTool<T>;
+  const specs = [...request.tools.map(toolSpec), toolSpec(final)];
   const messages: AiMessage[] = [{ role: 'user', content: request.question }];
   const usage = { inputTokens: 0, outputTokens: 0 };
   const seen = new Map<string, RecordRef>();
@@ -52,7 +69,7 @@ export async function runTools(
       // A copy: the conversation grows after the call.
       messages: [...messages],
       tools: specs,
-      ...(force ? { forceTool: ANSWER_TOOL.name } : {}),
+      ...(force ? { forceTool: final.name } : {}),
       maxTokens: MAX_TOKENS,
     });
     usage.inputTokens += response.usage.inputTokens;
@@ -60,39 +77,43 @@ export async function runTools(
     if (response.stopReason === 'refusal') return failed('The model declined to answer');
 
     const uses = response.content.filter((block): block is Extract<AiContent, { type: 'tool_use' }> => block.type === 'tool_use');
-    const answer = uses.find((use) => use.name === ANSWER_TOOL.name);
-    if (answer) {
-      const parsed = answerSchema.safeParse(answer.input);
-      if (parsed.success) return { status: 'done', usage, output: checked(parsed.data, seen), refs: [...seen.values()], error: null };
+    const ending = uses.find((use) => use.name === final.name);
+    if (ending) {
+      const parsed = final.input.safeParse(ending.input);
+      if (parsed.success) {
+        const output = final.check(parsed.data, (ref) => seen.has(key(ref))) as object;
+        return { status: 'done', usage, output, refs: [...seen.values()], error: null };
+      }
       if (force) return failed('The model gave no answer');
     } else if (force) {
       return failed('The model gave no answer');
     }
     if (uses.length === 0) {
-      // Text alone: the next turn must answer.
+      // Text alone: the next turn must end.
       force = true;
       messages.push({ role: 'assistant', content: response.content.length > 0 ? response.content : [{ type: 'text', text: '…' }] });
-      messages.push({ role: 'user', content: 'Give your answer with the answer tool.' });
+      messages.push({ role: 'user', content: `Finish with the ${final.name} tool.` });
       continue;
     }
 
     messages.push({ role: 'assistant', content: response.content });
     const results: { type: 'tool_result'; toolUseId: string; content: string }[] = [];
     for (const use of uses) {
-      results.push({ type: 'tool_result', toolUseId: use.id, content: await runOne(request.tools, use, request.ctx, seen) });
+      results.push({ type: 'tool_result', toolUseId: use.id, content: await runOne(request.tools, final, use, request.ctx, seen) });
     }
     messages.push({ role: 'user', content: results });
   }
 }
 
-async function runOne(
+async function runOne<T>(
   tools: AiTool<unknown>[],
+  final: FinalTool<T>,
   use: { name: string; input: unknown },
   ctx: ToolContext,
   seen: Map<string, RecordRef>,
 ): Promise<string> {
-  if (use.name === ANSWER_TOOL.name) {
-    return `Error: the answer did not match its schema. ${JSON.stringify(answerSchema.safeParse(use.input).error?.issues ?? [])}`;
+  if (use.name === final.name) {
+    return `Error: the ${final.name} input did not match its schema. ${JSON.stringify(final.input.safeParse(use.input).error?.issues ?? [])}`;
   }
   const tool = tools.find((one) => one.name === use.name);
   if (!tool) return `Error: there is no tool named ${use.name}.`;
@@ -101,12 +122,4 @@ async function runOne(
   const result = await tool.run(ctx, input.data);
   for (const ref of result.refs) seen.set(key(ref), ref);
   return JSON.stringify(result.data);
-}
-
-/** Only what the tools returned may be cited or acted on. */
-function checked(answer: Answer, seen: Map<string, RecordRef>): Answer {
-  const known = (ref: RecordRef) => seen.has(key(ref));
-  const refs = answer.refs.filter(known);
-  const action = answer.action && answer.action.targets.every(known) && targetsFit(answer.action.kind, answer.action.targets) ? answer.action : null;
-  return { text: answer.text, refs, action };
 }

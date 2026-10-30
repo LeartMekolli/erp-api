@@ -3,11 +3,14 @@ import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AttentionService } from '../reporting/attention.service';
+import { DashboardController } from '../reporting/dashboard.controller';
 import { ReportsService } from '../reporting/reports.service';
 import { ReportsModule } from '../reporting/reporting.module';
 import { AI_PROVIDER } from './ai-provider';
 import type { AiProvider } from './ai-provider';
 import { AskService } from './ask.service';
+import { BriefingHandler } from './briefing.handler';
+import { BriefingService } from './briefing.service';
 import { ClaudeAiProvider } from './claude-ai-provider';
 import { FakeAiProvider } from './fake-ai-provider';
 import { KnowledgeModule } from './knowledge/knowledge.module';
@@ -30,12 +33,15 @@ import type { AiTool } from './tools/tool';
 /** The staff AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing (AI spec). */
 @Module({
   imports: [NotificationsModule, ReportsModule, KnowledgeModule],
-  controllers: [RunsController, SearchController],
+  // The dashboard's controller lives here: it shows the briefing, and this module imports ReportsModule.
+  controllers: [RunsController, SearchController, DashboardController],
   providers: [
     SearchService,
     RunsService,
     RunHandler,
     AskService,
+    BriefingService,
+    BriefingHandler,
     {
       provide: AI_PROVIDER,
       inject: [ConfigService],

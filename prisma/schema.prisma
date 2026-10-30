@@ -117,6 +117,9 @@ model Tenant {
   reportWeeks           ReportWeek[]
   knowledgeArticles     KnowledgeArticle[]
   knowledgeAttachments  KnowledgeAttachment[]
+  aiBriefings           AiBriefing[]
+  aiSuggestions         AiSuggestion[]
+  aiSuggestionDismissals AiSuggestionDismissal[]
 
   @@map("tenant")
 }
@@ -173,6 +176,7 @@ model User {
   creditCampaigns     CreditCampaign[]
   aiRuns              AiRun[]
   knowledgeArticles   KnowledgeArticle[]
+  aiSuggestionDismissals AiSuggestionDismissal[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -2533,9 +2537,10 @@ model AiRun {
   input     Json
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User?        @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: NoAction)
-  result AiRunResult?
+  tenant   Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User?        @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: NoAction)
+  result   AiRunResult?
+  briefing AiBriefing?
 
   @@unique([tenantId, id])
   @@index([tenantId, createdAt])
@@ -2580,6 +2585,64 @@ model AiLimitNotice {
 
   @@unique([tenantId, month, level])
   @@map("ai_limit_notice")
+}
+
+// The managers' morning briefing (AI 1 spec, goal 7): written once, when its run finishes.
+model AiBriefing {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  runId     String   @unique @map("run_id") @db.Uuid
+  summary   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  run         AiRun          @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction)
+  suggestions AiSuggestion[]
+
+  @@unique([tenantId, runId])
+  @@unique([tenantId, id])
+  @@index([tenantId, createdAt])
+  @@map("ai_briefing")
+}
+
+// One suggestion of a briefing: a kind fixed in code and the records it names, checked when stored.
+model AiSuggestion {
+  id          String @id @default(uuid(7)) @db.Uuid
+  tenantId    String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  briefingId  String @map("briefing_id") @db.Uuid
+  // From 0, in the order the model gave them.
+  position    Int
+  kind        String
+  // RecordRef[]
+  targets     Json
+  // Its kind and sorted targets (suggestions.ts): the same suggestion has the same one.
+  fingerprint String
+  reason      String
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  briefing AiBriefing @relation(fields: [tenantId, briefingId], references: [tenantId, id], onDelete: Cascade)
+
+  @@index([tenantId, briefingId])
+  @@map("ai_suggestion")
+}
+
+// A suggestion dismissed for the whole workspace: not suggested again for 14 days. Dismissing it again
+// starts the 14 days over.
+model AiSuggestionDismissal {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  fingerprint       String
+  // Given to the briefing's model as what not to suggest.
+  kind              String
+  targets           Json
+  dismissedByUserId String   @map("dismissed_by_user_id") @db.Uuid
+  dismissedAt       DateTime @default(now()) @map("dismissed_at")
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  dismissedBy User   @relation(fields: [tenantId, dismissedByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, fingerprint])
+  @@map("ai_suggestion_dismissal")
 }
 
 // ---------------------------------------------------------------------------

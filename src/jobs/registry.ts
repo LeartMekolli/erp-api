@@ -166,6 +166,8 @@ export const SCHEDULED_JOBS = {
   'payments.campaigns.grant': { queue: 'payments', schedule: { every: 300_000 }, lockTtlMs: 280_000 },
   // Recomputes every workspace's dashboard numbers for this week and last (AI 1 spec, goal 4).
   'reports.refresh': { queue: 'maintenance', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
+  // Queues the morning briefing of each workspace where it is 07:00 or later and none ran today (AI 1 spec, goal 7).
+  'ai.briefing': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;

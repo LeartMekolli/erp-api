@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { SUGGESTION_KINDS } from '../ai/suggestions';
+import { RECORD_TYPES } from '../ai/tools/tool';
 import { ATTENTION_KINDS, MAX_ITEMS } from './attention.service';
 import { weekMetricsSchema } from './week-metrics';
 
@@ -31,6 +33,31 @@ export const readerWeekSchema = weekMetricsSchema.extend({
   partners: weekMetricsSchema.shape.partners.optional(),
 });
 
+const labelledRefSchema = z.strictObject({ type: z.enum(RECORD_TYPES), id: z.uuid(), label: z.string() });
+
+/**
+ * The managers' AI briefing: only for staff with `report.read`, `payment.read` and `partner.read`
+ * (absent for anyone else). Dismissed suggestions, and ones whose target is gone, are left out.
+ */
+export const aiSectionSchema = z.discriminatedUnion('enabled', [
+  z.strictObject({
+    enabled: z.literal(true),
+    briefing: z
+      .strictObject({
+        summary: z.string(),
+        created_at: z.string(),
+        suggestions: z.array(
+          z.strictObject({ id: z.uuid(), kind: z.enum(SUGGESTION_KINDS), targets: z.array(labelledRefSchema), reason: z.string() }),
+        ),
+      })
+      .nullable(),
+    // A briefing is being written.
+    pending: z.boolean(),
+  }),
+  z.strictObject({ enabled: z.literal(false), reason: z.enum(['not_set_up', 'limit_used']) }),
+]);
+export type AiSection = z.infer<typeof aiSectionSchema>;
+
 export const dashboardResponseSchema = z.strictObject({
   week: z.strictObject({
     start: z.iso.date(),
@@ -41,5 +68,6 @@ export const dashboardResponseSchema = z.strictObject({
   current: readerWeekSchema,
   previous: readerWeekSchema,
   attention: attentionSchema,
+  ai: aiSectionSchema.optional(),
 });
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>;

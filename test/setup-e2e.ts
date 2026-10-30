@@ -21,6 +21,8 @@ const defaults: Record<string, string> = {
   S3_ACCESS_KEY_ID: 'minio',
   S3_SECRET_ACCESS_KEY: 'minio-password',
   S3_FORCE_PATH_STYLE: 'true',
+  // Specs queue briefings themselves (ai-briefing.e2e-spec.ts).
+  AI_BRIEFINGS: 'false',
 };
 
 for (const [key, value] of Object.entries(defaults)) {

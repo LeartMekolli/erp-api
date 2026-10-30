@@ -120,6 +120,12 @@ const envSchema = z
       .refine((model) => Object.hasOwn(AI_MODELS, model), {
         message: `must be one of ${Object.keys(AI_MODELS).join(', ')}`,
       }),
+    // The scheduled morning briefing. End-to-end tests turn it off: every spec's worker runs the
+    // scheduled jobs against the one shared database, and would brief each other's workspaces.
+    AI_BRIEFINGS: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
     // Where knowledge passages are searched. `fake` is in memory; no test calls Pinecone.
     VECTOR_STORE: z.enum(['fake', 'pinecone']).default('fake'),
     // Both required with pinecone; the index embeds the field `text` (integrated embedding). The key is never logged.
