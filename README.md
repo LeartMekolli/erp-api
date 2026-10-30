@@ -243,6 +243,34 @@ A walkthrough in Swagger, on the demo data with the keys set (`test/payments-2-s
 8. `POST /payments/campaigns` for three named customers, 50 credits each, budget 100, then `.../activate`: two are granted, `budget_left` is 0, and staff are told once.
 9. `stripe events resend <id>` for any subscription or invoice event: nothing changes. `UPDATE` or `DELETE` on `credit_grant`, `credit_spend` or `credit_entry` is refused, like the money ledger.
 
+## AI
+
+Staff get a dashboard and Cmd+K. `GET /reports/dashboard` (`report.read`) shows this week against last week (orders, on-time delivery, hours per step, the defect rate, top customers, customers ordering less than usual, slow payers, how full each partner is), recomputed every 15 minutes in the workspace's time zone, and a live "needs attention" list (orders at risk, overdue jobs and invoices, orders waiting for payment or held, nearly full partners, unanswered offers, a jump in defects). Money figures need `payment.read` and partner figures `partner.read`. Managers, staff who also hold `payment.read` and `partner.read`, see a morning briefing written by the AI at 07:00 in the workspace's time zone: a short summary and up to five suggestions, each opening a screen for a person to act on. They can refresh it (`POST /reports/dashboard/briefing`, once every 15 minutes) and dismiss a suggestion for 14 days.
+
+Cmd+K searches orders by number, customers and partners by name and articles by title (`GET /search?q=`), and answers questions (`POST /ai/ask`, `ai.use`; poll `GET /ai/runs/{id}`). The AI reads through read-only tools that see only what the person asking may see, answers only from what they returned, and cites the records it used; it may propose one action, never take it. Staff with `knowledge.write` write the knowledge base (`/knowledge/articles`, Markdown with PDF or text attachments) that the AI answers how-to questions from.
+
+Every AI call is a run, logged insert only with its model, tokens and cost (`GET /ai/runs`, `settings.read`). A workspace has no AI until a platform admin sets its monthly limit in USD (`PUT /platform/tenants/{id}/ai-limit`, `{ "monthly_usd": "20.00" }`; `null` turns it off). Asks and refreshes are refused with a 409 once the month's spend reaches it, and staff with `settings.write` are told at 80 % and at 100 %. The AI month is the UTC calendar month.
+
+`AI_PROVIDER=fake` and `VECTOR_STORE=fake` (the defaults, and every test) never call Anthropic or Pinecone. For the real thing:
+
+1. `AI_PROVIDER=claude`, `ANTHROPIC_API_KEY`, and optionally `AI_MODEL` (default `claude-haiku-4-5`; the models and their prices are in `src/modules/ai/ai-models.ts`).
+2. In Pinecone, create an index for an embedding model (integrated embedding), with its field map embedding `text`. Set `VECTOR_STORE=pinecone`, `PINECONE_API_KEY` and `PINECONE_INDEX`. Each workspace gets its own namespace, `ws_<workspace id>`.
+3. `npm run knowledge:reindex` rebuilds the index from every published article, for a new index or after a change of embedding model.
+4. `AI_BRIEFINGS=false` stops the scheduled briefing only; managers can still refresh.
+
+`npm run seed` gives the demo workspace a 20.00 USD limit and three published articles: "Handling a failed casting QC", "Offering a job to a partner" and "Chasing an overdue invoice"; the worker indexes them.
+
+A walkthrough in Swagger, on the demo data with real keys (`test/ai-slice.e2e-spec.ts` runs the same with the fakes; it is the spec's "Done when"):
+
+1. As the platform admin: `PUT /platform/tenants/{id}/ai-limit` with `20.00` for the demo workspace.
+2. As the owner: `GET /reports/dashboard` shows this week against last week, the attention list and, after `POST /reports/dashboard/briefing` and a few seconds, the briefing with its suggestions, each with its records labelled.
+3. As a staff member without `payment.read`: the dashboard has no revenue, no invoices and no briefing.
+4. As the owner: `POST /reports/dashboard/suggestions/{id}/dismiss`; the suggestion is gone and isn't suggested again for 14 days.
+5. Cmd+K: `GET /search?q=1042` finds the order and `?q=Northcast` the partner. `POST /ai/ask` "which of Brightline's orders are late?" answers with the orders, linked; "how do we handle a failed casting QC?" answers from the seeded article, cited; "offer the waiting cast job to Layerline" proposes `offer_job`.
+6. Asking about revenue without `payment.read` gets an answer without it.
+7. As the platform admin: lower the limit below the month's spend. The next ask and refresh are 409, the dashboard shows `ai: { enabled: false, reason: "limit_used" }`, and staff are told once.
+8. `GET /ai/runs` lists every run with its tokens and cost. `UPDATE` or `DELETE` on `ai_run` or `ai_run_result` is refused.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.

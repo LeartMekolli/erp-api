@@ -3,6 +3,8 @@ import { LoggingModule } from '../common/logging/logging.module';
 import { ReportingModule } from '../common/reporting/reporting.module';
 import { ConfigService } from '../config/config.service';
 import { PrismaService } from '../database/prisma.service';
+import { ArticlesService } from '../modules/ai/knowledge/articles.service';
+import { KnowledgeModule } from '../modules/ai/knowledge/knowledge.module';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
 import { PaymentAccountService } from '../modules/payments/payment-account.service';
 import { PaymentsModule } from '../modules/payments/payments.module';
@@ -15,6 +17,7 @@ import { TenantService } from '../platform/tenant.service';
 import { StorageModule } from '../storage/storage.module';
 import { createPlatformAdmin } from './platform-admins';
 import { CliModule, runCli } from './run-cli';
+import { seedAi } from './seed-ai';
 import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
 import { seedCustomers } from './seed-customers';
 import { seedOrders } from './seed-orders';
@@ -48,18 +51,18 @@ const SEED_TENANTS: CreateTenantInput[] = [
 
 /**
  * The seed also stores the demo's payment account and creates payout accounts through the provider,
- * so it loads Payments and the global modules its imports rely on, as the worker does (without
- * consuming jobs).
+ * and writes the demo's knowledge articles, so it loads Payments, the knowledge base and the global
+ * modules their imports rely on, as the worker does (without consuming jobs).
  */
-@Module({ imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule] })
+@Module({ imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule] })
 class SeedModule {}
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
- * (`seed-orders.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`) and its plans, packs
- * and campaign (`seed-plans.ts`). The admin's, the
+ * (`seed-orders.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
+ * and campaign (`seed-plans.ts`) and its AI limit and knowledge articles (`seed-ai.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
@@ -177,5 +180,12 @@ void runCli(async (app) => {
     `plans for demo: ${plans.starter ? 'set Starter to 10 credits and 2 members, ' : ''}` +
       `created ${plans.plans} plans, ${plans.packs} credit packs, ${plans.campaigns} campaigns` +
       (keys ? ', published to Stripe\n' : '; no DEMO_STRIPE_* keys, so the plans are not published\n'),
+  );
+
+  // Written as the demo's catalog user too; publishing queues the articles' indexing for the worker.
+  const ai = await seedAi({ prisma, articles: app.get(ArticlesService) }, demo.id, uploader.id);
+  process.stdout.write(
+    `ai for demo: ${ai.limit ? 'set the monthly limit to 20.00 USD, ' : ''}created ${ai.articles} knowledge articles` +
+      ' (indexed by the worker)\n',
   );
 }, SeedModule);

@@ -321,7 +321,8 @@ describe('payments: plans and credits, end to end', () => {
     const { spendId } = await credits.spend(tenant.id, brightline, { amount, reason: 'Image generation', reference: 'slice-spend' });
     const taken = await prisma.inTenant(tenant.id, (tx) => tx.creditEntry.findMany({ where: { spendId }, include: { grant: true } }));
     const bySource = (source: string) => taken.filter((entry) => entry.grant.source === source).reduce((sum, entry) => sum + entry.amount, 0);
-    expect([bySource('campaign'), bySource('allowance'), bySource('pack')]).toEqual([-50, -dropped.by_source.allowance, -5]);
+    // `0 -`, not unary minus: no allowance left would be -0, which toEqual tells apart from the 0 summed.
+    expect([bySource('campaign'), bySource('allowance'), bySource('pack')]).toEqual([-50, 0 - dropped.by_source.allowance, -5]);
     await expect(
       credits.spend(tenant.id, brightline, { amount: dropped.total - amount + 1, reason: 'Too much', reference: 'slice-too-much' }),
     ).rejects.toThrow('Not enough credits');
