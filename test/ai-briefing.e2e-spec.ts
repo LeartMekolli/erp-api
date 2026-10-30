@@ -26,8 +26,21 @@ interface Suggestion {
   targets: { type: string; id: string; label: string }[];
   reason: string;
 }
+interface Dismissal {
+  id: string;
+  kind: string;
+  targets: { type: string; id: string; label: string }[];
+  dismissed_by: { id: string; name: string };
+  dismissed_at: string;
+  until: string;
+}
 type Ai =
-  | { enabled: true; pending: boolean; briefing: { summary: string; created_at: string; suggestions: Suggestion[] } | null }
+  | {
+      enabled: true;
+      pending: boolean;
+      briefing: { summary: string; created_at: string; suggestions: Suggestion[] } | null;
+      dismissed: Dismissal[];
+    }
   | { enabled: false; reason: string };
 
 const fixture: JobRegistry = { jobs: { ...JOBS, 'ai.run': { ...JOBS['ai.run'], backoffMs: 10 } }, scheduled: SCHEDULED_JOBS };
@@ -53,10 +66,12 @@ describe('ai: the briefing', () => {
     put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
     patch: (path: string, body: object) => http().patch(path).set('Authorization', `Bearer ${token}`).send(body),
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
+    delete: (path: string) => http().delete(path).set('Authorization', `Bearer ${token}`),
   });
   type Client = ReturnType<typeof as>;
 
   let tenantId: string;
+  let ownerId: string;
   let owner: Client;
   let reader: Client;
   let northcast: string;
@@ -80,6 +95,7 @@ describe('ai: the briefing', () => {
     tenantId = tenant.id;
     createdTenants.push(tenant.id);
     const ownerUser = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
+    ownerId = ownerUser.id;
     const readerUser = await createTestUser(prisma, tenant.id, { roles: [] });
     await prisma.inTenant(tenant.id, async (tx) => {
       await tx.tenant.update({ where: { id: tenant.id }, data: { aiMonthlyLimitUsd: new Prisma.Decimal('5.00') } });
@@ -182,16 +198,19 @@ describe('ai: the briefing', () => {
   it('shows managers the summary and the suggestions it could check, labelled', async () => {
     scriptBriefing([offerJob(), { kind: 'chase_invoice', targets: [{ type: 'invoice', id: newId() }], reason: 'Overdue.' }]);
 
-    const queued = await owner.post('/reports/dashboard/briefing').expect(202);
+    // Two refreshes at the same moment: one is queued, the other refused (review fix).
+    const both = await Promise.all([owner.post('/reports/dashboard/briefing'), owner.post('/reports/dashboard/briefing')]);
+    expect(both.map((response) => response.status).sort()).toEqual([202, 409]);
+    const queued = both.find((response) => response.status === 202)!;
+    const refused = both.find((response) => response.status === 409)!;
+    expect(JSON.stringify(refused.body)).toContain('Refreshed less than 15 minutes ago');
     const runId = (queued.body as { id: string }).id;
-    // A second refresh at once is refused.
-    expect(JSON.stringify((await owner.post('/reports/dashboard/briefing').expect(409)).body)).toContain('Refreshed less than 15 minutes ago');
     await briefingAfter(runId);
     // A briefing run today: not due again.
     expect(await briefings.due(tenantId, new Date(`${today()}T23:00:00Z`))).toBe(false);
 
     const ai = await aiOf(owner);
-    expect(ai).toMatchObject({ enabled: true, pending: false, briefing: { summary: 'One offer is waiting for an answer.' } });
+    expect(ai).toMatchObject({ enabled: true, pending: false, briefing: { summary: 'One offer is waiting for an answer.' }, dismissed: [] });
     const suggestions = ai?.enabled ? ai.briefing!.suggestions : [];
     expect(suggestions).toHaveLength(1);
     expect(suggestions[0]).toMatchObject({
@@ -215,6 +234,26 @@ describe('ai: the briefing', () => {
     await owner.post(`/reports/dashboard/suggestions/${suggestion!.id}/dismiss`).expect(204);
     const after = await aiOf(owner);
     expect(after?.enabled ? after.briefing!.suggestions : null).toEqual([]);
+
+    // The dismissed list shows who dismissed what, until when; undoing brings the suggestion back (review fix).
+    const dismissed = after?.enabled ? after.dismissed : [];
+    expect(dismissed).toHaveLength(1);
+    expect(dismissed[0]).toMatchObject({
+      kind: 'offer_job',
+      targets: [
+        { type: 'job', id: offer, label: expect.stringContaining('Northcast') },
+        { type: 'partner', id: northcast, label: 'Northcast Foundry' },
+      ],
+      dismissed_by: { id: ownerId },
+    });
+    expect(new Date(dismissed[0].until).getTime() - new Date(dismissed[0].dismissed_at).getTime()).toBe(14 * DAY_MS);
+    await reader.delete(`/reports/dashboard/dismissals/${dismissed[0].id}`).expect(403);
+    await owner.delete(`/reports/dashboard/dismissals/${newId()}`).expect(404);
+    await owner.delete(`/reports/dashboard/dismissals/${dismissed[0].id}`).expect(204);
+    const undone = await aiOf(owner);
+    expect(undone?.enabled ? undone.briefing!.suggestions.map((one) => one.id) : null).toEqual([suggestion!.id]);
+    expect(undone?.enabled ? undone.dismissed : null).toEqual([]);
+    await owner.post(`/reports/dashboard/suggestions/${suggestion!.id}/dismiss`).expect(204);
 
     scriptBriefing([offerJob()]);
     const again = await briefingAfter((await briefings.queue(tenantId)).runId);

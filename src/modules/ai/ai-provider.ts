@@ -5,7 +5,9 @@
  */
 export type AiContent =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: unknown };
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  // A provider's own block (Claude's thinking), passed back unchanged on the next call of the run.
+  | { type: 'reasoning'; raw: unknown };
 
 export type AiMessage =
   | { role: 'user'; content: string | { type: 'tool_result'; toolUseId: string; content: string }[] }

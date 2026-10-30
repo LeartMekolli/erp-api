@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
+import { Controller, Delete, Get, HttpCode, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -30,7 +30,8 @@ export class DashboardController {
       '`payment.read` and partner figures `partner.read`; without them they are left out, never zeroed. `attention` is ' +
       'live: each kind follows the permission of the list it comes from, with its total and at most 20 items. `ai` is ' +
       'only there for staff holding `report.read`, `payment.read` and `partner.read`: the latest briefing, with ' +
-      'dismissed suggestions and ones naming a record that is gone left out, or why AI is off.',
+      'dismissed suggestions and ones naming a record that is gone left out, and the dismissals of the last 14 days; ' +
+      'or why AI is off.',
     response: dashboardResponseSchema,
     errors: [],
   })
@@ -72,5 +73,19 @@ export class DashboardController {
   @HttpCode(204)
   async dismissSuggestion(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<void> {
     await this.briefings.dismiss(auth, id);
+  }
+
+  @ApiDoc({
+    summary: 'Undo a dismissal: its suggestion shows again at once, and may be suggested again.',
+    description:
+      'For staff holding `report.read`, `payment.read` and `partner.read` (403 otherwise). The id is one of ' +
+      "`ai.dismissed` on the dashboard; an unknown one is a 404.",
+    errors: [400, 404],
+  })
+  @RequirePermission('report.read')
+  @Delete('dashboard/dismissals/:id')
+  @HttpCode(204)
+  async undoDismissal(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<void> {
+    await this.briefings.undismiss(auth, id);
   }
 }

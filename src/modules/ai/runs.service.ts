@@ -6,7 +6,7 @@ import type { AiRun } from '../../generated/prisma/client';
 import { JobsService } from '../../jobs/jobs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { monthBounds, noticeLevel } from './ai-limit';
-import { costOf } from './ai-models';
+import { costOf, worstRunCost } from './ai-models';
 import type { AiResponse } from './ai-provider';
 import type { RecordRef } from './tools/tool';
 
@@ -26,10 +26,18 @@ export type RunOutcome = Omit<RunResult, 'model'>;
 
 type KindHandler = (tenantId: string, run: AiRun) => Promise<RunOutcome>;
 
-/** Held back from the limit for each run still waiting, so runs queued together can't all pass it. */
-export const RESERVE_USD = new Prisma.Decimal('0.25');
-/** A run waiting longer than this is taken as lost and no longer holds back its reserve. */
+/** A run waiting longer than this is taken as lost: it no longer holds back its reserve, and is never run. */
 const PENDING_WINDOW_MS = 60 * 60 * 1000;
+
+type Tx = Prisma.TransactionClient;
+
+/** The notice levels newly crossed this month, with the figures they are told with; null without a limit. */
+type Crossed = { raised: number[]; limit: Prisma.Decimal; spent: Prisma.Decimal } | null;
+
+/** Takes the workspace's AI-limit lock for the transaction. Always taken alone, never with another lock. */
+function lockLimit(tx: Tx, tenantId: string): Promise<number> {
+  return tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${tenantId}:ai_limit`}::text, 0))`;
+}
 
 /** What the workspace's AI has cost in the UTC month holding `at`. Runs in the transaction's workspace. */
 export async function aiSpent(tx: Prisma.TransactionClient, at: Date): Promise<Prisma.Decimal> {
@@ -62,11 +70,17 @@ export class RunsService {
 
   /**
    * Refused with a 409, writing nothing, when the workspace has no limit or the month's spend and the
-   * reserve for runs still waiting reach it. The limit's lock is taken alone, never with another.
+   * worst case of each run still waiting reach it, so at most one run is accepted past the limit.
+   * `check` runs under the limit's lock first (the briefing's refresh interval).
    */
-  async queue(tenantId: string, input: { userId: string | null; kind: RunKind; payload: object }): Promise<{ runId: string }> {
+  async queue(
+    tenantId: string,
+    input: { userId: string | null; kind: RunKind; payload: object },
+    check?: (tx: Tx) => Promise<void>,
+  ): Promise<{ runId: string }> {
     const runId = await this.prisma.inTenant(tenantId, async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${tenantId}:ai_limit`}::text, 0))`;
+      await lockLimit(tx, tenantId);
+      await check?.(tx);
       const { aiMonthlyLimitUsd: limit } = await tx.tenant.findUniqueOrThrow({
         where: { id: tenantId },
         select: { aiMonthlyLimitUsd: true },
@@ -75,10 +89,13 @@ export class RunsService {
         throw new ConflictException('AI is not set up for this workspace');
       }
       const now = new Date();
-      const pending = await tx.aiRun.count({
+      // Counted before the spend: a run finishing in between is counted twice, never missed.
+      const pending = await tx.aiRun.findMany({
         where: { result: { is: null }, createdAt: { gte: new Date(now.getTime() - PENDING_WINDOW_MS) } },
+        select: { model: true },
       });
-      if ((await aiSpent(tx, now)).add(RESERVE_USD.mul(pending)).gte(limit)) {
+      const reserved = pending.reduce((sum, run) => sum.add(worstRunCost(run.model)), new Prisma.Decimal(0));
+      if ((await aiSpent(tx, now)).add(reserved).gte(limit)) {
         throw new ConflictException("This month's AI limit is used");
       }
       const run = await tx.aiRun.create({
@@ -101,6 +118,11 @@ export class RunsService {
       tx.aiRun.findUnique({ where: { id: runId }, include: { result: { select: { id: true } } } }),
     );
     if (!run || run.result) return;
+    // Its reserve has lapsed, so the limit no longer counts it: never run it now.
+    if (Date.now() - run.createdAt.getTime() > PENDING_WINDOW_MS) {
+      await this.fail(tenantId, runId, 'Not run in time');
+      return;
+    }
     const handler = this.handlers.get(run.kind as RunKind);
     if (!handler) {
       throw new Error(`No handler for AI runs of kind ${run.kind}`);
@@ -123,9 +145,13 @@ export class RunsService {
     });
   }
 
-  /** Writes the run's result once, then tells staff of each notice level the month has newly crossed. */
+  /**
+   * Writes the run's result once, then tells staff of each notice level the month has newly crossed.
+   * Under the limit's lock, so two runs finishing together each see the other's cost.
+   */
   async finish(tenantId: string, runId: string, result: RunResult): Promise<void> {
     const crossed = await this.prisma.inTenant(tenantId, async (tx) => {
+      await lockLimit(tx, tenantId);
       const written = await tx.aiRunResult.createMany({
         data: [
           {
@@ -142,25 +168,44 @@ export class RunsService {
         skipDuplicates: true,
       });
       if (written.count === 0) return null;
-
-      const { aiMonthlyLimitUsd: limit } = await tx.tenant.findUniqueOrThrow({
-        where: { id: tenantId },
-        select: { aiMonthlyLimitUsd: true },
-      });
-      if (limit === null) return null;
-      const now = new Date();
-      const spent = await aiSpent(tx, now);
-      const level = noticeLevel(spent, limit);
-      const levels = level === 100 ? [80, 100] : level === 80 ? [80] : [];
-      const raised: number[] = [];
-      for (const one of levels) {
-        const notice = await tx.aiLimitNotice.createMany({ data: [{ month: monthBounds(now).key, level: one }], skipDuplicates: true });
-        if (notice.count > 0) raised.push(one);
-      }
-      return { raised, limit, spent };
+      return this.crossedLevels(tx, tenantId);
     });
-    if (!crossed) return;
+    await this.tell(tenantId, crossed);
+  }
 
+  /**
+   * The `ai.limit.check` job, queued when a platform admin sets the limit: tells staff of each notice level
+   * the month's spend has crossed against the new limit, once per month and level as always.
+   */
+  async checkNotices(tenantId: string): Promise<void> {
+    const crossed = await this.prisma.inTenant(tenantId, async (tx) => {
+      await lockLimit(tx, tenantId);
+      return this.crossedLevels(tx, tenantId);
+    });
+    await this.tell(tenantId, crossed);
+  }
+
+  /** Records each notice level the month has newly crossed; the caller holds the limit's lock. */
+  private async crossedLevels(tx: Tx, tenantId: string): Promise<Crossed> {
+    const { aiMonthlyLimitUsd: limit } = await tx.tenant.findUniqueOrThrow({
+      where: { id: tenantId },
+      select: { aiMonthlyLimitUsd: true },
+    });
+    if (limit === null) return null;
+    const now = new Date();
+    const spent = await aiSpent(tx, now);
+    const level = noticeLevel(spent, limit);
+    const levels = level === 100 ? [80, 100] : level === 80 ? [80] : [];
+    const raised: number[] = [];
+    for (const one of levels) {
+      const notice = await tx.aiLimitNotice.createMany({ data: [{ month: monthBounds(now).key, level: one }], skipDuplicates: true });
+      if (notice.count > 0) raised.push(one);
+    }
+    return { raised, limit, spent };
+  }
+
+  private async tell(tenantId: string, crossed: Crossed): Promise<void> {
+    if (!crossed) return;
     for (const level of crossed.raised) {
       try {
         await this.notifications.raise(

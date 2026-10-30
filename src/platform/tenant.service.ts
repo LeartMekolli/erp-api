@@ -7,6 +7,7 @@ import { ConfigService } from '../config/config.service';
 import { PrismaService } from '../database/prisma.service';
 import { Prisma } from '../generated/prisma/client';
 import type { Tenant } from '../generated/prisma/client';
+import { JobsService } from '../jobs/jobs.service';
 import { aiSpent } from '../modules/ai/runs.service';
 import { AuditInput, AuditService } from '../modules/audit/audit.service';
 import { IDENTITY_NOTIFIER } from '../modules/identity/identity-notifier';
@@ -46,6 +47,7 @@ export class TenantService {
     private readonly audit: AuditService,
     private readonly config: ConfigService,
     @Inject(IDENTITY_NOTIFIER) private readonly notifier: IdentityNotifier,
+    private readonly jobs: JobsService,
   ) {}
 
   /**
@@ -123,9 +125,12 @@ export class TenantService {
     return { next_cursor: page.next_cursor, data };
   }
 
-  /** Sets or removes (null) the workspace's monthly AI limit in USD, audited; answers the tenant view. */
+  /**
+   * Sets or removes (null) the workspace's monthly AI limit in USD, audited; answers the tenant view. A limit
+   * set below what the month has spent tells staff, through `ai.limit.check` after commit.
+   */
   async setAiLimit(id: string, monthlyUsd: string | null, actor: AuditInput['actor']): Promise<TenantResponse> {
-    return this.prisma.inTenant(id, async (tx) => {
+    const response = await this.prisma.inTenant(id, async (tx) => {
       const tenant = await tx.tenant.findUnique({ where: { id }, select: { aiMonthlyLimitUsd: true } });
       if (!tenant) {
         throw new NotFoundException('Tenant not found');
@@ -143,6 +148,10 @@ export class TenantService {
       });
       return this.toResponse(updated, await aiSpent(tx, new Date()));
     });
+    if (monthlyUsd !== null) {
+      await this.jobs.enqueue('ai.limit.check', { tenantId: id, at: String(Date.now()) });
+    }
+    return response;
   }
 
   private toResponse(row: Tenant, aiSpentThisMonth: Prisma.Decimal): TenantResponse {

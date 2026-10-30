@@ -14,6 +14,7 @@ import { BriefingService } from './briefing.service';
 import { ClaudeAiProvider } from './claude-ai-provider';
 import { FakeAiProvider } from './fake-ai-provider';
 import { KnowledgeModule } from './knowledge/knowledge.module';
+import { LimitCheckHandler } from './limit-check.handler';
 import { VECTOR_STORE } from './knowledge/vector-store';
 import type { VectorStore } from './knowledge/vector-store';
 import { RunHandler } from './run.handler';
@@ -39,6 +40,7 @@ import type { AiTool } from './tools/tool';
     SearchService,
     RunsService,
     RunHandler,
+    LimitCheckHandler,
     AskService,
     BriefingService,
     BriefingHandler,

@@ -1,13 +1,15 @@
+import { Logger } from '@nestjs/common';
 import { z } from 'zod';
+import { MAX_OUTPUT_TOKENS, MAX_TOOL_ROUNDS, RUN_INPUT_BUDGET } from './ai-models';
 import type { AiContent, AiMessage, AiProvider, AiResponse } from './ai-provider';
 import type { RunOutcome } from './runs.service';
 import { SUGGESTION_KINDS, targetsFit } from './suggestions';
 import { recordRefSchema, toolSpec } from './tools/tool';
 import type { AiTool, RecordRef, ToolContext } from './tools/tool';
 
-/** Rounds of tool calls before the final tool is forced. */
-export const MAX_TOOL_ROUNDS = 6;
-const MAX_TOKENS = 2_000;
+export { MAX_TOOL_ROUNDS };
+
+const logger = new Logger('runTools');
 
 /**
  * The tool a run ends with: its input is the run's output. `check` keeps only what the run's tools
@@ -62,16 +64,25 @@ export async function runTools<T = Answer>(
 
   let force = false;
   for (let round = 0; ; round += 1) {
-    force ||= round >= MAX_TOOL_ROUNDS;
-    const response: AiResponse = await provider.complete({
-      model: request.model,
-      system: request.system,
-      // A copy: the conversation grows after the call.
-      messages: [...messages],
-      tools: specs,
-      ...(force ? { forceTool: final.name } : {}),
-      maxTokens: MAX_TOKENS,
-    });
+    // The input budget bounds what a run can cost (worstRunCost), so the reserve is a real cap.
+    force ||= round >= MAX_TOOL_ROUNDS || usage.inputTokens >= RUN_INPUT_BUDGET;
+    let response: AiResponse;
+    try {
+      response = await provider.complete({
+        model: request.model,
+        system: request.system,
+        // A copy: the conversation grows after the call.
+        messages: [...messages],
+        tools: specs,
+        ...(force ? { forceTool: final.name } : {}),
+        maxTokens: MAX_OUTPUT_TOKENS,
+      });
+    } catch (error) {
+      // Nothing spent yet: the job may retry. Otherwise a retry would pay for this run's turns again.
+      if (round === 0) throw error;
+      logger.warn({ err: error }, 'the model failed partway through a run');
+      return failed('The model could not be reached');
+    }
     usage.inputTokens += response.usage.inputTokens;
     usage.outputTokens += response.usage.outputTokens;
     if (response.stopReason === 'refusal') return failed('The model declined to answer');
@@ -117,6 +128,16 @@ async function runOne<T>(
   }
   const tool = tools.find((one) => one.name === use.name);
   if (!tool) return `Error: there is no tool named ${use.name}.`;
+  try {
+    return await runTool(tool, use, ctx, seen);
+  } catch (error) {
+    // What failed inside stays in the log, never in the conversation.
+    logger.warn({ err: error, tool: use.name }, 'an AI tool failed');
+    return `Error: ${use.name} failed. Try another way, or answer with what you have.`;
+  }
+}
+
+async function runTool(tool: AiTool<unknown>, use: { name: string; input: unknown }, ctx: ToolContext, seen: Map<string, RecordRef>): Promise<string> {
   const input = tool.input.safeParse(use.input);
   if (!input.success) return `Error: invalid input for ${use.name}: ${JSON.stringify(input.error.issues)}`;
   const result = await tool.run(ctx, input.data);

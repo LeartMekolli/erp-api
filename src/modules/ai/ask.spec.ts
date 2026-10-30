@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { TenantPermission } from '../identity/permissions';
+import { RUN_INPUT_BUDGET } from './ai-models';
 import { MAX_TOOL_ROUNDS, runTools } from './ask';
 import { FakeAiProvider, fakeText, fakeToolUse } from './fake-ai-provider';
 import type { AiTool, RecordRef, ToolContext } from './tools/tool';
@@ -155,5 +156,63 @@ describe('runTools', () => {
     provider.script({ content: [], stopReason: 'refusal', usage: { inputTokens: 10, outputTokens: 0 } });
 
     expect(await ask(provider, stubTools().tools)).toMatchObject({ status: 'failed', error: 'The model declined to answer' });
+  });
+
+  it('ends a run that already spent as failed, with its tokens, when the provider then fails (review fix)', async () => {
+    const provider = new FakeAiProvider();
+    // The second call finds nothing scripted and throws, as an outage after the first turn would.
+    provider.script(fakeToolUse('find_orders', { late: true }));
+
+    const outcome = await ask(provider, stubTools().tools);
+
+    expect(outcome).toMatchObject({
+      status: 'failed',
+      usage: { inputTokens: 100, outputTokens: 50 },
+      output: null,
+      error: 'The model could not be reached',
+    });
+    expect(outcome.refs).toEqual([
+      { type: 'order', id: ORDER },
+      { type: 'job', id: JOB },
+    ]);
+  });
+
+  it('lets a provider failure on the first call through, so the job may retry a run that spent nothing', async () => {
+    await expect(ask(new FakeAiProvider(), stubTools().tools)).rejects.toThrow('nothing scripted');
+  });
+
+  it('gives a tool that throws back to the model as an error, and carries on', async () => {
+    const provider = new FakeAiProvider();
+    const broken: AiTool<Record<string, never>> = {
+      name: 'broken',
+      description: 'Always fails.',
+      permissions: [],
+      input: z.strictObject({}),
+      run: () => Promise.reject(new Error('connection reset')),
+    };
+    provider.script(fakeToolUse('broken', {}, 'call_broken'), answer({}));
+
+    const outcome = await ask(provider, [...stubTools().tools, broken as AiTool<unknown>]);
+
+    expect(outcome.status).toBe('done');
+    const result = JSON.stringify(provider.calls[1].messages.at(-1));
+    expect(result).toContain('call_broken');
+    expect(result).toContain('Error');
+    // What failed inside is not given to the model.
+    expect(result).not.toContain('connection reset');
+  });
+
+  it(`forces the answer once the run's input reaches ${RUN_INPUT_BUDGET} tokens`, async () => {
+    const provider = new FakeAiProvider();
+    provider.script(
+      { ...fakeToolUse('find_orders', {}), usage: { inputTokens: RUN_INPUT_BUDGET, outputTokens: 50 } },
+      answer({}),
+    );
+
+    const outcome = await ask(provider, stubTools().tools);
+
+    expect(provider.calls[0].forceTool).toBeUndefined();
+    expect(provider.calls[1].forceTool).toBe('answer');
+    expect(outcome.status).toBe('done');
   });
 });

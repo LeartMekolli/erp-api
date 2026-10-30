@@ -186,6 +186,75 @@ describe('ai: runs and the monthly limit', () => {
     expect((refused[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
   });
 
+  /** A run waiting for the worker, written directly so no job runs it. */
+  const waiting = (w: Workspace, model: string, createdAt = new Date()) =>
+    prisma.inTenant(w.id, (tx) => tx.aiRun.create({ data: { kind: 'ask', model, input: { question: 'Waiting' }, createdAt } }));
+
+  it("holds back each waiting run's worst case on its own model (review fix, Review Focus 1)", async () => {
+    // 1.00 spent of 1.50: a waiting Opus run (0.76 at worst) leaves no room; a waiting Haiku run (0.19) does.
+    const opus = await workspace();
+    await setLimit(opus.id, '1.50').expect(200);
+    await resultOf(opus, (await ask(opus)).runId);
+    await waiting(opus, 'claude-opus-5-5');
+    await expect(ask(opus)).rejects.toThrow("This month's AI limit is used");
+
+    const haiku = await workspace();
+    await setLimit(haiku.id, '1.50').expect(200);
+    await resultOf(haiku, (await ask(haiku)).runId);
+    await waiting(haiku, 'claude-haiku-4-5');
+    await expect(ask(haiku)).resolves.toMatchObject({ runId: expect.any(String) });
+  });
+
+  it('does not run a run left waiting past the hour its reserve covered, and charges nothing', async () => {
+    const w = await workspace();
+    await setLimit(w.id, '2.00').expect(200);
+    const stale = await waiting(w, 'claude-haiku-4-5', new Date(Date.now() - 2 * 60 * 60 * 1000));
+
+    await runs.execute(w.id, stale.id);
+
+    const result = await resultOf(w, stale.id);
+    expect(result).toMatchObject({ status: 'failed', inputTokens: 0, outputTokens: 0, error: 'Not run in time' });
+    expect((await spent(w)).isZero()).toBe(true);
+  });
+
+  it('tells staff once at 80 % and once at 100 % when two runs finish at the same moment (review fix)', async () => {
+    const w = await workspace();
+    await setLimit(w.id, '2.00').expect(200);
+    const [a, b] = [await waiting(w, 'claude-haiku-4-5'), await waiting(w, 'claude-haiku-4-5')];
+
+    await Promise.all([a, b].map((run) => runs.finish(w.id, run.id, { ...oneDollar, model: 'claude-haiku-4-5' })));
+
+    const used = await waitFor(async () => {
+      const rows = await told(w, 'ai.limit_used');
+      return rows.length > 0 ? rows : undefined;
+    });
+    expect(used).toHaveLength(1);
+    expect(await told(w, 'ai.limit_nearly_used')).toHaveLength(1);
+  });
+
+  it('tells staff when a platform admin lowers the limit below what the month has spent, once', async () => {
+    const w = await workspace();
+    await setLimit(w.id, '2.00').expect(200);
+    await resultOf(w, (await ask(w)).runId);
+    expect(await told(w, 'ai.limit_nearly_used')).toHaveLength(0);
+
+    await setLimit(w.id, '1.00').expect(200);
+
+    const used = await waitFor(async () => {
+      const rows = await told(w, 'ai.limit_used');
+      return rows.length > 0 ? rows : undefined;
+    });
+    expect(used).toHaveLength(1);
+    expect(used[0].payload).toMatchObject({ limit: '1.00', spent: '1.00' });
+    expect(await told(w, 'ai.limit_nearly_used')).toHaveLength(1);
+
+    // Setting it again tells no one twice in a month.
+    await setLimit(w.id, '0.50').expect(200);
+    await setLimit(w.id, '0.50').expect(200);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await told(w, 'ai.limit_used')).toHaveLength(1);
+  });
+
   it('writes a failed result once a run fails on its last attempt, at no cost', async () => {
     const w = await workspace();
     await setLimit(w.id, '2.00').expect(200);

@@ -107,6 +107,13 @@ export const JOBS = {
     jobId: (p) => [p.runId],
     attempts: 3,
   }),
+  // Tells staff of the AI-limit notice levels crossed once a platform admin has set the limit (AI 1 review
+  // fixes). `at` is when it was set, in ms, so each change checks once.
+  'ai.limit.check': defineJob({
+    queue: 'ai',
+    payload: z.object({ tenantId: z.uuid(), at: z.string().regex(/^\d+$/) }),
+    jobId: (p) => [p.tenantId, p.at],
+  }),
   // Puts one article's passages in the vector store as it reads now: published, or removed (AI 1 spec).
   // `version` is the article's updated_at, so each edit indexes once.
   'knowledge.index': defineJob({

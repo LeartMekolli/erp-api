@@ -22,6 +22,26 @@ export function aiModel(model: string): AiModel {
   return AI_MODELS[model];
 }
 
+/** Rounds of tool calls before a run's final tool is forced. */
+export const MAX_TOOL_ROUNDS = 6;
+/** The most a model writes in one call. */
+export const MAX_OUTPUT_TOKENS = 2_000;
+/** Input tokens over a run's calls after which its final tool is forced. */
+export const RUN_INPUT_BUDGET = 100_000;
+/** What the forced last call is assumed to read on top of the budget: tool results are capped at 25 rows. */
+export const LAST_CALL_INPUT_TOKENS = 20_000;
+
+/**
+ * The most one run can cost on `model`: the input budget plus its last call, and a full answer from every
+ * call. Held back from the limit for each run still waiting, so runs queued together can't all pass it.
+ */
+export function worstRunCost(model: string): Prisma.Decimal {
+  return costOf(model, {
+    inputTokens: RUN_INPUT_BUDGET + LAST_CALL_INPUT_TOKENS,
+    outputTokens: (MAX_TOOL_ROUNDS + 1) * MAX_OUTPUT_TOKENS,
+  });
+}
+
 /** What a call cost in USD, unrounded. */
 export function costOf(model: string, usage: AiResponse['usage']): Prisma.Decimal {
   const prices = aiModel(model);

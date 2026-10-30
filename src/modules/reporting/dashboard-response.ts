@@ -53,6 +53,18 @@ export const aiSectionSchema = z.discriminatedUnion('enabled', [
       .nullable(),
     // A briefing is being written.
     pending: z.boolean(),
+    // Dismissed in the last 14 days, newest first; each can be undone.
+    dismissed: z.array(
+      z.strictObject({
+        id: z.uuid(),
+        kind: z.enum(SUGGESTION_KINDS),
+        targets: z.array(labelledRefSchema),
+        dismissed_by: z.strictObject({ id: z.uuid(), name: z.string() }),
+        dismissed_at: z.string(),
+        // Not suggested again before then.
+        until: z.string(),
+      }),
+    ),
   }),
   z.strictObject({ enabled: z.literal(false), reason: z.enum(['not_set_up', 'limit_used']) }),
 ]);

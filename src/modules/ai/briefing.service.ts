@@ -115,14 +115,16 @@ export class BriefingService implements OnModuleInit {
     }
   }
 
-  /** A manager's refresh: at most once every 15 minutes per workspace. */
+  /**
+   * A manager's refresh: at most once every 15 minutes per workspace. Checked under the limit's lock, so
+   * two refreshes at the same moment queue one run.
+   */
   async refresh(auth: TenantAuth): Promise<{ runId: string }> {
     if (!managerOf(auth.permissions)) throw new ForbiddenException('The briefing is for managers');
-    const last = await this.prisma.inTenant(auth.tenantId, (tx) =>
-      tx.aiRun.findFirst({ where: { kind: 'briefing' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
-    );
-    if (last && Date.now() - last.createdAt.getTime() < REFRESH_MS) throw new ConflictException('Refreshed less than 15 minutes ago');
-    return this.queue(auth.tenantId, auth.userId);
+    return this.runs.queue(auth.tenantId, { userId: auth.userId, kind: 'briefing', payload: {} }, async (tx) => {
+      const last = await tx.aiRun.findFirst({ where: { kind: 'briefing' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+      if (last && Date.now() - last.createdAt.getTime() < REFRESH_MS) throw new ConflictException('Refreshed less than 15 minutes ago');
+    });
   }
 
   /** Dismisses a suggestion for the whole workspace; dismissing it again starts its 14 days over. */
@@ -140,6 +142,15 @@ export class BriefingService implements OnModuleInit {
     });
   }
 
+  /** Undoes a dismissal: its suggestion shows again at once, and may be suggested again. */
+  async undismiss(auth: TenantAuth, dismissalId: string): Promise<void> {
+    if (!managerOf(auth.permissions)) throw new ForbiddenException('The briefing is for managers');
+    await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const removed = await tx.aiSuggestionDismissal.deleteMany({ where: { id: dismissalId } });
+      if (removed.count === 0) throw new NotFoundException('Dismissal not found');
+    });
+  }
+
   /** The dashboard's `ai` for a manager; `undefined` for anyone else. */
   async section(auth: TenantAuth): Promise<AiSection | undefined> {
     if (!managerOf(auth.permissions)) return undefined;
@@ -152,8 +163,9 @@ export class BriefingService implements OnModuleInit {
       const pending = await tx.aiRun.count({
         where: { kind: 'briefing', result: { is: null }, briefing: { is: null }, createdAt: { gte: new Date(Date.now() - PENDING_MS) } },
       });
+      const dismissedList = await this.dismissedList(tx, auth);
       const latest = await tx.aiBriefing.findFirst({ orderBy: { createdAt: 'desc' }, include: { suggestions: { orderBy: { position: 'asc' } } } });
-      if (!latest) return { enabled: true, briefing: null, pending: pending > 0 };
+      if (!latest) return { enabled: true, briefing: null, pending: pending > 0, dismissed: dismissedList };
 
       const dismissed = await this.dismissed(tx);
       const suggestions: NonNullable<Extract<AiSection, { enabled: true }>['briefing']>['suggestions'] = [];
@@ -168,8 +180,33 @@ export class BriefingService implements OnModuleInit {
         enabled: true,
         briefing: { summary: latest.summary, created_at: latest.createdAt.toISOString(), suggestions },
         pending: pending > 0,
+        dismissed: dismissedList,
       };
     });
+  }
+
+  /** The dismissals of the last 14 days, newest first, labelled for the reader; one naming a record gone or hidden is left out. */
+  private async dismissedList(tx: Tx, auth: TenantAuth): Promise<Extract<AiSection, { enabled: true }>['dismissed']> {
+    const rows = await tx.aiSuggestionDismissal.findMany({
+      where: { dismissedAt: { gte: new Date(Date.now() - DISMISS_DAYS * DAY_MS) } },
+      orderBy: { dismissedAt: 'desc' },
+      include: { dismissedBy: { select: { id: true, name: true } } },
+    });
+    const list: Extract<AiSection, { enabled: true }>['dismissed'] = [];
+    for (const row of rows) {
+      const targets = row.targets as unknown as RecordRef[];
+      const shown = await labelled(tx, auth.permissions, targets);
+      if (shown.length !== targets.length) continue;
+      list.push({
+        id: row.id,
+        kind: row.kind as SuggestionKind,
+        targets: shown,
+        dismissed_by: row.dismissedBy,
+        dismissed_at: row.dismissedAt.toISOString(),
+        until: new Date(row.dismissedAt.getTime() + DISMISS_DAYS * DAY_MS).toISOString(),
+      });
+    }
+    return list;
   }
 
   /** The `briefing` kind: read as a manager would, brief, then store it with the suggestions not dismissed. */
