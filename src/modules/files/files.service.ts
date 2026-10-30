@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ConflictException, Inject, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { newId } from '../../common/ids/uuid';
 import { decodeCursor } from '../../common/pagination/cursor';
@@ -49,8 +50,9 @@ export interface FileOwner {
 /** The uploader: a staff user or a customer person. */
 type Uploader = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
+/** Files of the owner, if given, that haven't been removed: a removed file is not found, like another owner's. */
 function ownedBy(owner: FileOwner | undefined): Prisma.FileWhereInput {
-  return owner ? { ownerType: owner.type, ownerId: owner.id } : {};
+  return { status: { not: 'removed' }, ...(owner ? { ownerType: owner.type, ownerId: owner.id } : {}) };
 }
 
 /**
@@ -161,6 +163,74 @@ export class FilesService implements OnModuleInit {
     });
 
     return { version: toVersionResponse(version), upload: await this.signUpload(uploadKeyFor(storageKey), input) };
+  }
+
+  /**
+   * A file the API itself made (an AI image, AI 2 spec), stored straight away as version 1, `measured`
+   * with its checksum and no measures.
+   * Under the caller's `fileId`, so a retried job finds the file it wrote and writes nothing new.
+   */
+  async storeGenerated(
+    tenantId: string,
+    input: { fileId: string; owner: FileOwner; name: string; bytes: Buffer; contentType: string; createdByUserId: string },
+  ): Promise<{ fileId: string; versionId: string }> {
+    const existing = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.fileVersion.findFirst({ where: { fileId: input.fileId, number: 1 }, select: { id: true } }),
+    );
+    if (existing) {
+      return { fileId: input.fileId, versionId: existing.id };
+    }
+
+    const versionId = newId();
+    const storageKey = finalKeyFor(tenantId, input.fileId, versionId);
+    // Bytes first: a row never points at nothing. A failed insert leaves an object no row names.
+    await this.storage.put(storageKey, input.bytes, input.contentType);
+    await this.prisma.inTenant(tenantId, async (tx) => {
+      await tx.file.create({
+        data: {
+          id: input.fileId,
+          kind: 'image',
+          name: input.name,
+          ownerType: input.owner.type,
+          ownerId: input.owner.id,
+          createdByUserId: input.createdByUserId,
+        },
+      });
+      await tx.fileVersion.create({
+        data: {
+          id: versionId,
+          fileId: input.fileId,
+          number: 1,
+          storageKey,
+          originalName: input.name,
+          contentType: input.contentType,
+          size: BigInt(input.bytes.length),
+          checksum: createHash('sha256').update(input.bytes).digest('hex'),
+          // Checked here, so the measurement sweeper never takes it up and tells the uploader.
+          status: 'measured',
+          uploadedByUserId: input.createdByUserId,
+          completedAt: new Date(),
+        },
+      });
+    });
+    return { fileId: input.fileId, versionId };
+  }
+
+  /**
+   * Deletes every version's bytes, then marks the file `removed`: from then on it is not found. The row
+   * stays, so whatever names the file (an AI result) still can.
+   */
+  async remove(tenantId: string, fileId: string, owner?: FileOwner): Promise<void> {
+    const file = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.file.findFirst({ where: { id: fileId, ...ownedBy(owner) }, include: { versions: { select: { storageKey: true } } } }),
+    );
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+    for (const version of file.versions) {
+      await this.storage.delete(version.storageKey);
+    }
+    await this.prisma.inTenant(tenantId, (tx) => tx.file.update({ where: { id: fileId }, data: { status: 'removed' } }));
   }
 
   /** The owner's files, newest first. */
@@ -316,10 +386,10 @@ export class FilesService implements OnModuleInit {
     return { url, expires_at: expiresAt.toISOString() };
   }
 
-  /** The version, only under its own file, of the owner if given, and only in this tenant (RLS); 404 otherwise. */
+  /** The version, only under its own file, of the owner if given, not removed, and only in this tenant (RLS); 404 otherwise. */
   private async findVersion(tenantId: string, fileId: string, versionId: string, owner?: FileOwner) {
     const version = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.fileVersion.findFirst({ where: { id: versionId, fileId, ...(owner ? { file: ownedBy(owner) } : {}) } }),
+      tx.fileVersion.findFirst({ where: { id: versionId, fileId, file: ownedBy(owner) } }),
     );
     if (!version) {
       throw new NotFoundException('File version not found');

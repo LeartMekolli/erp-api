@@ -13,6 +13,10 @@ import { BriefingHandler } from './briefing.handler';
 import { BriefingService } from './briefing.service';
 import { ClaudeAiProvider } from './claude-ai-provider';
 import { FakeAiProvider } from './fake-ai-provider';
+import { FakeImageProvider } from './fake-image-provider';
+import { IMAGE_PROVIDER } from './image-provider';
+import type { ImageProvider } from './image-provider';
+import { OpenAiImageProvider } from './openai-image-provider';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { LimitCheckHandler } from './limit-check.handler';
 import { VECTOR_STORE } from './knowledge/vector-store';
@@ -59,6 +63,20 @@ import type { AiTool } from './tools/tool';
       },
     },
     {
+      provide: IMAGE_PROVIDER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService): ImageProvider => {
+        if (config.get('IMAGE_PROVIDER') !== 'openai') {
+          return new FakeImageProvider();
+        }
+        const apiKey = config.get('OPENAI_API_KEY');
+        if (apiKey === undefined) {
+          throw new Error('OPENAI_API_KEY is required when IMAGE_PROVIDER is openai');
+        }
+        return new OpenAiImageProvider(apiKey);
+      },
+    },
+    {
       // Read-only, each running as the asking user; offered only to someone holding its permissions.
       provide: AI_TOOLS,
       inject: [PrismaService, ReportsService, AttentionService, VECTOR_STORE],
@@ -72,6 +90,6 @@ import type { AiTool } from './tools/tool';
       ],
     },
   ],
-  exports: [AI_PROVIDER, RunsService, AI_TOOLS, KnowledgeModule],
+  exports: [AI_PROVIDER, IMAGE_PROVIDER, RunsService, AI_TOOLS, KnowledgeModule],
 })
 export class AiModule {}

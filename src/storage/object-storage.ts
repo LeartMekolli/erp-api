@@ -65,6 +65,9 @@ export interface ObjectStorage {
    */
   copy(from: string, to: string, options?: { ifMatchEtag?: string }): Promise<void>;
 
+  /** Writes bytes the API itself made (an AI image), replacing `key`. Never bytes a client sent. */
+  put(key: string, body: Buffer, contentType: string): Promise<void>;
+
   /** Deletes `key`; already gone is not an error. */
   delete(key: string): Promise<void>;
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AI_MODELS } from '../modules/ai/ai-models';
+import { IMAGE_MODELS } from '../modules/ai/extra-costs';
 
 function splitOrigins(value: string): string[] {
   return value
@@ -131,6 +132,17 @@ const envSchema = z
     // Both required with pinecone; the index embeds the field `text` (integrated embedding). The key is never logged.
     PINECONE_API_KEY: z.string().min(1).optional(),
     PINECONE_INDEX: z.string().min(1).optional(),
+    // Where customers' AI images are made (AI 2 spec). `fake` returns a sample image; no test calls OpenAI.
+    IMAGE_PROVIDER: z.enum(['fake', 'openai']).default('fake'),
+    // Required with openai. Never logged.
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    // One of the models priced in IMAGE_MODELS.
+    IMAGE_MODEL: z
+      .string()
+      .default('gpt-image-2.5-flare')
+      .refine((model) => Object.hasOwn(IMAGE_MODELS, model), {
+        message: `must be one of ${Object.keys(IMAGE_MODELS).join(', ')}`,
+      }),
   })
   .superRefine((env, ctx) => {
     // The demo's Stripe keys are all given, or none.
@@ -167,6 +179,9 @@ const envSchema = z
         path: ['ANTHROPIC_API_KEY'],
         message: 'required when AI_PROVIDER is claude',
       });
+    }
+    if (env.IMAGE_PROVIDER === 'openai' && !env.OPENAI_API_KEY) {
+      ctx.addIssue({ code: 'custom', path: ['OPENAI_API_KEY'], message: 'required when IMAGE_PROVIDER is openai' });
     }
     if (env.VECTOR_STORE === 'pinecone') {
       for (const key of ['PINECONE_API_KEY', 'PINECONE_INDEX'] as const) {

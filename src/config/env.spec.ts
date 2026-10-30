@@ -147,6 +147,23 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
   });
 
+  it('defaults IMAGE_PROVIDER to fake and IMAGE_MODEL to gpt-image-2.5-flare, with no OpenAI key', () => {
+    expect(loadEnv({ ...valid })).toMatchObject({ IMAGE_PROVIDER: 'fake', IMAGE_MODEL: 'gpt-image-2.5-flare' });
+    expect(loadEnv({ ...valid }).OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it('requires OPENAI_API_KEY for the openai image provider', () => {
+    expect(() => loadEnv({ ...valid, IMAGE_PROVIDER: 'openai' })).toThrow(/OPENAI_API_KEY: required when IMAGE_PROVIDER is openai/);
+    expect(loadEnv({ ...valid, IMAGE_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-test' }).OPENAI_API_KEY).toBe('sk-test');
+  });
+
+  it.each([
+    ['IMAGE_PROVIDER', 'other'],
+    ['IMAGE_MODEL', 'some-other-model'],
+  ])('rejects %s=%s', (name, value) => {
+    expect(() => loadEnv({ ...valid, [name]: value })).toThrow(new RegExp(name));
+  });
+
   it('defaults VECTOR_STORE to fake, and needs a Pinecone key and index for pinecone', () => {
     expect(loadEnv({ ...valid }).VECTOR_STORE).toBe('fake');
     expect(() => loadEnv({ ...valid, VECTOR_STORE: 'pinecone' })).toThrow(/PINECONE_API_KEY[\s\S]*PINECONE_INDEX/);

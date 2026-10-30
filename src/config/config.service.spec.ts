@@ -76,6 +76,8 @@ describe('ConfigService', () => {
       AI_MODEL: 'claude-haiku-4-5',
       AI_BRIEFINGS: true,
       VECTOR_STORE: 'fake',
+      IMAGE_PROVIDER: 'fake',
+      IMAGE_MODEL: 'gpt-image-2.5-flare',
       SENTRY_DSN: undefined,
       SENTRY_ENVIRONMENT: undefined,
     });

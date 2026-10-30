@@ -501,7 +501,7 @@ model File {
   // Set by the module that attaches the file; none ships with the foundation.
   ownerType       String?  @map("owner_type")
   ownerId         String?  @map("owner_id") @db.Uuid
-  // active
+  // active | removed (its bytes deleted; not found by any route)
   status          String   @default("active")
   createdByUserId String   @map("created_by_user_id") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at")
