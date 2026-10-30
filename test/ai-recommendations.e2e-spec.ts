@@ -139,7 +139,7 @@ describe('ai: recommendations with web search', () => {
     expect(result).toMatchObject({ status: 'done', credits: 10 });
     expect(result.output).toEqual({
       ideas: [{ title: 'Stacking rings', why: 'Thin stacked bands are trending.', sources: [TREND] }],
-      advice: [{ text: 'Show pieces worn together.', sources: [] }],
+      advice: [],
     });
 
     // Two calls of 100 in and 50 out on Haiku 4.5, and one search at 0.01.
@@ -157,8 +157,34 @@ describe('ai: recommendations with web search', () => {
     expect(second.messages[1]).toMatchObject({ role: 'assistant', content: [{ type: 'server_tool' }, { type: 'web_results', urls: [TREND] }] });
   });
 
+  it('fails and gives the credits back when no idea cites a page its searches found (review fix)', async () => {
+    const balance = async () => ((await anna.get(`/portal/customers/${luna}/credits`).expect(200)).body as { total: number }).total;
+    const before = await balance();
+    fake.script(
+      fakeWebSearch([TREND]),
+      fakeToolUse('recommendations', {
+        ideas: [{ title: 'Invented trend', why: 'Nowhere.', sources: [MADE_UP] }],
+        advice: [{ text: 'Follow the trend.', sources: [TREND] }],
+      }),
+    );
+
+    const started = await anna.post(path('/recommendations'), {}).expect(202);
+    const result = await finished((started.body as { id: string }).id);
+    expectDocumented(customerResultSchema, result);
+    expect(result).toMatchObject({ status: 'failed', output: null });
+
+    // Its two calls and its search are still paid.
+    const run = await prisma.inTenant(tenantId, (tx) => tx.aiRunResult.findUniqueOrThrow({ where: { runId: result.id } }));
+    expect(run.costUsd.toFixed(6)).toBe(costOf('claude-haiku-4-5', { inputTokens: 200, outputTokens: 100 }).add('0.01').toFixed(6));
+    await waitFor(async () => ((await balance()) === before ? true : undefined));
+    expect(await prisma.inTenant(tenantId, (tx) => tx.creditSpend.count({ where: { kind: 'give_back', customerId: luna } }))).toBe(1);
+  });
+
   it('takes no focus at all, and refuses one too long', async () => {
-    fake.script(fakeToolUse('recommendations', { ideas: [{ title: 'Signet rings', why: 'Steady sellers.', sources: [] }], advice: [] }));
+    fake.script(
+      fakeWebSearch([TREND]),
+      fakeToolUse('recommendations', { ideas: [{ title: 'Signet rings', why: 'Steady sellers.', sources: [TREND] }], advice: [] }),
+    );
 
     const started = await anna.post(path('/recommendations')).expect(202);
     expect(await finished((started.body as { id: string }).id)).toMatchObject({ status: 'done' });

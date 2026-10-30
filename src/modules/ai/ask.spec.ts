@@ -243,10 +243,21 @@ describe('runTools', () => {
     expect([...seen].sort()).toEqual(['https://trends.example.test/a', 'https://trends.example.test/b']);
     expect(outcome.usage).toEqual({ inputTokens: 300, outputTokens: 150 });
     expect(outcome.extraCostUsd?.toFixed(2)).toBe('0.02');
-    // Every call offers the search; a paused turn goes back as it came, with no message of ours after it.
-    expect(provider.calls.map((call) => call.webSearch)).toEqual([{ maxUses: 5 }, { maxUses: 5 }, { maxUses: 5 }]);
+    // Every call offers the searches left; a paused turn goes back as it came, with no message of ours after it.
+    expect(provider.calls.map((call) => call.webSearch)).toEqual([{ maxUses: 5 }, { maxUses: 4 }, { maxUses: 3 }]);
     expect(provider.calls[1].messages).toHaveLength(2);
     expect(provider.calls[1].messages[1]).toMatchObject({ role: 'assistant', content: [{ type: 'server_tool' }, { type: 'web_results' }] });
+  });
+
+  it('stops offering the search once the run has made every search it may (review fix)', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(fakeWebSearch(['https://trends.example.test/a']), fakeWebSearch(['https://trends.example.test/b']), answer({}));
+
+    const outcome = await runTools(provider, { model: 'claude-haiku-4-5', system: 'Answer.', question: 'Trends?', tools: [], ctx, webSearch: { maxUses: 2 } });
+
+    expect(outcome.status).toBe('done');
+    expect(provider.calls.map((call) => call.webSearch)).toEqual([{ maxUses: 2 }, { maxUses: 1 }, undefined]);
+    expect(outcome.extraCostUsd?.toFixed(2)).toBe('0.02');
   });
 
   it('pays for the searches of a run that fails after them', async () => {

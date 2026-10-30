@@ -56,7 +56,8 @@ const key = (ref: RecordRef) => `${ref.type}:${ref.id}`;
  * goals 12 and 13). Every input is validated; an invalid one, or an unknown tool, is given back as an
  * error. After `MAX_TOOL_ROUNDS` the final tool is forced. Before returning, the final tool's `check`
  * drops whatever the tools never returned (Review Focus 3). With `webSearch`, the provider's own search is
- * offered on every call; each search is paid on the outcome, done or failed.
+ * offered on each call for the searches the run has left, so a run makes at most `maxUses`; each search
+ * is paid on the outcome, done or failed.
  */
 export async function runTools<T = Answer>(
   provider: AiProvider,
@@ -96,7 +97,8 @@ export async function runTools<T = Answer>(
         tools: specs,
         ...(force ? { forceTool: final.name } : {}),
         maxTokens: MAX_OUTPUT_TOKENS,
-        ...(request.webSearch ? { webSearch: request.webSearch } : {}),
+        // A provider's limit counts one call's searches: offer only those the run has left.
+        ...(request.webSearch && searches < request.webSearch.maxUses ? { webSearch: { maxUses: request.webSearch.maxUses - searches } } : {}),
       });
     } catch (error) {
       // Nothing spent yet: the job may retry. Otherwise a retry would pay for this run's turns again.

@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { newId } from '../../../common/ids/uuid';
 import { decodeCursor } from '../../../common/pagination/cursor';
 import { toPage } from '../../../common/pagination/page';
@@ -65,6 +65,8 @@ function toResponse(row: ResultRow): CustomerResultResponse {
  */
 @Injectable()
 export class CustomerToolsService implements OnModuleInit {
+  private readonly logger = new Logger(CustomerToolsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -188,6 +190,33 @@ export class CustomerToolsService implements OnModuleInit {
     );
     if (!row) return;
     await this.credits.giveBack(tenantId, row.spendId);
+  }
+
+  /**
+   * Gives back the credits of every failed customer run of the workspace that has none back yet: its
+   * give-back job was never queued, or gave up. Returns how many; each once, under the customer's lock.
+   */
+  async giveBackDue(tenantId: string): Promise<number> {
+    const due = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.aiCustomerResult.findMany({
+        where: { run: { result: { is: { status: 'failed' } } }, spend: { givenBack: null } },
+        select: { spendId: true },
+      }),
+    );
+    for (const row of due) await this.credits.giveBack(tenantId, row.spendId);
+    return due.length;
+  }
+
+  /** The scheduled sweep (`ai.credits.sweep`): `giveBackDue` in every active workspace. */
+  async giveBackDueEverywhere(): Promise<void> {
+    const tenants = await this.prisma.tenant.findMany({ where: { status: 'active' }, select: { id: true } });
+    for (const tenant of tenants) {
+      try {
+        await this.giveBackDue(tenant.id);
+      } catch (error) {
+        this.logger.error({ err: error, tenantId: tenant.id }, 'giving back the credits of failed AI runs failed');
+      }
+    }
   }
 
   private async prices(tx: Tx): Promise<Record<CustomerTool, number>> {

@@ -7,6 +7,7 @@ import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
+import { JobsService } from '../src/jobs/jobs.service';
 import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { customerResultSchema } from '../src/modules/ai/customer-tools/customer-result-response';
 import { CUSTOMER_FAILED_MESSAGE } from '../src/modules/ai/customer-tools/customer-tools';
@@ -294,6 +295,32 @@ describe('ai: customer runs paid in credits', () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(await balance(w)).toBe(20);
     expect(await count(w)).toEqual({ runs: 1, results: 1, spends: 1, givenBack: 1 });
+  });
+
+  it("gives a failed run's credits back on the sweep when the give-back job could not be queued (review fix)", async () => {
+    const w = await workspace();
+    await allowBrand(w);
+    // The worker fails the run and queues the give-back; here that queueing fails.
+    const jobs = worker.get(JobsService);
+    const enqueue = jobs.enqueue.bind(jobs);
+    const spy = jest.spyOn(jobs, 'enqueue').mockImplementation(((name: string, payload: unknown) =>
+      name === 'ai.credits.give_back' ? Promise.reject(new Error('queue down')) : enqueue(name as never, payload as never)) as typeof jobs.enqueue);
+    try {
+      behaviour = 'throw';
+      const { id } = await ask(w);
+      expect(await finished(w, id)).toMatchObject({ status: 'failed', credits_given_back: false });
+      await waitFor(async () => (spy.mock.calls.some(([name]) => name === 'ai.credits.give_back') ? true : undefined));
+      expect(await balance(w)).toBe(17);
+
+      expect(await tools.giveBackDue(w.tenantId)).toBe(1);
+      expect(await balance(w)).toBe(20);
+      expect((await finished(w, id)).credits_given_back).toBe(true);
+
+      expect(await tools.giveBackDue(w.tenantId)).toBe(0);
+      expect(await count(w)).toEqual({ runs: 1, results: 1, spends: 1, givenBack: 1 });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('takes the last credits only once when two runs ask at the same moment (Review Focus 1)', async () => {

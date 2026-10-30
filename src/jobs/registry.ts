@@ -182,6 +182,9 @@ export const SCHEDULED_JOBS = {
   'reports.refresh': { queue: 'maintenance', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
   // Queues the morning briefing of each workspace where it is 07:00 or later and none ran today (AI 1 spec, goal 7).
   'ai.briefing': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
+  // Gives back a failed customer run's credits whose give-back job was never queued or gave up (AI 2
+  // spec, goal 5). Whether credits came back is decided by the give-back row, never by this having run.
+  'ai.credits.sweep': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
 } satisfies Record<string, ScheduledJobDefinition>;
 
 export type JobName = keyof typeof JOBS;

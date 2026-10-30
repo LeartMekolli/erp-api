@@ -91,7 +91,8 @@ export class ImagesService implements OnModuleInit {
 
   /**
    * Claude writes the prompt, then the image model makes it; for a refinement, from the parent's bytes. An
-   * image provider that fails ends the run failed with Claude's tokens only (Review Focus 5).
+   * image provider that fails ends the run failed with Claude's tokens only (Review Focus 5); an image
+   * made but not stored ends it failed with the image's cost too.
    */
   private async make(run: CustomerRun): Promise<RunOutcome> {
     const input = run.run.input as { description: string };
@@ -126,21 +127,24 @@ export class ImagesService implements OnModuleInit {
       return { ...outcome, status: 'failed', output: null, error: 'The image could not be made' };
     }
 
+    // Paid for from here on: a failure ends the run with the image's cost, never starts it over.
+    const extraCostUsd = (outcome.extraCostUsd ?? new Prisma.Decimal(0)).add(imageCost(model));
     const fileId = run.run.id;
-    await this.files.storeGenerated(run.tenantId, {
-      fileId,
-      owner: { type: 'customer', id: run.customerId },
-      name: `ai-image-${fileId}.png`,
-      bytes: made.bytes,
-      contentType: made.contentType,
-      createdByUserId: run.userId,
-    });
-    await this.prisma.inTenant(run.tenantId, (tx) => tx.aiCustomerResult.update({ where: { runId: run.run.id }, data: { fileId } }));
-    return {
-      ...outcome,
-      output: { prompt: written, file_id: fileId },
-      extraCostUsd: (outcome.extraCostUsd ?? new Prisma.Decimal(0)).add(imageCost(model)),
-    };
+    try {
+      await this.files.storeGenerated(run.tenantId, {
+        fileId,
+        owner: { type: 'customer', id: run.customerId },
+        name: `ai-image-${fileId}.png`,
+        bytes: made.bytes,
+        contentType: made.contentType,
+        createdByUserId: run.userId,
+      });
+      await this.prisma.inTenant(run.tenantId, (tx) => tx.aiCustomerResult.update({ where: { runId: run.run.id }, data: { fileId } }));
+    } catch (error) {
+      this.logger.warn({ err: error, runId: run.run.id }, 'the image could not be stored');
+      return { ...outcome, status: 'failed', output: null, error: 'The image could not be stored', extraCostUsd };
+    }
+    return { ...outcome, output: { prompt: written, file_id: fileId }, extraCostUsd };
   }
 
   /** The image a refinement starts from: its stored prompt and bytes. Gone since it was asked for: the run fails. */

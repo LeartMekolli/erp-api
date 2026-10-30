@@ -17,6 +17,7 @@ import { fakeToolUse } from '../src/modules/ai/fake-ai-provider';
 import type { FakeAiProvider } from '../src/modules/ai/fake-ai-provider';
 import type { FakeImageProvider } from '../src/modules/ai/fake-image-provider';
 import { IMAGE_PROVIDER } from '../src/modules/ai/image-provider';
+import { FilesService } from '../src/modules/files/files.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { CapturingIdentityNotifier } from './capturing-notifier';
@@ -233,5 +234,26 @@ describe('ai: images and refinements', () => {
 
     const refused = await anna.post(path(luna, '/ai/images'), { description: 'thinner', from_id: result.id }).expect(409);
     expect(JSON.stringify(refused.body)).toContain('Not finished');
+  });
+
+  it('fails without starting over when the image is made but cannot be stored, paying Claude and the image, and gives the credits back (review fix)', async () => {
+    const before = await balance(anna, luna);
+    const claudeCalls = claude.calls.length;
+    const imageCalls = images.calls.length;
+    const store = jest.spyOn(worker.get(FilesService), 'storeGenerated').mockRejectedValueOnce(new Error('storage down'));
+    try {
+      const result = await image('A pendant.', { description: 'a pendant' });
+
+      expect(result).toMatchObject({ status: 'failed', output: null, file_id: null });
+      // Neither provider was called again by a retried job.
+      expect(claude.calls.length - claudeCalls).toBe(1);
+      expect(images.calls.length - imageCalls).toBe(1);
+      expect((await costOfRun(result.id)).toFixed(6)).toBe(ONE_CALL.add(imageCost('gpt-image-2.5-flare')).toFixed(6));
+      await waitFor(async () => ((await finished(result.id)).credits_given_back ? true : undefined));
+      expect(await balance(anna, luna)).toBe(before);
+      expect(await prisma.inTenant(tenantId, (tx) => tx.file.count({ where: { id: result.id } }))).toBe(0);
+    } finally {
+      store.mockRestore();
+    }
   });
 });

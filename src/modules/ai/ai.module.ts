@@ -27,7 +27,7 @@ import { MarketingService } from './customer-tools/marketing';
 import { RecommendationsService } from './customer-tools/recommendations';
 import { FakeAiProvider } from './fake-ai-provider';
 import { FakeImageProvider } from './fake-image-provider';
-import { GiveBackHandler } from './give-back.handler';
+import { GiveBackHandler, GiveBackSweepHandler } from './give-back.handler';
 import { IMAGE_PROVIDER } from './image-provider';
 import type { ImageProvider } from './image-provider';
 import { OpenAiImageProvider } from './openai-image-provider';
@@ -65,6 +65,7 @@ import type { AiTool } from './tools/tool';
     RecommendationsService,
     ImagesService,
     GiveBackHandler,
+    GiveBackSweepHandler,
     SearchService,
     RunsService,
     RunHandler,

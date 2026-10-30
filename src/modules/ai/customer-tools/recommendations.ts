@@ -15,20 +15,22 @@ import type { CustomerRun } from './customer-tools';
 import { CustomerToolsService } from './customer-tools.service';
 import { customerFigures } from './marketing';
 
-/** Keeps only sources among `urls`, each once (Review Focus 3); an item may stand without any. */
+/**
+ * Keeps only sources among `urls`, each once, then only items left with one (Review Focus 3). Every idea
+ * may be dropped; the run then fails.
+ */
 export function checkSources(output: RecommendationsOutput, urls: ReadonlySet<string>): RecommendationsOutput {
   const found = (sources: string[]) => [...new Set(sources.filter((url) => urls.has(url)))];
-  return {
-    ideas: output.ideas.map((idea) => ({ ...idea, sources: found(idea.sources) })),
-    advice: output.advice.map((item) => ({ ...item, sources: found(item.sources) })),
-  };
+  const sourced = <T extends { sources: string[] }>(items: T[]) =>
+    items.map((item) => ({ ...item, sources: found(item.sources) })).filter((item) => item.sources.length > 0);
+  return { ideas: sourced(output.ideas), advice: sourced(output.advice) };
 }
 
 const RECOMMENDATIONS_TOOL: FinalTool<RecommendationsOutput> = {
   name: 'recommendations',
   description:
-    'Give about 5 product ideas and up to 3 pieces of general advice. Each lists in `sources` only URLs of pages your ' +
-    "web searches returned in this conversation; an item drawn from the customer's own orders needs none.",
+    'Give about 5 product ideas and up to 3 pieces of general advice. Each lists in `sources` at least one URL of a page ' +
+    'your web searches returned in this conversation; an item without one is dropped.',
   input: recommendationsOutputSchema,
   check: (output, _known, urls) => checkSources(output, urls),
 };
@@ -64,7 +66,7 @@ export class RecommendationsService implements OnModuleInit {
       profile: await this.profiles.of(tx, run.customerId),
     }));
     const topProducts = figures.filter((figure) => figure.key.startsWith('top_product_')).map((figure) => figure.value);
-    return runTools(this.provider, {
+    const outcome = await runTools(this.provider, {
       model: run.run.model,
       system,
       question: [
@@ -77,5 +79,10 @@ export class RecommendationsService implements OnModuleInit {
       final: RECOMMENDATIONS_TOOL,
       webSearch: { maxUses: MAX_WEB_SEARCHES },
     });
+    // No idea left with a source: nothing to show, so the credits come back.
+    if (outcome.status === 'done' && (outcome.output as RecommendationsOutput).ideas.length === 0) {
+      return { ...outcome, status: 'failed', output: null, error: 'No idea cited a page the searches found' };
+    }
+    return outcome;
   }
 }
