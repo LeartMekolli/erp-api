@@ -24,6 +24,18 @@ export const brandContentOutputSchema = z.strictObject({
 });
 export type BrandContentOutput = z.infer<typeof brandContentOutputSchema>;
 
+/** One of the customer's own numbers, as the model reads it and the customer sees it on a card. */
+export const figureSchema = z.strictObject({ key: z.string(), label: z.string(), value: z.string() });
+export type Figure = z.infer<typeof figureSchema>;
+
+/** What a marketing run stores: each card with the figures it cites, in full. */
+export const marketingOutputSchema = z.strictObject({
+  cards: z
+    .array(z.strictObject({ title: z.string(), advice: z.string(), figures: z.array(figureSchema).min(1) }))
+    .min(1)
+    .max(4),
+});
+
 const base = {
   id: z.uuid(),
   status: z.enum(['pending', 'done', 'failed']),
@@ -48,10 +60,14 @@ function member<T extends CustomerTool, S extends z.ZodType>(tool: T, output: S)
 /** Each tool's stored output, by tool; a tool's output is checked by its final tool before it is stored. */
 export const TOOL_OUTPUTS = {
   brand_content: brandContentOutputSchema,
+  marketing: marketingOutputSchema,
 } as const;
 
 /** One use of a customer AI tool, for the customer's people: the run's status and, once done, its output. */
-export const customerResultSchema = z.discriminatedUnion('tool', [member('brand_content', TOOL_OUTPUTS.brand_content)]);
+export const customerResultSchema = z.discriminatedUnion('tool', [
+  member('brand_content', TOOL_OUTPUTS.brand_content),
+  member('marketing', TOOL_OUTPUTS.marketing),
+]);
 export type CustomerResultResponse = z.infer<typeof customerResultSchema>;
 
 export const customerResultListQuerySchema = z.object({

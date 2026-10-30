@@ -39,6 +39,7 @@ function toResponse(row: ResultRow): CustomerResultResponse {
   // The customer id is the route's; the run keeps it for its handler.
   const input = { ...(row.run.input as Record<string, unknown>) };
   delete input.customerId;
+  // The output was parsed with the schema of this row's tool, so it is that tool's member.
   return {
     id: row.runId,
     tool,
@@ -53,7 +54,7 @@ function toResponse(row: ResultRow): CustomerResultResponse {
     asked_by: row.createdBy,
     created_at: row.createdAt.toISOString(),
     finished_at: result?.finishedAt.toISOString() ?? null,
-  };
+  } as CustomerResultResponse;
 }
 
 /**

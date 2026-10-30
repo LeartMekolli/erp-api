@@ -11,6 +11,7 @@ import { BrandContentService } from './brand-content';
 import { brandContentBodySchema, customerResultListQuerySchema, customerResultSchema, startedSchema } from './customer-result-response';
 import type { BrandContentBody, CustomerResultListQuery, CustomerResultResponse } from './customer-result-response';
 import { CustomerToolsService } from './customer-tools.service';
+import { MarketingService } from './marketing';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -26,7 +27,21 @@ export class CustomerToolsController {
   constructor(
     private readonly tools: CustomerToolsService,
     private readonly brandContent: BrandContentService,
+    private readonly marketing: MarketingService,
   ) {}
+
+  @ApiDoc({
+    summary: "Marketing advice cards from the customer's own orders and spend of the last 90 days.",
+    description: `Each card names the figures it uses, all the customer's own; the brand profile is read when there is one. ${PAID}`,
+    response: startedSchema,
+    errors: [400, 409],
+  })
+  @CustomerAccess('buyer')
+  @Post('marketing')
+  @HttpCode(202)
+  startMarketing(@CurrentCustomer() customer: CustomerAuth): Promise<{ id: string }> {
+    return this.marketing.start(customer);
+  }
 
   @ApiDoc({
     summary: 'Catalog text for a product, written from the brand profile: names, a short and a long description, tags.',

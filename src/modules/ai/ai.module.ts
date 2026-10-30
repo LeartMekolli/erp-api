@@ -22,6 +22,7 @@ import { BrandProfileController } from './customer-tools/brand-profile.controlle
 import { BrandProfileService } from './customer-tools/brand-profile.service';
 import { CustomerToolsController } from './customer-tools/customer-tools.controller';
 import { CustomerToolsService } from './customer-tools/customer-tools.service';
+import { MarketingService } from './customer-tools/marketing';
 import { FakeAiProvider } from './fake-ai-provider';
 import { FakeImageProvider } from './fake-image-provider';
 import { GiveBackHandler } from './give-back.handler';
@@ -58,6 +59,7 @@ import type { AiTool } from './tools/tool';
     CustomerToolsService,
     BrandProfileService,
     BrandContentService,
+    MarketingService,
     GiveBackHandler,
     SearchService,
     RunsService,
