@@ -6,13 +6,15 @@ export interface AiModel {
   outputUsdPerMillion: string;
   /** Accepts `tool_choice: { type: 'tool' }`. The 5.5 models refuse it with a 400. */
   forcedToolChoice: boolean;
+  /** Claude's web search in the version the model takes: the 2026-02 one filters results, from the 4.6 models on. */
+  webSearchTool: 'web_search_20250305' | 'web_search_20260209';
 }
 
 /** The Claude models a workspace's AI may run on, with Anthropic's list prices in USD (2026-09). */
 export const AI_MODELS: Record<string, AiModel> = {
-  'claude-haiku-4-5': { inputUsdPerMillion: '1.00', outputUsdPerMillion: '5.00', forcedToolChoice: true },
-  'claude-sonnet-5-5': { inputUsdPerMillion: '2.00', outputUsdPerMillion: '10.00', forcedToolChoice: false },
-  'claude-opus-5-5': { inputUsdPerMillion: '4.00', outputUsdPerMillion: '20.00', forcedToolChoice: false },
+  'claude-haiku-4-5': { inputUsdPerMillion: '1.00', outputUsdPerMillion: '5.00', forcedToolChoice: true, webSearchTool: 'web_search_20250305' },
+  'claude-sonnet-5-5': { inputUsdPerMillion: '2.00', outputUsdPerMillion: '10.00', forcedToolChoice: false, webSearchTool: 'web_search_20260209' },
+  'claude-opus-5-5': { inputUsdPerMillion: '4.00', outputUsdPerMillion: '20.00', forcedToolChoice: false, webSearchTool: 'web_search_20260209' },
 };
 
 export function aiModel(model: string): AiModel {

@@ -36,6 +36,24 @@ export const marketingOutputSchema = z.strictObject({
     .max(4),
 });
 
+export const recommendationsBodySchema = z.strictObject({
+  focus: z.string().trim().min(1).max(200).optional(),
+});
+export type RecommendationsBody = z.infer<typeof recommendationsBodySchema>;
+
+/** Links to pages the run's web searches found, nothing else. */
+const sourcesSchema = z.array(z.url()).max(3);
+
+/** Product ideas and general advice, as the `recommendations` final tool returns them and the run stores them. */
+export const recommendationsOutputSchema = z.strictObject({
+  ideas: z
+    .array(z.strictObject({ title: z.string().max(80), why: z.string().max(600), sources: sourcesSchema }))
+    .min(1)
+    .max(5),
+  advice: z.array(z.strictObject({ text: z.string().max(600), sources: sourcesSchema })).max(3),
+});
+export type RecommendationsOutput = z.infer<typeof recommendationsOutputSchema>;
+
 const base = {
   id: z.uuid(),
   status: z.enum(['pending', 'done', 'failed']),
@@ -61,12 +79,14 @@ function member<T extends CustomerTool, S extends z.ZodType>(tool: T, output: S)
 export const TOOL_OUTPUTS = {
   brand_content: brandContentOutputSchema,
   marketing: marketingOutputSchema,
+  recommendations: recommendationsOutputSchema,
 } as const;
 
 /** One use of a customer AI tool, for the customer's people: the run's status and, once done, its output. */
 export const customerResultSchema = z.discriminatedUnion('tool', [
   member('brand_content', TOOL_OUTPUTS.brand_content),
   member('marketing', TOOL_OUTPUTS.marketing),
+  member('recommendations', TOOL_OUTPUTS.recommendations),
 ]);
 export type CustomerResultResponse = z.infer<typeof customerResultSchema>;
 

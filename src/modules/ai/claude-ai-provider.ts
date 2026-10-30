@@ -22,9 +22,19 @@ export class ClaudeAiProvider implements AiProvider {
     return {
       content: fromBlocks(message.content),
       stopReason: stopReasonOf(message.stop_reason),
-      usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens },
+      usage: usageOf(message.usage),
     };
   }
+}
+
+/** A call's tokens, and the web searches it made when it made any. */
+export function usageOf(usage: Anthropic.Usage): AiResponse['usage'] {
+  const searches = usage.server_tool_use?.web_search_requests ?? 0;
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    ...(searches > 0 ? { webSearches: searches } : {}),
+  };
 }
 
 /**
@@ -46,33 +56,45 @@ export function toParams(request: AiRequest): Anthropic.MessageCreateParamsNonSt
     }
   }
 
+  const tools: Anthropic.ToolUnion[] = request.tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: { ...tool.inputSchema, type: 'object' },
+  }));
+  if (request.webSearch) {
+    tools.push({ type: aiModel(request.model).webSearchTool, name: 'web_search', max_uses: request.webSearch.maxUses });
+  }
+
   return {
     model: request.model,
     max_tokens: request.maxTokens,
     system: request.system,
     messages,
-    tools: request.tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: { ...tool.inputSchema, type: 'object' },
-    })),
+    tools,
     ...(forcing ? { tool_choice: forced ? { type: 'tool' as const, name: request.forceTool! } : { type: 'auto' as const } } : {}),
   };
 }
 
-/** A response's blocks: text and tool calls, and thinking kept opaque to be passed back as it came. */
+/**
+ * A response's blocks: text and tool calls; thinking, and every block of Claude's own tools (a search,
+ * its results with the URLs found), kept opaque to be passed back as they came.
+ */
 export function fromBlocks(blocks: Anthropic.ContentBlock[]): AiContent[] {
-  return blocks.flatMap((block): AiContent[] => {
+  return blocks.map((block): AiContent => {
     if (block.type === 'text') {
-      return [{ type: 'text', text: block.text }];
+      return { type: 'text', text: block.text };
     }
     if (block.type === 'tool_use') {
-      return [{ type: 'tool_use', id: block.id, name: block.name, input: block.input }];
+      return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
     }
     if (block.type === 'thinking' || block.type === 'redacted_thinking') {
-      return [{ type: 'reasoning', raw: block }];
+      return { type: 'reasoning', raw: block };
     }
-    return [];
+    if (block.type === 'web_search_tool_result') {
+      // A failed search's content is one error object, not a list.
+      return { type: 'web_results', urls: Array.isArray(block.content) ? block.content.map((result) => result.url) : [], raw: block };
+    }
+    return { type: 'server_tool', raw: block };
   });
 }
 
@@ -83,7 +105,7 @@ function toParam(message: AiMessage): Anthropic.MessageParam {
       content: message.content.map((block): Anthropic.ContentBlockParam => {
         if (block.type === 'text') return { type: 'text', text: block.text };
         if (block.type === 'tool_use') return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
-        return block.raw as Anthropic.ThinkingBlockParam | Anthropic.RedactedThinkingBlockParam;
+        return block.raw as Anthropic.ContentBlockParam;
       }),
     };
   }
@@ -100,11 +122,12 @@ function toParam(message: AiMessage): Anthropic.MessageParam {
   };
 }
 
-function stopReasonOf(reason: Anthropic.StopReason | null): AiResponse['stopReason'] {
+export function stopReasonOf(reason: Anthropic.StopReason | null): AiResponse['stopReason'] {
   switch (reason) {
     case 'tool_use':
     case 'refusal':
     case 'max_tokens':
+    case 'pause_turn':
       return reason;
     case 'model_context_window_exceeded':
       return 'max_tokens';

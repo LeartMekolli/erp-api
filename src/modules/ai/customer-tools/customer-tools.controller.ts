@@ -8,10 +8,17 @@ import { CurrentCustomer } from '../../identity/auth-context';
 import type { CustomerAuth } from '../../identity/auth-context';
 import { CustomerAccess } from '../../identity/route-markers';
 import { BrandContentService } from './brand-content';
-import { brandContentBodySchema, customerResultListQuerySchema, customerResultSchema, startedSchema } from './customer-result-response';
-import type { BrandContentBody, CustomerResultListQuery, CustomerResultResponse } from './customer-result-response';
+import {
+  brandContentBodySchema,
+  customerResultListQuerySchema,
+  customerResultSchema,
+  recommendationsBodySchema,
+  startedSchema,
+} from './customer-result-response';
+import type { BrandContentBody, CustomerResultListQuery, CustomerResultResponse, RecommendationsBody } from './customer-result-response';
 import { CustomerToolsService } from './customer-tools.service';
 import { MarketingService } from './marketing';
+import { RecommendationsService } from './recommendations';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -28,7 +35,27 @@ export class CustomerToolsController {
     private readonly tools: CustomerToolsService,
     private readonly brandContent: BrandContentService,
     private readonly marketing: MarketingService,
+    private readonly recommendations: RecommendationsService,
   ) {}
+
+  @ApiDoc({
+    summary: 'Product ideas and general advice, informed by current trends found on the web, each with its source links.',
+    description:
+      "Optionally with a `focus`, such as a collection. Reads the brand profile and the customer's most ordered products. " +
+      `Every link is a page the run's searches found. ${PAID}`,
+    body: recommendationsBodySchema,
+    response: startedSchema,
+    errors: [400, 409],
+  })
+  @CustomerAccess('buyer')
+  @Post('recommendations')
+  @HttpCode(202)
+  startRecommendations(
+    @CurrentCustomer() customer: CustomerAuth,
+    @Body(new ZodValidationPipe(recommendationsBodySchema)) body: RecommendationsBody,
+  ): Promise<{ id: string }> {
+    return this.recommendations.start(customer, body);
+  }
 
   @ApiDoc({
     summary: "Marketing advice cards from the customer's own orders and spend of the last 90 days.",

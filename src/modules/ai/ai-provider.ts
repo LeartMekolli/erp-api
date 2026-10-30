@@ -7,7 +7,11 @@ export type AiContent =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   // A provider's own block (Claude's thinking), passed back unchanged on the next call of the run.
-  | { type: 'reasoning'; raw: unknown };
+  | { type: 'reasoning'; raw: unknown }
+  // A web search's results, with the URLs found; passed back unchanged like `reasoning`.
+  | { type: 'web_results'; urls: string[]; raw: unknown }
+  // Any other block of a tool the provider runs itself (the search call), passed back unchanged.
+  | { type: 'server_tool'; raw: unknown };
 
 export type AiMessage =
   | { role: 'user'; content: string | { type: 'tool_result'; toolUseId: string; content: string }[] }
@@ -28,13 +32,18 @@ export interface AiRequest {
   /** Forces this tool on the turn (the final `answer`). */
   forceTool?: string;
   maxTokens: number;
+  /** Offers the provider's own web search, at most `maxUses` times in the call. */
+  webSearch?: { maxUses: number };
 }
 
 export interface AiResponse {
   content: AiContent[];
-  /** `refusal`: the model declined; the run fails rather than answering. */
-  stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal';
-  usage: { inputTokens: number; outputTokens: number };
+  /**
+   * `refusal`: the model declined; the run fails rather than answering. `pause_turn`: the provider paused
+   * its own tools' loop; sending the content back resumes it.
+   */
+  stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'pause_turn';
+  usage: { inputTokens: number; outputTokens: number; webSearches?: number };
 }
 
 export interface AiProvider {

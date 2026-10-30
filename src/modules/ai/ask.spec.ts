@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { TenantPermission } from '../identity/permissions';
 import { RUN_INPUT_BUDGET } from './ai-models';
-import { MAX_TOOL_ROUNDS, runTools } from './ask';
-import { FakeAiProvider, fakeText, fakeToolUse } from './fake-ai-provider';
+import { ANSWER_TOOL, MAX_TOOL_ROUNDS, runTools } from './ask';
+import type { Answer, FinalTool } from './ask';
+import { FakeAiProvider, fakeText, fakeToolUse, fakeWebSearch } from './fake-ai-provider';
 import type { AiTool, RecordRef, ToolContext } from './tools/tool';
 
 const ORDER = '01900000-0000-7000-8000-000000000001';
@@ -214,5 +215,54 @@ describe('runTools', () => {
     expect(provider.calls[0].forceTool).toBeUndefined();
     expect(provider.calls[1].forceTool).toBe('answer');
     expect(outcome.status).toBe('done');
+  });
+
+  it('resumes a turn paused after a web search, gives the final tool the URLs found, and pays for each search', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(fakeWebSearch(['https://trends.example.test/a']), fakeWebSearch(['https://trends.example.test/b']), answer({}));
+    let seen: ReadonlySet<string> = new Set();
+    const final: FinalTool<Answer> = {
+      ...ANSWER_TOOL,
+      check: (output, known, urls) => {
+        seen = urls;
+        return ANSWER_TOOL.check(output, known, urls);
+      },
+    };
+
+    const outcome = await runTools(provider, {
+      model: 'claude-haiku-4-5',
+      system: 'Answer.',
+      question: 'Trends?',
+      tools: [],
+      ctx,
+      final,
+      webSearch: { maxUses: 5 },
+    });
+
+    expect(outcome.status).toBe('done');
+    expect([...seen].sort()).toEqual(['https://trends.example.test/a', 'https://trends.example.test/b']);
+    expect(outcome.usage).toEqual({ inputTokens: 300, outputTokens: 150 });
+    expect(outcome.extraCostUsd?.toFixed(2)).toBe('0.02');
+    // Every call offers the search; a paused turn goes back as it came, with no message of ours after it.
+    expect(provider.calls.map((call) => call.webSearch)).toEqual([{ maxUses: 5 }, { maxUses: 5 }, { maxUses: 5 }]);
+    expect(provider.calls[1].messages).toHaveLength(2);
+    expect(provider.calls[1].messages[1]).toMatchObject({ role: 'assistant', content: [{ type: 'server_tool' }, { type: 'web_results' }] });
+  });
+
+  it('pays for the searches of a run that fails after them', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(fakeWebSearch(['https://trends.example.test/a']), { ...fakeText('No.'), stopReason: 'refusal' });
+
+    const outcome = await runTools(provider, { model: 'claude-haiku-4-5', system: 'Answer.', question: 'Trends?', tools: [], ctx, webSearch: { maxUses: 5 } });
+
+    expect(outcome.status).toBe('failed');
+    expect(outcome.extraCostUsd?.toFixed(2)).toBe('0.01');
+  });
+
+  it('costs nothing beyond tokens without a search', async () => {
+    const provider = new FakeAiProvider();
+    provider.script(answer({}));
+
+    expect((await ask(provider, stubTools().tools)).extraCostUsd).toBeUndefined();
   });
 });
