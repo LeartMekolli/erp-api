@@ -137,6 +137,37 @@ export const EVENTS = {
       },
     },
   },
+  // An export a staff member asked for is ready, or failed (Reporting 2 spec); only they are told.
+  'report.export_ready': {
+    audience: { kind: 'user' },
+    channels: ['feed'],
+    subjectType: 'user',
+    variables: {
+      export_id: { sample: '01900000-0000-7000-8000-000000000001' },
+      kind: { sample: 'orders' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your export is ready',
+        body: 'Your {{ kind }} export is ready to download for the next 30 days.',
+      },
+    },
+  },
+  'report.export_failed': {
+    audience: { kind: 'user' },
+    channels: ['feed'],
+    subjectType: 'user',
+    variables: {
+      export_id: { sample: '01900000-0000-7000-8000-000000000001' },
+      kind: { sample: 'orders' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your export failed',
+        body: 'Your {{ kind }} export could not be made. Open it to see why.',
+      },
+    },
+  },
   'user.roles_changed': {
     audience: { kind: 'user' },
     channels: ['email', 'feed'],

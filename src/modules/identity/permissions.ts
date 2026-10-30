@@ -56,6 +56,9 @@ export const TENANT_PERMISSIONS = [
   'credit.grant',
   // The staff dashboard's numbers and attention list (AI 1 spec).
   'report.read',
+  // Sensitive: exporting data as files (Reporting 2 spec), a bulk read granted on purpose. Each export
+  // also needs the permission of the screen its data comes from.
+  'report.export',
   // Asking the AI and refreshing the briefing, paid by the workspace within its monthly limit.
   'ai.use',
   // Writing, publishing and archiving knowledge base articles.

@@ -40,10 +40,11 @@ export interface NewUpload {
 /**
  * Who a file belongs to besides the workspace (Customers spec, goal 6). Every
  * method that takes one only sees files of that owner; without one (staff),
- * every file of the workspace.
+ * every file of the workspace except those of a user: a staff member's export
+ * (Reporting 2 spec) is reached only by them, through the exports routes.
  */
 export interface FileOwner {
-  type: 'customer';
+  type: 'customer' | 'user';
   id: string;
 }
 
@@ -52,7 +53,10 @@ type Uploader = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
 /** Files of the owner, if given, that haven't been removed: a removed file is not found, like another owner's. */
 function ownedBy(owner: FileOwner | undefined): Prisma.FileWhereInput {
-  return { status: { not: 'removed' }, ...(owner ? { ownerType: owner.type, ownerId: owner.id } : {}) };
+  return {
+    status: { not: 'removed' },
+    ...(owner ? { ownerType: owner.type, ownerId: owner.id } : { OR: [{ ownerType: null }, { ownerType: { not: 'user' } }] }),
+  };
 }
 
 /**
@@ -166,13 +170,21 @@ export class FilesService implements OnModuleInit {
   }
 
   /**
-   * A file the API itself made (an AI image, AI 2 spec), stored straight away as version 1, `measured`
-   * with its checksum and no measures.
+   * A file the API itself made (an AI image, AI 2 spec; an export, Reporting 2 spec), stored straight
+   * away as version 1, `measured` with its checksum and no measures; an `image` unless `kind` says else.
    * Under the caller's `fileId`, so a retried job finds the file it wrote and writes nothing new.
    */
   async storeGenerated(
     tenantId: string,
-    input: { fileId: string; owner: FileOwner; name: string; bytes: Buffer; contentType: string; createdByUserId: string },
+    input: {
+      fileId: string;
+      owner: FileOwner;
+      name: string;
+      bytes: Buffer;
+      contentType: string;
+      createdByUserId: string;
+      kind?: 'image' | 'document';
+    },
   ): Promise<{ fileId: string; versionId: string }> {
     const existing = await this.prisma.inTenant(tenantId, (tx) =>
       tx.fileVersion.findFirst({ where: { fileId: input.fileId, number: 1 }, select: { id: true } }),
@@ -189,7 +201,7 @@ export class FilesService implements OnModuleInit {
       await tx.file.create({
         data: {
           id: input.fileId,
-          kind: 'image',
+          kind: input.kind ?? 'image',
           name: input.name,
           ownerType: input.owner.type,
           ownerId: input.owner.id,

@@ -100,6 +100,13 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), payoutId: z.uuid() }),
     jobId: (p) => [p.payoutId],
   }),
+  // Builds one export a staff member asked for (Reporting 2 spec); after the last attempt, it is failed.
+  'reports.export': defineJob({
+    queue: 'maintenance',
+    payload: z.object({ tenantId: z.uuid(), exportId: z.uuid() }),
+    jobId: (p) => [p.exportId],
+    attempts: 3,
+  }),
   // Runs one AI call and writes its result; after the last attempt, a failed result (AI 1 spec).
   'ai.run': defineJob({
     queue: 'ai',
@@ -180,6 +187,9 @@ export const SCHEDULED_JOBS = {
   'payments.campaigns.grant': { queue: 'payments', schedule: { every: 300_000 }, lockTtlMs: 280_000 },
   // Recomputes every workspace's dashboard numbers for this week and last (AI 1 spec, goal 4).
   'reports.refresh': { queue: 'maintenance', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
+  // Removes the file of each export 30 days after it was ready; the export's row stays as the log
+  // (Reporting 2 spec). Whether a file may be downloaded is decided by its expiry, never by this having run.
+  'reports.exports.expire': { queue: 'maintenance', schedule: { every: 3_600_000 }, lockTtlMs: 600_000 },
   // Queues the morning briefing of each workspace where it is 07:00 or later and none ran today (AI 1 spec, goal 7).
   'ai.briefing': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
   // Gives back a failed customer run's credits whose give-back job was never queued or gave up (AI 2

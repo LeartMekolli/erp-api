@@ -122,6 +122,7 @@ model Tenant {
   aiSuggestionDismissals AiSuggestionDismissal[]
   aiCustomerResults     AiCustomerResult[]
   aiBrandProfiles       AiBrandProfile[]
+  reportExports         ReportExport[]
 
   @@map("tenant")
 }
@@ -182,6 +183,7 @@ model User {
   aiCustomerResults      AiCustomerResult[] @relation("ai_customer_result_created_by")
   aiCustomerResultsDeleted AiCustomerResult[] @relation("ai_customer_result_deleted_by")
   aiBrandProfiles        AiBrandProfile[]
+  reportExports          ReportExport[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -516,6 +518,7 @@ model File {
   versions  FileVersion[]
   knowledgeAttachments KnowledgeAttachment[]
   aiCustomerResults    AiCustomerResult[]
+  reportExports        ReportExport[]
 
   @@unique([tenantId, id])
   @@index([tenantId, ownerType, ownerId])
@@ -2729,6 +2732,40 @@ model ReportWeek {
 
   @@unique([tenantId, weekStart])
   @@map("report_week")
+}
+
+// One export a staff member asked for (Reporting 2 spec): built by a job from the permissions held when
+// asked, downloaded only by whoever asked, its file removed after 30 days; the row stays as the log.
+model ReportExport {
+  id                String    @id @default(uuid(7)) @db.Uuid
+  tenantId          String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // EXPORT_KINDS in src/modules/reporting/exports/export-kinds.ts
+  kind              String
+  // Validated by the kind's parameter schema.
+  params            Json
+  // The asker's permissions when asked; the file is built from these, never from the current role.
+  permissions       String[]
+  // pending | ready | failed | expired
+  status            String    @default("pending")
+  rows              Int?
+  fileId            String?   @map("file_id") @db.Uuid
+  error             String?
+  requestedByUserId String    @map("requested_by_user_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at")
+  finishedAt        DateTime? @map("finished_at")
+  // When a download link was first issued.
+  downloadedAt      DateTime? @map("downloaded_at")
+  // 30 days after it was ready; the file is removed then.
+  expiresAt         DateTime? @map("expires_at")
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  file        File?  @relation(fields: [tenantId, fileId], references: [tenantId, id], onDelete: NoAction)
+  requestedBy User   @relation(fields: [tenantId, requestedByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, requestedByUserId, id])
+  @@index([tenantId, status, expiresAt])
+  @@map("report_export")
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import { validateTemplate } from './render';
 const events = Object.keys(EVENTS) as EventKey[];
 
 describe('notification catalogue', () => {
-  it('declares the events of the foundation, the catalog, customers, partners, orders, payments and the AI', () => {
+  it('declares the events of the foundation, the catalog, customers, partners, orders, payments, the AI and reporting', () => {
     expect(events.sort()).toEqual([
       'ai.limit_nearly_used',
       'ai.limit_used',
@@ -38,6 +38,8 @@ describe('notification catalogue', () => {
       'payouts.reminder',
       'refund.failed',
       'refund.made',
+      'report.export_failed',
+      'report.export_ready',
       'subscription.changed',
       'subscription.downgrade_scheduled',
       'subscription.ended',

@@ -25,6 +25,15 @@ function localParts(at: Date, timeZone: string): { date: string; hour: number } 
   return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
 }
 
+/** `at` as ISO 8601 on `timeZone`'s wall clock, to the second, with its offset: `2026-10-30T14:05:00+01:00`. */
+export function localDateTime(at: Date, timeZone: string): string {
+  const offsetMinutes = Math.round(zoneOffsetMs(at, timeZone) / 60_000);
+  const wall = new Date(at.getTime() + offsetMinutes * 60_000).toISOString().slice(0, 19);
+  const sign = offsetMinutes < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMinutes);
+  return `${wall}${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
 /** The instant the calendar date `date` begins in `timeZone`. */
 export function startOfLocalDay(date: string, timeZone: string): Date {
   const midnightUtc = new Date(`${date}T00:00:00Z`).getTime();
