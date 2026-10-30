@@ -11,6 +11,7 @@ import { Prisma } from '../src/generated/prisma/client';
 import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { AI_PROVIDER } from '../src/modules/ai/ai-provider';
 import { BriefingService } from '../src/modules/ai/briefing.service';
+import { BrandProfileService } from '../src/modules/ai/customer-tools/brand-profile.service';
 import { fakeToolUse } from '../src/modules/ai/fake-ai-provider';
 import type { FakeAiProvider } from '../src/modules/ai/fake-ai-provider';
 import { ArticlesService } from '../src/modules/ai/knowledge/articles.service';
@@ -20,6 +21,7 @@ import { aiRunListResponseSchema, aiRunResponseSchema } from '../src/modules/ai/
 import { RunsService } from '../src/modules/ai/runs.service';
 import { searchResponseSchema } from '../src/modules/ai/search-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { PlansService } from '../src/modules/payments/plans/plans.service';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { ReportsService } from '../src/modules/reporting/reports.service';
@@ -244,7 +246,8 @@ describe('ai: the dashboard and Cmd+K, end to end', () => {
     const set = await setLimit('20.00').expect(200);
     expect((set.body as { ai: unknown }).ai).toEqual({ monthly_limit_usd: '20.00', spent_this_month_usd: '0.00' });
 
-    expect(await seedAi({ prisma, articles: app.get(ArticlesService) }, tenantId, ownerId)).toEqual({ limit: 0, articles: 3 });
+    const deps = { prisma, articles: app.get(ArticlesService), plans: app.get(PlansService), profiles: app.get(BrandProfileService) };
+    expect(await seedAi(deps, tenantId, ownerId)).toMatchObject({ limit: 0, articles: 3 });
     const articles = await prisma.inTenant(tenantId, (tx) => tx.knowledgeArticle.findMany({ select: { id: true } }));
     for (const article of articles) {
       await waitFor(async () => (store.passagesOf(namespaceOf(tenantId), article.id).length > 0 ? true : undefined));

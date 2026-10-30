@@ -220,7 +220,7 @@ A walkthrough in Swagger, on the demo data with the keys set (`test/payments-sli
 
 Plans are workspace data (`/payments/plans`): a price per month and per year, a discount applied after the customer group's, the delivery speeds offered beyond the workspace's default one (each at the speed's own surcharge or the plan's), monthly credits, a member limit and switches (`progress_emails`, `pay_later`). Every workspace has a free default plan, Starter, that every customer without a subscription is on. A paid plan is a Stripe product with a Stripe price per amount; changing a price adds one, and subscribers keep theirs. A customer's owner subscribes through a Stripe checkout and manages cards and invoices in Stripe's billing portal. The subscription is only ever written from Stripe's webhooks: an upgrade applies once its prorated payment is taken, a downgrade or the drop to Starter at the period end, and a late payment keeps the plan until Stripe gives up.
 
-Credits are whole units the AI tools will spend, held in three insert-only tables (grants, spends and their entries); a balance is always worked out, never stored. They come from the plan's monthly allowance, packs bought at any plan (`/payments/credit-packs`), campaigns that grant automatically to targeted plans and customers within a budget (`/payments/campaigns`), and staff grants with a reason. Spending takes campaign and staff credits first, then the allowance, then packs, the soonest to expire first, and never below zero. `npm run seed` gives Starter 10 credits and 2 members without pay later, adds Pro and Business, packs of 100 and 500 credits and the "Welcome to Pro" campaign; with the `DEMO_STRIPE_*` keys the plans are published.
+Credits are whole units the customer AI tools spend, held in three insert-only tables (grants, spends and their entries); a balance is always worked out, never stored. They come from the plan's monthly allowance, packs bought at any plan (`/payments/credit-packs`), campaigns that grant automatically to targeted plans and customers within a budget (`/payments/campaigns`), and staff grants with a reason. Spending takes campaign and staff credits first, then the allowance, then packs, the soonest to expire first, and never below zero. `npm run seed` gives Starter 10 credits and 2 members without pay later, adds Pro and Business, packs of 100 and 500 credits and the "Welcome to Pro" campaign; with the `DEMO_STRIPE_*` keys the plans are published.
 
 ### Plans and credits in test mode
 
@@ -239,7 +239,7 @@ A walkthrough in Swagger, on the demo data with the keys set (`test/payments-2-s
 4. Invite an owner to Brightline and, as them, `POST /portal/customers/{id}/subscription/checkout` for Pro monthly and pay. `GET .../subscription` is `active` on Pro; the credits show Pro's 100 and the campaign's 50; a staff quote for Brightline has the group line, then Pro's, and offers express.
 5. `POST .../subscription/change` to Business: 202, and Business once Stripe has taken the difference, with a top-up of 300 credits and rush at 20 %. A change to Pro is shown as `change` on the period end; choosing Business again takes it back.
 6. A failed renewal (above): `past_due`, still Business, and Brightline is told. Once Stripe gives up: Starter, staff are told (`pay_later: yes`), and the pack and campaign credits are still there.
-7. Credits are spent by the AI tools, which aren't built yet: the slice test spends through `CreditsService`, campaign first, then the allowance, then packs; too much is refused, and a give-back restores them.
+7. Credits are spent by the customer AI tools (see "Customer AI tools" below): campaign first, then the allowance, then packs; too much is refused, and a failed run gives them back.
 8. `POST /payments/campaigns` for three named customers, 50 credits each, budget 100, then `.../activate`: two are granted, `budget_left` is 0, and staff are told once.
 9. `stripe events resend <id>` for any subscription or invoice event: nothing changes. `UPDATE` or `DELETE` on `credit_grant`, `credit_spend` or `credit_entry` is refused, like the money ledger.
 
@@ -270,6 +270,29 @@ A walkthrough in Swagger, on the demo data with real keys (`test/ai-slice.e2e-sp
 6. Asking about revenue without `payment.read` gets an answer without it.
 7. As the platform admin: lower the limit below the month's spend. The next ask and refresh are 409, the dashboard shows `ai: { enabled: false, reason: "limit_used" }`, and staff are told once.
 8. `GET /ai/runs` lists every run with its tokens and cost. `UPDATE` or `DELETE` on `ai_run` or `ai_run_result` is refused.
+
+### Customer AI tools
+
+Customers get four AI tools in the portal, each paid in credits and each switched on per plan: recommendations (`ai_recommendations`: product ideas and advice from current trends Claude finds on the web, each with its source links), marketing insights (`ai_marketing`: four advice cards from the customer's own orders and spend of the last 90 days, each naming its figures), brand content (`ai_brand`: names, a short and a long description and tags for a product, in the brand profile's tone) and images (`ai_images`: one concept image of one piece, made so it can become a 3D model, and refinements of it). Staff tick the switches on a plan (`PATCH /payments/plans/{id}`); the free plan has none. Staff set the credits per use in `ai.toolPrices` (`PUT /settings/ai.toolPrices`, `{ "recommendations": 10, "marketing": 5, "brand_content": 3, "image": 5 }`, the defaults); a refinement costs an image.
+
+Buyers and above use the tools (`POST /portal/customers/{id}/ai/recommendations`, `.../marketing`, `.../brand-content`, `.../images`): 202 with the run's id, then poll `GET .../ai/runs/{runId}`. The plan's switch, the credits and the workspace's AI limit are checked when the run is queued, in one transaction: without the switch 403, without enough credits 409 `Not enough credits`, with the limit used 409 and nothing charged. A run that fails gives its credits back. Every member reads the brand profile (`GET/PUT .../ai/brand-profile`, saved by buyers and above, free and audited) and the history (`GET .../ai/results?tool=`); admins and above delete from it (`DELETE .../ai/results/{runId}`), which removes an image's file but keeps the run log and the credit ledger and gives nothing back. Customer text, the brand profile and web pages reach the model as data, never as instructions.
+
+Customer runs count towards the workspace's monthly AI limit in USD, web searches (0.01 USD each, at most 5 a run) and images included. An image run has Claude write the image prompt from the description and the brand profile; the server adds the fixed "made for 3D" rules (one object, centred, whole, plain background, no scene, text or people) and calls the image provider. Images are files owned by the customer (`GET /portal/customers/{id}/files/{runId}`).
+
+`IMAGE_PROVIDER=fake` (the default, and every test) never calls OpenAI. For real images: `IMAGE_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `IMAGE_MODEL` (the models and their price per image are in `src/modules/ai/extra-costs.ts`). Web search runs on Claude's own web search tool, so recommendations need `AI_PROVIDER=claude` and web search allowed for the key's organisation.
+
+`npm run seed` turns the four switches on for Pro and Business and gives Luna Jewels a brand profile.
+
+A walkthrough in Swagger, on the demo data with real keys (`test/ai-tools-slice.e2e-spec.ts` runs the same with the fakes; it is the spec's "Done when"):
+
+1. As the owner: `GET /payments/plans` shows the four AI switches on Pro and Business, none on Starter. `PUT /settings/ai.toolPrices` with an image at 4.
+2. As Anna (Luna, on Starter): `POST .../ai/images` is 403. Subscribe Luna to Pro (`POST /portal/customers/{id}/subscription/checkout`, card `4242 4242 4242 4242`); `GET .../credits` shows Pro's 100.
+3. `GET .../ai/brand-profile` shows the seeded profile. `POST .../ai/recommendations` with `{ "focus": "rings for a summer collection" }`: ideas and advice, each with its links; 10 credits gone.
+4. `POST .../ai/marketing`: four cards, each naming figures from Luna's own orders, never another customer's.
+5. `POST .../ai/brand-content` with one of Luna's products: names and descriptions in the profile's tone.
+6. `POST .../ai/images` with "a ring in a garden", then twice more with `from_id` and a change ("thinner band", "add a small star"). Each is one object on a plain background, charged 4; `GET .../ai/results?tool=image` shows the chain through `parent_id`, and each image downloads from the customer's files.
+7. As the platform admin, lower the AI limit below the month's spend: the next use is 409 `This month's AI limit is used` and the balance is unchanged.
+8. As an admin of Luna: `DELETE .../ai/results/{id}` for the middle image. It is gone from the history and the files; the next image still names it as its parent, and `GET /ai/runs` and the credit ledger keep their rows.
 
 ## API docs
 

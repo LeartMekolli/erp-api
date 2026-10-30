@@ -3,8 +3,10 @@ import { LoggingModule } from '../common/logging/logging.module';
 import { ReportingModule } from '../common/reporting/reporting.module';
 import { ConfigService } from '../config/config.service';
 import { PrismaService } from '../database/prisma.service';
+import { BrandProfileService } from '../modules/ai/customer-tools/brand-profile.service';
 import { ArticlesService } from '../modules/ai/knowledge/articles.service';
 import { KnowledgeModule } from '../modules/ai/knowledge/knowledge.module';
+import { AuditModule } from '../modules/audit/audit.module';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
 import { PaymentAccountService } from '../modules/payments/payment-account.service';
 import { PaymentsModule } from '../modules/payments/payments.module';
@@ -52,9 +54,13 @@ const SEED_TENANTS: CreateTenantInput[] = [
 /**
  * The seed also stores the demo's payment account and creates payout accounts through the provider,
  * and writes the demo's knowledge articles, so it loads Payments, the knowledge base and the global
- * modules their imports rely on, as the worker does (without consuming jobs).
+ * modules their imports rely on, as the worker does (without consuming jobs). The brand profile service
+ * is provided on its own: the AI module would bring the AI and image providers the seed never calls.
  */
-@Module({ imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule] })
+@Module({
+  imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule, AuditModule],
+  providers: [BrandProfileService],
+})
 class SeedModule {}
 
 /**
@@ -62,7 +68,8 @@ class SeedModule {}
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
  * (`seed-orders.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
- * and campaign (`seed-plans.ts`) and its AI limit and knowledge articles (`seed-ai.ts`). The admin's, the
+ * and campaign (`seed-plans.ts`) and its AI limit, knowledge articles, AI plan switches and a brand
+ * profile (`seed-ai.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
@@ -183,9 +190,15 @@ void runCli(async (app) => {
   );
 
   // Written as the demo's catalog user too; publishing queues the articles' indexing for the worker.
-  const ai = await seedAi({ prisma, articles: app.get(ArticlesService) }, demo.id, uploader.id);
+  const ai = await seedAi(
+    { prisma, articles: app.get(ArticlesService), plans: app.get(PlansService), profiles: app.get(BrandProfileService) },
+    demo.id,
+    uploader.id,
+  );
   process.stdout.write(
     `ai for demo: ${ai.limit ? 'set the monthly limit to 20.00 USD, ' : ''}created ${ai.articles} knowledge articles` +
-      ' (indexed by the worker)\n',
+      ` (indexed by the worker), turned on the AI tools on ${ai.plans} plans` +
+      (ai.profiles ? ', gave Luna Jewels a brand profile' : '') +
+      '\n',
   );
 }, SeedModule);
