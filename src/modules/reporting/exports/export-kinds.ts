@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { TenantPermission } from '../../identity/permissions';
+import { ORDER_STATES } from '../../orders/order-response';
+import { PARTNER_STATUSES } from '../../partners/partner-response';
 import type { CsvCell, CsvColumn } from './csv';
 
 /** What staff may export (Reporting 2 spec); the database checks the same list. */
@@ -39,9 +41,28 @@ export const customersParamsSchema = z
   .refine(toNotBeforeFrom, { message: '`to` is before `from`', path: ['to'] })
   .refine((range) => (range.from === undefined) === (range.to === undefined), { message: 'Give both `from` and `to`, or neither' });
 
+/** The most days a range may span, both ends counted (Reporting 2 spec). */
+export const MAX_RANGE_DAYS = 366;
+const spanDays = (range: { from: string; to: string }) =>
+  (new Date(`${range.to}T00:00:00Z`).getTime() - new Date(`${range.from}T00:00:00Z`).getTime()) / 86_400_000 + 1;
+const withinMaxRange = (range: { from: string; to: string }) => range.to < range.from || spanDays(range) <= MAX_RANGE_DAYS;
+
+export const ordersParamsSchema = z
+  .strictObject({
+    ...dateRange,
+    customer_id: z.uuid().optional(),
+    states: z.array(z.enum(ORDER_STATES)).min(1).optional(),
+  })
+  .refine(toNotBeforeFrom, { message: '`to` is before `from`', path: ['to'] })
+  .refine(withinMaxRange, { message: `At most ${MAX_RANGE_DAYS} days`, path: ['to'] });
+
+export const partnersParamsSchema = z.strictObject({ status: z.enum(PARTNER_STATUSES).optional() });
+
 /** One request per kind; later kinds join this union as they are built. */
 export const exportRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('customers'), params: customersParamsSchema.default({}) }),
+  z.strictObject({ kind: z.literal('orders'), params: ordersParamsSchema }),
+  z.strictObject({ kind: z.literal('partners'), params: partnersParamsSchema.default({}) }),
 ]);
 export type ExportRequest = z.infer<typeof exportRequestSchema>;
 

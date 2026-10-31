@@ -8,6 +8,8 @@ import { CustomersExport } from './exports/customers.export';
 import { ExpireExportsHandler, ExportHandler } from './exports/export.handler';
 import { ExportsController } from './exports/exports.controller';
 import { ExportsService } from './exports/exports.service';
+import { OrdersExport } from './exports/orders.export';
+import { PartnersExport } from './exports/partners.export';
 import { ReportsHandler } from './reports.handler';
 import { ReportsService } from './reports.service';
 
@@ -19,7 +21,17 @@ import { ReportsService } from './reports.service';
 @Module({
   imports: [PartnersModule, SettingsModule, FilesModule, NotificationsModule],
   controllers: [ExportsController],
-  providers: [ReportsService, ReportsHandler, AttentionService, ExportsService, CustomersExport, ExportHandler, ExpireExportsHandler],
+  providers: [
+    ReportsService,
+    ReportsHandler,
+    AttentionService,
+    ExportsService,
+    CustomersExport,
+    OrdersExport,
+    PartnersExport,
+    ExportHandler,
+    ExpireExportsHandler,
+  ],
   exports: [ReportsService, AttentionService, ExportsService],
 })
 // Not `ReportingModule`: that name is the error reporting in src/common/reporting.

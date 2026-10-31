@@ -58,6 +58,44 @@ export async function partnerLoads(tx: Tx, eligibility: EligibilityService): Pro
     .sort((a, b) => b.percent - a.percent);
 }
 
+/** The day the last piece of a group finished, once every live piece has; null before. */
+function readyOn(pieces: { status: string; transitions: { createdAt: Date }[] }[], timeZone: string): string | null {
+  if (!groupReady(pieces)) return null;
+  const finished = pieces.flatMap((piece) => piece.transitions.map((move) => move.createdAt.getTime()));
+  if (finished.length === 0) return null;
+  return localDate(new Date(Math.max(...finished)), timeZone);
+}
+
+/**
+ * Per partner, the share of its accepted jobs due from `from` until before `until` (calendar dates) that
+ * were done by their due date, judged at `today`; worst first. Partners with none due are left out.
+ */
+export async function partnerOnTimeBetween(
+  tx: Tx,
+  dates: { from: string; until: string },
+  today: string,
+  timeZone: string,
+): Promise<WeekMetrics['partners']['on_time']> {
+  const jobs = await tx.jobAssignment.findMany({
+    where: { status: 'accepted', dueOn: { gte: dateOnly(dates.from), lt: dateOnly(dates.until) } },
+    select: {
+      dueOn: true,
+      partner: { select: { id: true, name: true } },
+      group: { select: { workOrders: PIECES_WITH_FINISH } },
+    },
+  });
+  const by = new Map<string, { id: string; name: string; lines: { promisedOn: string; readyOn: string | null }[] }>();
+  for (const job of jobs) {
+    const entry = by.get(job.partner.id) ?? { id: job.partner.id, name: job.partner.name, lines: [] };
+    entry.lines.push({ promisedOn: dayOf(job.dueOn!), readyOn: readyOn(job.group.workOrders, timeZone) });
+    by.set(job.partner.id, entry);
+  }
+  return [...by.values()]
+    .map((entry) => ({ id: entry.id, name: entry.name, rate: onTimeRate(entry.lines, today) }))
+    .filter((entry): entry is { id: string; name: string; rate: number } => entry.rate !== null)
+    .sort((a, b) => a.rate - b.rate);
+}
+
 /**
  * The dashboard's numbers (AI 1 spec, goals 4 and 5): this week and last, computed by `reports.refresh`
  * into `report_week` and read by staff with `report.read`. Reads other modules' tables, never writes them.
@@ -178,13 +216,6 @@ export class ReportsService {
   }
 
   /** The day a group's last live piece finished, when every live piece has. */
-  private readyOn(pieces: { status: string; transitions: { createdAt: Date }[] }[], timeZone: string): string | null {
-    if (!groupReady(pieces)) return null;
-    const finished = pieces.flatMap((piece) => piece.transitions.map((move) => move.createdAt.getTime()));
-    if (finished.length === 0) return null;
-    return localDate(new Date(Math.max(...finished)), timeZone);
-  }
-
   /** Lines whose order is promised within the week, ready by that date. */
   private async onTime(tx: Tx, span: Span, today: string): Promise<number | null> {
     const lines = await tx.orderLine.findMany({
@@ -194,7 +225,7 @@ export class ReportsService {
     return onTimeRate(
       lines.map((line) => ({
         promisedOn: dayOf(line.order.promisedOn),
-        readyOn: line.group ? this.readyOn(line.group.workOrders, span.timeZone) : null,
+        readyOn: line.group ? readyOn(line.group.workOrders, span.timeZone) : null,
       })),
       today,
     );
@@ -303,24 +334,7 @@ export class ReportsService {
   }
 
   /** Per partner, the share of its accepted jobs due within the week that were done by their due date. */
-  private async partnerOnTime(tx: Tx, span: Span, today: string): Promise<WeekMetrics['partners']['on_time']> {
-    const jobs = await tx.jobAssignment.findMany({
-      where: { status: 'accepted', dueOn: { gte: dateOnly(span.start), lt: dateOnly(addDays(span.start, 7)) } },
-      select: {
-        dueOn: true,
-        partner: { select: { id: true, name: true } },
-        group: { select: { workOrders: PIECES_WITH_FINISH } },
-      },
-    });
-    const by = new Map<string, { id: string; name: string; lines: { promisedOn: string; readyOn: string | null }[] }>();
-    for (const job of jobs) {
-      const entry = by.get(job.partner.id) ?? { id: job.partner.id, name: job.partner.name, lines: [] };
-      entry.lines.push({ promisedOn: dayOf(job.dueOn!), readyOn: this.readyOn(job.group.workOrders, span.timeZone) });
-      by.set(job.partner.id, entry);
-    }
-    return [...by.values()]
-      .map((entry) => ({ id: entry.id, name: entry.name, rate: onTimeRate(entry.lines, today) }))
-      .filter((entry): entry is { id: string; name: string; rate: number } => entry.rate !== null)
-      .sort((a, b) => a.rate - b.rate);
+  private partnerOnTime(tx: Tx, span: Span, today: string): Promise<WeekMetrics['partners']['on_time']> {
+    return partnerOnTimeBetween(tx, { from: span.start, until: addDays(span.start, 7) }, today, span.timeZone);
   }
 }

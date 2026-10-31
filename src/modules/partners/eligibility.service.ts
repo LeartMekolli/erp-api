@@ -235,6 +235,12 @@ export class EligibilityService {
     return new Map([...facts].map(([partnerId, partner]) => [partnerId, partner.load]));
   }
 
+  /** Each partner's open jobs: offered or accepted, with pieces still to go through one of its steps. */
+  async openJobs(tx: Tx, partnerIds: string[]): Promise<Map<string, number>> {
+    const facts = await this.partnerFacts(tx, partnerIds, null);
+    return new Map([...facts].map(([partnerId, partner]) => [partnerId, partner.openJobs]));
+  }
+
   /** Each partner's setup, and what its other open jobs hold: pieces still to go through each step type. */
   private async partnerFacts(tx: Tx, partnerIds: string[], exceptGroupId: string | null): Promise<Map<string, PartnerFacts>> {
     const partners = await tx.partner.findMany({

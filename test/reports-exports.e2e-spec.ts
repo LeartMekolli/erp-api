@@ -106,6 +106,7 @@ describe('reporting: exports', () => {
     };
     const clerk = await role('clerk', ['report.export', 'customer.read']);
     const exporter = await role('exporter', ['report.export']);
+    const orderClerk = await role('order clerk', ['report.export', 'order.read']);
     const client = async (userId: string) => as((await tokens.issueForUser(tenant.id, userId)).accessToken);
     const staff = await client(owner.id);
 
@@ -121,24 +122,29 @@ describe('reporting: exports', () => {
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       return id;
     };
-    const order = async (customerId: string) => {
-      const quote = ((
-        await staff
-          .post('/pricing/quotes', {
-            product_id: cast.productId,
-            options: { material: 'silver_925', finish: 'polished' },
-            size: { scale: '1.5' },
-            quantity: 2,
-            file_version_id: cast.versionId,
-            customer_id: customerId,
-          })
-          .expect(201)
-      ).body as { quote: { id: string } }).quote;
+    /** An order of `lines` lines, of 2 pieces then 3, 4…; its customer pays later, so it starts at once. */
+    const order = async (customerId: string, lines = 1) => {
+      const quotes: { id: string }[] = [];
+      for (let line = 0; line < lines; line += 1) {
+        const quote = ((
+          await staff
+            .post('/pricing/quotes', {
+              product_id: cast.productId,
+              options: { material: 'silver_925', finish: 'polished' },
+              size: { scale: '1.5' },
+              quantity: 2 + line,
+              file_version_id: cast.versionId,
+              customer_id: customerId,
+            })
+            .expect(201)
+        ).body as { quote: { id: string } }).quote;
+        quotes.push(quote);
+      }
       const placed = (
         await staff
           .post('/orders', {
             customer_id: customerId,
-            lines: [{ quote_id: quote.id }],
+            lines: quotes.map((quote) => ({ quote_id: quote.id })),
             address: { name: 'Studio', line1: 'Main street 1', city: 'Berlin', postal_code: '10115', country: 'DE' },
             shipping_method: 'courier',
           })
@@ -160,6 +166,8 @@ describe('reporting: exports', () => {
     });
 
     const today = localDate(new Date(), 'UTC');
+    const number = async (orderId: string) =>
+      (await prisma.inTenant(tenant.id, (tx) => tx.order.findUniqueOrThrow({ where: { id: orderId } }))).number;
     return {
       tenantId: tenant.id,
       staff,
@@ -167,12 +175,17 @@ describe('reporting: exports', () => {
       clerk,
       luna,
       sol,
+      cast,
+      order,
+      number,
+      lunaOrders: { first: await number(first.id), second: await number(second.id), cancelled: await number(cancelled.id) },
       lunaRevenue: first.net.add(second.net),
       range: { from: addDays(today, -7), to: today },
       second: await client(secondOwner.id),
       member: await client(member.id),
       clerkClient: await client(clerk.id),
       exporter: await client(exporter.id),
+      orderClerk: await client(orderClerk.id),
     };
   }
 
@@ -312,5 +325,103 @@ describe('reporting: exports', () => {
     expect((await w.staff.get(`/reports/exports/${id}`).expect(200)).body).toMatchObject({ status: 'expired', rows: 2 });
     await w.staff.post(`/reports/exports/${id}/download`).expect(409);
     expect(await prisma.inTenant(w.tenantId, (tx) => tx.file.findUniqueOrThrow({ where: { id } }))).toMatchObject({ status: 'removed' });
+  });
+
+  describe('orders and partners (Task 2)', () => {
+    const ORDER_COLUMNS = ['Order', 'Placed on', 'Customer', 'State', 'Promised on', 'Shipped on', 'Delivered on', 'Line', 'Product', 'Quantity'];
+    const MONEY_COLUMNS = ['Unit price', 'Line total', 'Order lines total', 'Shipping', 'Tax', 'Order total', 'Currency'];
+    /** Order number, customer, state, line and quantity of each row. */
+    const brief = (rows: string[][]) => rows.map((row) => [row[0], row[2], row[3], row[7], row[9]]);
+
+    it('exports orders one row per line, filtered by dates, customer and state', async () => {
+      const w = await workspace();
+      const solOrder = await w.order(w.sol, 2);
+      const sol = String(await w.number(solOrder.id));
+      const { first, second, cancelled } = w.lunaOrders;
+      const exportOf = async (params: object) => {
+        const id = await ask(w.staff, { kind: 'orders', params: { ...w.range, ...params } });
+        expect(await finished(w.staff, id)).toMatchObject({ status: 'ready' });
+        return download(w.staff, id);
+      };
+
+      const [header, ...all] = await exportOf({});
+      expect(header).toEqual([...ORDER_COLUMNS, ...MONEY_COLUMNS, 'Partner']);
+      // Sol's order of 400 days ago is outside the dates; its two-line order repeats the order on each line.
+      expect(brief(all)).toEqual([
+        [String(first), 'Luna Jewels', 'in_production', '1', '2'],
+        [String(second), 'Luna Jewels', 'in_production', '1', '2'],
+        [String(cancelled), 'Luna Jewels', 'cancelled', '1', '2'],
+        [sol, 'Sol Studio', 'in_production', '1', '2'],
+        [sol, 'Sol Studio', 'in_production', '2', '3'],
+      ]);
+      const [solFirst, solSecond] = all.slice(3);
+      expect(solFirst.slice(12, 17)).toEqual(solSecond.slice(12, 17));
+      expect(solFirst[16]).toBe('EUR');
+
+      expect(brief((await exportOf({ customer_id: w.sol })).slice(1))).toEqual(brief(all.slice(3)));
+      expect(brief((await exportOf({ states: ['cancelled'] })).slice(1))).toEqual([[String(cancelled), 'Luna Jewels', 'cancelled', '1', '2']]);
+      expect((await exportOf({ states: ['in_production', 'cancelled'] })).slice(1)).toHaveLength(5);
+    });
+
+    it('leaves money and partner columns out without their permissions', async () => {
+      const w = await workspace();
+      const id = await ask(w.orderClerk, { kind: 'orders', params: w.range });
+      await finished(w.orderClerk, id);
+
+      const [header, ...rows] = await download(w.orderClerk, id);
+      expect(header).toEqual(ORDER_COLUMNS);
+      expect(rows).toHaveLength(3);
+      expect(rows.every((row) => row.length === ORDER_COLUMNS.length)).toBe(true);
+    });
+
+    it('refuses an order range over 366 days, or ending before it starts', async () => {
+      const w = await workspace();
+      const year = { from: addDays(w.range.to, -365), to: w.range.to };
+      await w.staff.post('/reports/exports', { kind: 'orders', params: year }).expect(202);
+      await w.staff.post('/reports/exports', { kind: 'orders', params: { ...year, from: addDays(year.from, -1) } }).expect(400);
+      await w.staff.post('/reports/exports', { kind: 'orders', params: { from: w.range.to, to: w.range.from } }).expect(400);
+      await w.staff.post('/reports/exports', { kind: 'orders', params: {} }).expect(400);
+      await w.clerkClient.post('/reports/exports', { kind: 'orders', params: w.range }).expect(403);
+    });
+
+    it('exports partners with their capabilities, load and on-time rate, and by status', async () => {
+      const w = await workspace();
+      const partner = async (name: string) =>
+        ((await w.staff.post('/partners', { name, display_name: name.split(' ')[0] }).expect(201)).body as { id: string }).id;
+      const castco = await partner('CastCo Ltd');
+      const layerline = await partner('Layerline Ltd');
+      await w.staff
+        .put(`/partners/${castco}/capabilities`, {
+          capabilities: [w.cast.steps.polishing, w.cast.steps.casting].map((step_type_id) => ({ step_type_id, capacity: 100, capacity_period: 'week' })),
+        })
+        .expect(200);
+      await prisma.inTenant(w.tenantId, (tx) => tx.partner.update({ where: { id: layerline }, data: { status: 'suspended' } }));
+
+      const exportOf = async (params: object) => {
+        const id = await ask(w.staff, { kind: 'partners', params });
+        expect(await finished(w.staff, id)).toMatchObject({ status: 'ready' });
+        return download(w.staff, id);
+      };
+      const [header, ...rows] = await exportOf({});
+      expect(header).toEqual([
+        'Partner ID',
+        'Name',
+        'Display name',
+        'Status',
+        'Capabilities',
+        'Max open jobs',
+        'Open jobs',
+        'Load %',
+        'On-time rate (90 days)',
+        'Agreement signed on',
+      ]);
+      expect(rows).toEqual([
+        [castco, 'CastCo Ltd', 'CastCo', 'setting_up', 'casting; polishing', '', '0', '0', '', ''],
+        [layerline, 'Layerline Ltd', 'Layerline', 'suspended', '', '', '0', '0', '', ''],
+      ]);
+
+      expect((await exportOf({ status: 'suspended' })).slice(1).map((row) => row[0])).toEqual([layerline]);
+      await w.clerkClient.post('/reports/exports', { kind: 'partners', params: {} }).expect(403);
+    });
   });
 });
