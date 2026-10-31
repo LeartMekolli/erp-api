@@ -1,6 +1,6 @@
 import type { TenantPermission } from '../../identity/permissions';
 import type { RangeMetrics } from '../range-metrics';
-import { dashboardDocument } from './dashboard-pdf';
+import { dashboardDocument, renderPdf } from './dashboard-pdf';
 
 const LUNA = '01900000-0000-7000-8000-000000000001';
 const RING = '01900000-0000-7000-8000-000000000002';
@@ -79,5 +79,19 @@ describe('dashboard pdf', () => {
 
     expect(all.filter((text) => text === 'None in this period').length).toBeGreaterThanOrEqual(7);
     expect(all).toContain('–');
+  });
+
+  it('draws Polish, Czech, Greek and Cyrillic names as they are (review fix)', async () => {
+    const names: RangeMetrics = {
+      ...metrics,
+      orders: { ...metrics.orders, by_product: [{ ...metrics.orders.by_product[0], name: 'Δαχτυλίδι' }] },
+      customers: { ...metrics.customers, top: [{ id: LUNA, name: 'Мастерская Dvořák', revenue: '300.00' }] },
+    };
+
+    const bytes = await renderPdf(dashboardDocument({ ...input(ALL), workspace: 'Pracownia Łódź', metrics: names }));
+
+    const { extractText } = await import('unpdf');
+    const { text } = await extractText(new Uint8Array(bytes), { mergePages: true });
+    for (const name of ['Pracownia Łódź', 'Δαχτυλίδι', 'Мастерская Dvořák', '2026-07-01 – 2026-09-30']) expect(text).toContain(name);
   });
 });

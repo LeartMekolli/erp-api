@@ -12,6 +12,9 @@ import type { TenantPermission } from '../src/modules/identity/permissions';
 import { feeJournal, receivedJournal } from '../src/modules/payments/ledger';
 import type { JournalDraft } from '../src/modules/payments/ledger';
 import { LedgerService } from '../src/modules/payments/ledger.service';
+import type { CsvCell } from '../src/modules/reporting/exports/csv';
+import type { CsvBuilder } from '../src/modules/reporting/exports/export-kinds';
+import { ExportsService } from '../src/modules/reporting/exports/exports.service';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -292,5 +295,32 @@ describe('reporting: the accounting export', () => {
     for (const kind of ['accounting_invoices', 'accounting_payments', 'accounting_refunds', 'accounting_payouts']) {
       await w.reader.post('/reports/exports', { kind, params: { month } }).expect(403);
     }
+  });
+
+  // Last: it posts one more payment into the shared workspace.
+  it('never lists a payment twice when one is posted while the export runs (review fix)', async () => {
+    const builder = app.get(ExportsService).builderOf('accounting_payments') as CsvBuilder;
+    const pages = builder
+      .pages({ tenantId: w.tenantId, params: { month }, may: new Set<TenantPermission>(['payment.read']), timeZone: 'UTC', currency: 'EUR', pageSize: 2 })
+      [Symbol.asyncIterator]();
+
+    const read = [...((await pages.next()).value as Record<string, CsvCell>[])];
+    // At the month's start, before every payment read so far: counting rows from the top would read one again.
+    await prisma.inTenant(w.tenantId, async (tx) => {
+      const order = await tx.order.findUniqueOrThrow({ where: { id: w.lunaOrder.id }, select: { customerId: true } });
+      await ledger.post(tx, {
+        ...receivedJournal(order.customerId, d('7.00'), 'outside_stripe'),
+        occurredAt: new Date(`${month}-01T00:00:00Z`),
+        currency: 'EUR',
+        orderId: w.lunaOrder.id,
+        customerId: order.customerId,
+      });
+    });
+    for (let page = await pages.next(); !page.done; page = await pages.next()) read.push(...page.value);
+
+    const ids = read.map((row) => row.journal_id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toHaveLength(4);
+    expect(ids).toEqual(expect.arrayContaining([w.ids.provider, w.ids.byHand, w.ids.reversed, w.ids.reversal]));
   });
 });

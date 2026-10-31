@@ -12,6 +12,8 @@ import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/reg
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import type { TenantPermission } from '../src/modules/identity/permissions';
 import { localDate } from '../src/modules/orders/dates';
+import type { CsvCell } from '../src/modules/reporting/exports/csv';
+import type { CsvBuilder } from '../src/modules/reporting/exports/export-kinds';
 import { exportDownloadSchema, exportResponseSchema, exportStartedSchema } from '../src/modules/reporting/exports/export-response';
 import { ExportsService } from '../src/modules/reporting/exports/exports.service';
 import { addDays } from '../src/modules/reporting/week-metrics';
@@ -325,6 +327,23 @@ describe('reporting: exports', () => {
     expect((await w.staff.get(`/reports/exports/${id}`).expect(200)).body).toMatchObject({ status: 'expired', rows: 2 });
     await w.staff.post(`/reports/exports/${id}/download`).expect(409);
     expect(await prisma.inTenant(w.tenantId, (tx) => tx.file.findUniqueOrThrow({ where: { id } }))).toMatchObject({ status: 'removed' });
+  });
+
+  it('reads the next page after the last row, so a customer added meanwhile neither repeats nor skips a row (review fix)', async () => {
+    const w = await workspace();
+    const builder = app.get(ExportsService).builderOf('customers') as CsvBuilder;
+    const pages = builder
+      .pages({ tenantId: w.tenantId, params: {}, may: new Set<TenantPermission>(), timeZone: 'UTC', currency: 'EUR', pageSize: 1 })
+      [Symbol.asyncIterator]();
+
+    const first = await pages.next();
+    // Sorts before every row read so far: counting rows from the top would read Luna again.
+    await w.staff.post('/customers', { name: 'Aaron Atelier' }).expect(201);
+    const rest: Record<string, CsvCell>[] = [];
+    for (let page = await pages.next(); !page.done; page = await pages.next()) rest.push(...page.value);
+
+    expect((first.value as Record<string, CsvCell>[]).map((row) => row.name)).toEqual(['Luna Jewels']);
+    expect(rest.map((row) => row.name)).toEqual(['Sol Studio']);
   });
 
   describe('orders and partners (Task 2)', () => {

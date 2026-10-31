@@ -6,7 +6,6 @@ import { EligibilityService } from '../../partners/eligibility.service';
 import { partnerLoads, partnerOnTimeBetween } from '../reports.service';
 import { addDays } from '../week-metrics';
 import type { CsvCell, CsvColumn } from './csv';
-import { PAGE_SIZE } from './export-kinds';
 import type { CsvBuilder, ExportContext, partnersParamsSchema } from './export-kinds';
 import { ExportsService } from './exports.service';
 
@@ -61,13 +60,16 @@ export class PartnersExport implements CsvBuilder<Params>, OnModuleInit {
       ),
     }));
 
-    for (let skip = 0; ; skip += PAGE_SIZE) {
+    for (let last: { name: string; id: string } | undefined; ; ) {
+      const after = last;
       const page = await this.prisma.inTenant(ctx.tenantId, async (tx) => {
         const partners = await tx.partner.findMany({
-          where: ctx.params.status ? { status: ctx.params.status } : {},
+          where: {
+            ...(ctx.params.status ? { status: ctx.params.status } : {}),
+            ...(after ? { OR: [{ name: { gt: after.name } }, { name: after.name, id: { gt: after.id } }] } : {}),
+          },
           orderBy: [{ name: 'asc' }, { id: 'asc' }],
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           include: { capabilities: { select: { stepType: { select: { name: true } } } } },
         });
         return { partners, open: await this.eligibility.openJobs(tx, partners.map((partner) => partner.id)) };
@@ -89,7 +91,8 @@ export class PartnersExport implements CsvBuilder<Params>, OnModuleInit {
           agreement_signed_on: partner.agreementSignedOn?.toISOString().slice(0, 10) ?? null,
         };
       });
-      if (page.partners.length < PAGE_SIZE) return;
+      if (page.partners.length < ctx.pageSize) return;
+      last = page.partners[page.partners.length - 1];
     }
   }
 }

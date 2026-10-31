@@ -94,6 +94,8 @@ export interface ExportContext<P = unknown> {
   may: ReadonlySet<TenantPermission>;
   timeZone: string;
   currency: string;
+  /** Rows per page (`PAGE_SIZE`; a test may lower it). */
+  pageSize: number;
 }
 
 /** A CSV kind: its columns for what the asker may see, and its rows in pages. */
@@ -113,5 +115,9 @@ export interface PdfBuilder<P = unknown> {
 
 export type ExportBuilder = CsvBuilder | PdfBuilder;
 
-/** Rows are read in pages of this many, each page its own short transaction. */
+/**
+ * Rows are read in pages of this many, each page its own short transaction. Each page starts after the
+ * last row of the one before, by the kind's sort key and id, never by skipping a count: a row added or
+ * renamed meanwhile then neither repeats a row nor pushes one out (Reporting 2 review).
+ */
 export const PAGE_SIZE = 1_000;

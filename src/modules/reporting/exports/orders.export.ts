@@ -6,7 +6,6 @@ import { localDate, startOfLocalDay } from '../../orders/dates';
 import { lineState, orderState } from '../../orders/order-state';
 import { addDays } from '../week-metrics';
 import type { CsvCell, CsvColumn } from './csv';
-import { PAGE_SIZE } from './export-kinds';
 import type { CsvBuilder, ExportContext, ordersParamsSchema } from './export-kinds';
 import { ExportsService } from './exports.service';
 
@@ -66,13 +65,14 @@ export class OrdersExport implements CsvBuilder<Params>, OnModuleInit {
     const { from, to, customer_id: customerId, states } = ctx.params;
     const placedAt = { gte: startOfLocalDay(from, ctx.timeZone), lt: startOfLocalDay(addDays(to, 1), ctx.timeZone) };
 
-    for (let skip = 0; ; skip += PAGE_SIZE) {
+    // An order's number is unique in the workspace, so it alone marks where a page ended.
+    for (let last: number | undefined; ; ) {
+      const after = last;
       const page = await this.prisma.inTenant(ctx.tenantId, async (tx) => {
         const orders = await tx.order.findMany({
-          where: { placedAt, ...(customerId ? { customerId } : {}) },
+          where: { placedAt, ...(customerId ? { customerId } : {}), ...(after !== undefined ? { number: { gt: after } } : {}) },
           orderBy: { number: 'asc' },
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           include: { customer: { select: { name: true } } },
         });
         const lines = await tx.orderLine.findMany({
@@ -126,7 +126,8 @@ export class OrdersExport implements CsvBuilder<Params>, OnModuleInit {
         }
       }
       yield rows;
-      if (page.orders.length < PAGE_SIZE) return;
+      if (page.orders.length < ctx.pageSize) return;
+      last = page.orders[page.orders.length - 1].number;
     }
   }
 }

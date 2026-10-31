@@ -1,22 +1,29 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import pdfmake from 'pdfmake';
 import type { Content, TDocumentDefinitions, TableCell } from 'pdfmake/interfaces';
 import type { TenantPermission } from '../../identity/permissions';
 import type { RangeMetrics } from '../range-metrics';
 
 // The dashboard as a PDF (Reporting 2 spec, goals 14–16): A4, a header, then one heading and its tables
-// per section; tables only. Drawn with the PDF standard fonts, so no font file ships and nothing is read
-// from disk or the network.
+// per section; tables only. Drawn with Noto Sans, which covers Latin, Greek and Cyrillic names (the PDF
+// standard fonts garble anything past Western European letters; Reporting 2 review).
 
 const NONE = 'None in this period';
 const DASH = '–';
 
-/** The PDF standard fonts, by their built-in names; the only "files" pdfmake may open. */
-const FONTS = { Helvetica: { normal: 'Helvetica', bold: 'Helvetica-Bold', italics: 'Helvetica-Oblique', bolditalics: 'Helvetica-BoldOblique' } };
-const STANDARD = new Set(Object.values(FONTS.Helvetica));
+/** Noto Sans (SIL Open Font License, `fonts/OFL.txt`), copied into the build by `nest-cli.json`. */
+const FONT_FILES = ['NotoSans-Regular.ttf', 'NotoSans-Bold.ttf', 'NotoSans-Italic.ttf'];
 
-pdfmake.setFonts(FONTS);
+// pdfmake takes fonts by name. Our code reads the files into pdfmake's in-memory file store under those
+// names, so pdfmake itself may open nothing from disk or the network. (Its typings omit `virtualfs`.)
+const store = (pdfmake as unknown as { virtualfs: { writeFileSync(name: string, content: Buffer): void } }).virtualfs;
+for (const file of FONT_FILES) store.writeFileSync(file, readFileSync(join(__dirname, 'fonts', file)));
+pdfmake.setFonts({
+  NotoSans: { normal: 'NotoSans-Regular.ttf', bold: 'NotoSans-Bold.ttf', italics: 'NotoSans-Italic.ttf', bolditalics: 'NotoSans-Bold.ttf' },
+});
 pdfmake.setUrlAccessPolicy(() => false);
-pdfmake.setLocalAccessPolicy((path) => STANDARD.has(path));
+pdfmake.setLocalAccessPolicy(() => false);
 
 export interface DashboardInput {
   workspace: string;
@@ -125,7 +132,7 @@ export function dashboardDocument(input: DashboardInput): TDocumentDefinitions {
     pageMargins: [40, 40, 40, 40],
     info: { title: `${input.workspace}: ${input.from} – ${input.to}` },
     content,
-    defaultStyle: { font: 'Helvetica', fontSize: 10 },
+    defaultStyle: { font: 'NotoSans', fontSize: 10 },
     styles: {
       title: { fontSize: 18, bold: true },
       subtitle: { fontSize: 12, margin: [0, 2, 0, 0] },

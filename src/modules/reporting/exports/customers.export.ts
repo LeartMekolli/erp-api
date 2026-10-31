@@ -7,7 +7,6 @@ import { localDate, startOfLocalDay } from '../../orders/dates';
 import { PLAN_GIVING_STATUSES } from '../../payments/plans/plan-of';
 import { addDays } from '../week-metrics';
 import type { CsvCell, CsvColumn } from './csv';
-import { PAGE_SIZE } from './export-kinds';
 import type { CsvBuilder, ExportContext, customersParamsSchema } from './export-kinds';
 import { ExportsService } from './exports.service';
 
@@ -59,12 +58,13 @@ export class CustomersExport implements CsvBuilder<Params>, OnModuleInit {
       tx.plan.findFirstOrThrow({ where: { isDefault: true }, select: { name: true } }),
     );
 
-    for (let skip = 0; ; skip += PAGE_SIZE) {
+    for (let last: { name: string; id: string } | undefined; ; ) {
+      const after = last;
       const page = await this.prisma.inTenant(ctx.tenantId, async (tx) => {
         const customers = await tx.customer.findMany({
+          where: after ? { OR: [{ name: { gt: after.name } }, { name: after.name, id: { gt: after.id } }] } : {},
           orderBy: [{ name: 'asc' }, { id: 'asc' }],
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           select: {
             id: true,
             name: true,
@@ -105,7 +105,8 @@ export class CustomersExport implements CsvBuilder<Params>, OnModuleInit {
           currency: ctx.currency,
         };
       });
-      if (page.customers.length < PAGE_SIZE) return;
+      if (page.customers.length < ctx.pageSize) return;
+      last = page.customers[page.customers.length - 1];
     }
   }
 }

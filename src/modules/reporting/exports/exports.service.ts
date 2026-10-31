@@ -14,7 +14,7 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { localDate } from '../../orders/dates';
 import { csvFile } from './csv';
 import type { CsvCell } from './csv';
-import { EXPORT_PERMISSION, EXPORT_ROW_LIMIT } from './export-kinds';
+import { EXPORT_PERMISSION, EXPORT_ROW_LIMIT, PAGE_SIZE } from './export-kinds';
 import type { ExportBuilder, ExportContext, ExportKind, ExportRequest } from './export-kinds';
 import { toExportResponse } from './export-response';
 import type { ExportDownload, ExportListQuery, ExportResponse } from './export-response';
@@ -44,6 +44,8 @@ export class ExportsService {
   private readonly builders = new Map<ExportKind, ExportBuilder>();
   /** The row limit; a test may lower it. */
   rowLimit = EXPORT_ROW_LIMIT;
+  /** Rows per page; a test may lower it. */
+  pageSize = PAGE_SIZE;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -56,6 +58,11 @@ export class ExportsService {
   /** Registers how a kind is built. One builder per kind. */
   register(builder: ExportBuilder): void {
     this.builders.set(builder.kind, builder);
+  }
+
+  /** How a kind is built, if registered. */
+  builderOf(kind: ExportKind): ExportBuilder | undefined {
+    return this.builders.get(kind);
   }
 
   /**
@@ -131,7 +138,7 @@ export class ExportsService {
       tenant: await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, defaultCurrency: true } }),
     }));
     if (!row || row.status !== 'pending') return;
-    const builder = this.builders.get(row.kind as ExportKind);
+    const builder = this.builderOf(row.kind as ExportKind);
     if (!builder) throw new Error(`No builder for exports of kind ${row.kind}`);
 
     const ctx: ExportContext = {
@@ -140,6 +147,7 @@ export class ExportsService {
       may: new Set(row.permissions.filter(isTenantPermission)) as ReadonlySet<TenantPermission>,
       timeZone: tenant.timezone,
       currency: tenant.defaultCurrency,
+      pageSize: this.pageSize,
     };
     let bytes: Buffer;
     let rows: number | null = null;

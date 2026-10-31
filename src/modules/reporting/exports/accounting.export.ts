@@ -4,7 +4,6 @@ import { PrismaService } from '../../../database/prisma.service';
 import { Prisma } from '../../../generated/prisma/client';
 import { localDate, startOfLocalDay } from '../../orders/dates';
 import type { CsvCell, CsvColumn } from './csv';
-import { PAGE_SIZE } from './export-kinds';
 import type { CsvBuilder, ExportContext, ExportKind, accountingParamsSchema } from './export-kinds';
 import { ExportsService } from './exports.service';
 
@@ -23,12 +22,25 @@ const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 const CASH = ['stripe_balance', 'outside_stripe'];
 const zero = () => new Prisma.Decimal(0);
 
-/** One accounting kind: its columns and how one page of the month's rows is read. */
+/** Where a page ended: its last record's time and id. */
+interface Key {
+  at: Date;
+  id: string;
+}
+/** Records created after `after`, in the order (`createdAt`, id). */
+const createdAfter = (after: Key | undefined) =>
+  after ? { OR: [{ createdAt: { gt: after.at } }, { createdAt: after.at, id: { gt: after.id } }] } : {};
+const lastCreated = (records: { createdAt: Date; id: string }[]): Key | undefined => {
+  const last = records.at(-1);
+  return last && { at: last.createdAt, id: last.id };
+};
+
+/** One accounting kind: its columns and how one page of the month's rows is read, after the last page's end. */
 function accountingBuilder(
   prisma: PrismaService,
   kind: ExportKind,
   columns: CsvColumn[],
-  page: (tx: Tx, span: { gte: Date; lt: Date }, ctx: ExportContext<Params>, skip: number) => Promise<Row[]>,
+  page: (tx: Tx, span: { gte: Date; lt: Date }, ctx: ExportContext<Params>, after: Key | undefined) => Promise<{ rows: Row[]; last: Key | undefined }>,
 ): CsvBuilder<Params> {
   return {
     kind,
@@ -36,10 +48,12 @@ function accountingBuilder(
     columns: () => columns,
     async *pages(ctx) {
       const span = monthSpan(ctx.params.month, ctx.timeZone);
-      for (let skip = 0; ; skip += PAGE_SIZE) {
-        const rows = await prisma.inTenant(ctx.tenantId, (tx) => page(tx, span, ctx, skip));
+      for (let after: Key | undefined; ; ) {
+        const from = after;
+        const { rows, last } = await prisma.inTenant(ctx.tenantId, (tx) => page(tx, span, ctx, from));
         yield rows;
-        if (rows.length < PAGE_SIZE) return;
+        if (rows.length < ctx.pageSize) return;
+        after = last;
       }
     },
   };
@@ -83,15 +97,14 @@ export class AccountingExports implements OnModuleInit {
         { key: 'currency', label: 'Currency' },
         { key: 'provider_invoice_id', label: 'Provider invoice ID' },
       ],
-      async (tx, span, ctx, skip) => {
+      async (tx, span, ctx, after) => {
         const invoices = await tx.invoice.findMany({
-          where: { createdAt: span },
+          where: { createdAt: span, ...createdAfter(after) },
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           include: { order: { select: { number: true, customer: { select: { name: true } } } } },
         });
-        return invoices.map((invoice) => ({
+        const rows = invoices.map((invoice) => ({
           invoice_id: invoice.id,
           order_number: invoice.order.number,
           customer: invoice.order.customer.name,
@@ -106,6 +119,7 @@ export class AccountingExports implements OnModuleInit {
           currency: invoice.currency,
           provider_invoice_id: invoice.providerInvoiceId,
         }));
+        return { rows, last: lastCreated(invoices) };
       },
     );
   }
@@ -130,15 +144,16 @@ export class AccountingExports implements OnModuleInit {
         { key: 'method', label: 'Method' },
         { key: 'provider_reference', label: 'Provider reference' },
       ],
-      async (tx, span, _ctx, skip) => {
+      async (tx, span, ctx, after) => {
         const journals = await tx.ledgerJournal.findMany({
           where: {
             occurredAt: span,
             OR: [{ kind: 'payment_received' }, { kind: 'reversal', reverses: { kind: 'payment_received' } }],
+            // After the last page's end, in the order (`occurredAt`, id).
+            ...(after ? { AND: [{ OR: [{ occurredAt: { gt: after.at } }, { occurredAt: after.at, id: { gt: after.id } }] }] } : {}),
           },
           orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           include: {
             lines: { select: { account: true, amount: true } },
             order: { select: { number: true } },
@@ -170,7 +185,8 @@ export class AccountingExports implements OnModuleInit {
             .filter((fee) => (fee.providerObjectId ?? fee.reverses?.providerObjectId) === reference && fee.orderId === orderId)
             .reduce((sum, fee) => fee.lines.reduce((total, line) => total.add(line.amount), sum), zero());
 
-        return journals.map((journal) => {
+        const last = journals.at(-1);
+        const rows = journals.map((journal) => {
           const cash = journal.lines.filter((line) => CASH.includes(line.account));
           const amount = cash.reduce((sum, line) => sum.add(line.amount), zero());
           const reference = referenceOf(journal);
@@ -188,6 +204,7 @@ export class AccountingExports implements OnModuleInit {
             provider_reference: reference,
           };
         });
+        return { rows, last: last && { at: last.occurredAt, id: last.id } };
       },
     );
   }
@@ -208,15 +225,14 @@ export class AccountingExports implements OnModuleInit {
         { key: 'status', label: 'Status' },
         { key: 'reason', label: 'Reason' },
       ],
-      async (tx, span, ctx, skip) => {
+      async (tx, span, ctx, after) => {
         const refunds = await tx.refund.findMany({
-          where: { createdAt: span },
+          where: { createdAt: span, ...createdAfter(after) },
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           include: { order: { select: { number: true, currency: true, customer: { select: { name: true } } } } },
         });
-        return refunds.map((refund) => ({
+        const rows = refunds.map((refund) => ({
           refund_id: refund.id,
           order_number: refund.order.number,
           customer: refund.order.customer.name,
@@ -227,6 +243,7 @@ export class AccountingExports implements OnModuleInit {
           status: refund.status,
           reason: refund.reason,
         }));
+        return { rows, last: lastCreated(refunds) };
       },
     );
   }
@@ -247,15 +264,14 @@ export class AccountingExports implements OnModuleInit {
         { key: 'failure', label: 'Failure' },
         { key: 'provider_transfer_id', label: 'Provider transfer ID' },
       ],
-      async (tx, span, ctx, skip) => {
+      async (tx, span, ctx, after) => {
         const payouts = await tx.payout.findMany({
-          where: { createdAt: span },
+          where: { createdAt: span, ...createdAfter(after) },
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-          skip,
-          take: PAGE_SIZE,
+          take: ctx.pageSize,
           include: { partner: { select: { name: true } } },
         });
-        return payouts.map((payout) => ({
+        const rows = payouts.map((payout) => ({
           payout_id: payout.id,
           partner: payout.partner.name,
           created_on: localDate(payout.createdAt, ctx.timeZone),
@@ -266,6 +282,7 @@ export class AccountingExports implements OnModuleInit {
           failure: payout.failure,
           provider_transfer_id: payout.providerTransferId,
         }));
+        return { rows, last: lastCreated(payouts) };
       },
     );
   }
