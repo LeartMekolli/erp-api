@@ -41,10 +41,8 @@ interface FakeInvoice {
   periodEnd: Date | null;
 }
 
-/** `from` plus one month or one year, as the provider counts a billing period. */
-function periodAfter(from: Date, interval: 'month' | 'year'): Date {
-  return addMonths(from, interval === 'year' ? 12 : 1);
-}
+/** The months one billing period of `interval` covers. */
+const monthsOf = (interval: 'month' | 'year') => (interval === 'year' ? 12 : 1);
 
 const fee = (amount: Prisma.Decimal): Prisma.Decimal =>
   amount.mul('0.029').add('0.30').toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -65,6 +63,11 @@ const store = {
   transfers: [] as { id: string; destination: string; amount: Prisma.Decimal }[],
   prices: new Map<string, FakePrice>(),
   subscriptions: new Map<string, ProviderSubscription>(),
+  /**
+   * Each subscription's billing anchor and the months its periods have covered: every period ends a
+   * whole number of months after the anchor, so a subscription started on a 31st comes back to the 31st.
+   */
+  anchors: new Map<string, { anchor: Date; months: number }>(),
 };
 
 /**
@@ -135,8 +138,9 @@ export class FakePaymentProvider implements PaymentProvider {
     if (!checkout.subscribes) throw new Error(`${checkoutId} is not a subscription's checkout`);
     const price = this.price(checkout.subscribes.priceId);
     const start = new Date();
-    const end = periodAfter(start, price.interval);
+    const end = addMonths(start, monthsOf(price.interval));
     const subscriptionId = this.nextId('subscription');
+    store.anchors.set(subscriptionId, { anchor: start, months: monthsOf(price.interval) });
     store.subscriptions.set(subscriptionId, {
       status: 'active',
       priceId: checkout.subscribes.priceId,
@@ -197,8 +201,11 @@ export class FakePaymentProvider implements PaymentProvider {
       subscription.scheduledPriceId = null;
     }
     const price = this.price(subscription.priceId);
+    // Counted from the anchor, never from the last period's end, which a short month has cut down.
+    const billing = this.must(store.anchors, id);
+    billing.months += monthsOf(price.interval);
     subscription.currentPeriodStart = subscription.currentPeriodEnd;
-    subscription.currentPeriodEnd = periodAfter(subscription.currentPeriodStart, price.interval);
+    subscription.currentPeriodEnd = addMonths(billing.anchor, billing.months);
     subscription.status = paid === false ? 'past_due' : 'active';
     return {
       invoiceId: this.subscriptionInvoice(

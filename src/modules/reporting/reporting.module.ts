@@ -4,6 +4,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { PartnersModule } from '../partners/partners.module';
 import { SettingsModule } from '../settings/settings.module';
 import { AttentionService } from './attention.service';
+import { AccountingExports } from './exports/accounting.export';
 import { CustomersExport } from './exports/customers.export';
 import { ExpireExportsHandler, ExportHandler } from './exports/export.handler';
 import { ExportsController } from './exports/exports.controller';
@@ -29,6 +30,7 @@ import { ReportsService } from './reports.service';
     CustomersExport,
     OrdersExport,
     PartnersExport,
+    AccountingExports,
     ExportHandler,
     ExpireExportsHandler,
   ],

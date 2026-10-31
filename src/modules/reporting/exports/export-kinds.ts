@@ -58,11 +58,26 @@ export const ordersParamsSchema = z
 
 export const partnersParamsSchema = z.strictObject({ status: z.enum(PARTNER_STATUSES).optional() });
 
+/**
+ * A calendar month, `YYYY-MM`, not in the future. "Now" is taken 14 hours ahead of UTC, so a workspace in
+ * any time zone may ask for the month it is already in.
+ */
+export const accountingParamsSchema = z.strictObject({
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'A month as YYYY-MM')
+    .refine((month) => month <= new Date(Date.now() + 14 * 3_600_000).toISOString().slice(0, 7), 'A month not in the future'),
+});
+
 /** One request per kind; later kinds join this union as they are built. */
 export const exportRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('customers'), params: customersParamsSchema.default({}) }),
   z.strictObject({ kind: z.literal('orders'), params: ordersParamsSchema }),
   z.strictObject({ kind: z.literal('partners'), params: partnersParamsSchema.default({}) }),
+  z.strictObject({ kind: z.literal('accounting_invoices'), params: accountingParamsSchema }),
+  z.strictObject({ kind: z.literal('accounting_payments'), params: accountingParamsSchema }),
+  z.strictObject({ kind: z.literal('accounting_refunds'), params: accountingParamsSchema }),
+  z.strictObject({ kind: z.literal('accounting_payouts'), params: accountingParamsSchema }),
 ]);
 export type ExportRequest = z.infer<typeof exportRequestSchema>;
 

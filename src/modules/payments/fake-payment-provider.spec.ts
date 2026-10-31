@@ -299,6 +299,23 @@ describe('FakePaymentProvider', () => {
       expect(provider.subscription(subscriptionId).status).toBe('ended');
     });
 
+    it('counts every period from the start, so a subscription started on a 31st comes back to it', async () => {
+      // Only the clock is faked: the provider's promises still settle.
+      jest.useFakeTimers({ now: new Date('2026-01-31T10:00:00Z'), doNotFake: ['nextTick', 'setImmediate', 'setTimeout', 'setInterval', 'queueMicrotask'] });
+      try {
+        const { provider, subscriptionId } = await subscribed('anchor');
+        const ends = [provider.subscription(subscriptionId).currentPeriodEnd];
+        for (let renewal = 0; renewal < 2; renewal += 1) {
+          provider.renew(subscriptionId, true);
+          ends.push(provider.subscription(subscriptionId).currentPeriodEnd);
+        }
+
+        expect(ends.map((end) => end.toISOString())).toEqual(['2026-02-28T10:00:00.000Z', '2026-03-31T10:00:00.000Z', '2026-04-30T10:00:00.000Z']);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('is active in its new period before the renewal is charged, as Stripe is for about an hour', async () => {
       const { provider, subscriptionId } = await subscribed('pending');
       const end = provider.subscription(subscriptionId).currentPeriodEnd;
