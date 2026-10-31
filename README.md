@@ -294,6 +294,30 @@ A walkthrough in Swagger, on the demo data with real keys (`test/ai-tools-slice.
 7. As the platform admin, lower the AI limit below the month's spend: the next use is 409 `This month's AI limit is used` and the balance is unchanged.
 8. As an admin of Luna: `DELETE .../ai/results/{id}` for the middle image. It is gone from the history and the files; the next image still names it as its parent, and `GET /ai/runs` and the credit ledger keep their rows.
 
+## Reporting
+
+Staff export data as files. `POST /reports/exports` with a `kind` and its `params` answers 202 with the export's id; a job builds the file, and the asker is told in the feed when it is ready or failed. `GET /reports/exports/{id}` shows its status, `POST /reports/exports/{id}/download` gives a short-lived link, and `GET /reports/exports` lists your own. Only the person who asked sees an export or downloads it, never through `/files` either; files are removed after 30 days, and the export's row stays as the log of who exported what, when, and when they first downloaded it.
+
+Exporting needs `report.export` (owners have it; give it to other roles on purpose) and the permission of the screen the data comes from. The file is built from the permissions the asker held when asking: columns needing a permission they lacked are left out, not blanked (money columns need `payment.read`, partner columns `partner.read`).
+
+| `kind` | `params` | Needs | One row per |
+|---|---|---|---|
+| `customers` | `from`, `to` (optional, both or neither) | `customer.read` | customer: plan, payment terms, orders and revenue in the range |
+| `orders` | `from`, `to` (at most 366 days), `customer_id`, `states` | `order.read` | order line, with its order's fields |
+| `partners` | `status` | `partner.read` | partner: capabilities, open jobs, load, on-time rate over 90 days |
+| `accounting_invoices`, `accounting_payments`, `accounting_refunds`, `accounting_payouts` | `month` (`YYYY-MM`) | `payment.read` | record of the month; a payment carries its fee and net, a reversal is its own negative row |
+| `dashboard_pdf` | `from`, `to` (at most 366 days) | `report.read` | a PDF of the dashboard's numbers for those dates, with revenue per product |
+
+CSV files are UTF-8 with a BOM (so spreadsheet programs read accents right), comma separated, money with two places and its own currency column, dates as `YYYY-MM-DD` and times as ISO 8601, all in the workspace's time zone. A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet never runs it. An export holds at most 100,000 rows; a larger one fails, asking for a shorter period. The PDF is A4 tables in the PDF's built-in fonts; it reads nothing from disk or the network.
+
+A walkthrough in Swagger, on the demo data (`test/reports-slice.e2e-spec.ts` runs the same; it is the spec's "Done when"):
+
+1. As the owner: `POST /reports/exports` `{ "kind": "accounting_payments", "params": { "month": "<this month>" } }`. Once the feed says it is ready, download it: one row per payment of the month with its fee and net.
+2. `{ "kind": "orders", "params": { "from": "<90 days ago>", "to": "<today>" } }`: one row per order line. As a staff member without `payment.read`, the same export has no money columns.
+3. `{ "kind": "dashboard_pdf", "params": { "from": "<90 days ago>", "to": "<today>" } }`: the dashboard's sections for the quarter, and revenue per product.
+4. As another owner: `GET /reports/exports/{id}` of the first export is a 404. `GET /reports/exports` as the first owner shows `downloaded_at`.
+5. As a member: any export is 403.
+
 ## API docs
 
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.
