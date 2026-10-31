@@ -56,7 +56,12 @@ export const ordersParamsSchema = z
   .refine(toNotBeforeFrom, { message: '`to` is before `from`', path: ['to'] })
   .refine(withinMaxRange, { message: `At most ${MAX_RANGE_DAYS} days`, path: ['to'] });
 
-export const partnersParamsSchema = z.strictObject({ status: z.enum(PARTNER_STATUSES).optional() });
+export const dashboardPdfParamsSchema = z
+  .strictObject(dateRange)
+  .refine(toNotBeforeFrom, { message: '`to` is before `from`', path: ['to'] })
+  .refine(withinMaxRange, { message: `At most ${MAX_RANGE_DAYS} days`, path: ['to'] });
+
+export const partnersParamsSchema =z.strictObject({ status: z.enum(PARTNER_STATUSES).optional() });
 
 /**
  * A calendar month, `YYYY-MM`, not in the future. "Now" is taken 14 hours ahead of UTC, so a workspace in
@@ -78,6 +83,7 @@ export const exportRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('accounting_payments'), params: accountingParamsSchema }),
   z.strictObject({ kind: z.literal('accounting_refunds'), params: accountingParamsSchema }),
   z.strictObject({ kind: z.literal('accounting_payouts'), params: accountingParamsSchema }),
+  z.strictObject({ kind: z.literal('dashboard_pdf'), params: dashboardPdfParamsSchema }),
 ]);
 export type ExportRequest = z.infer<typeof exportRequestSchema>;
 

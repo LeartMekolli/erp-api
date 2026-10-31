@@ -6,6 +6,7 @@ import { SettingsModule } from '../settings/settings.module';
 import { AttentionService } from './attention.service';
 import { AccountingExports } from './exports/accounting.export';
 import { CustomersExport } from './exports/customers.export';
+import { DashboardPdfExport } from './exports/dashboard-pdf.export';
 import { ExpireExportsHandler, ExportHandler } from './exports/export.handler';
 import { ExportsController } from './exports/exports.controller';
 import { ExportsService } from './exports/exports.service';
@@ -31,6 +32,7 @@ import { ReportsService } from './reports.service';
     OrdersExport,
     PartnersExport,
     AccountingExports,
+    DashboardPdfExport,
     ExportHandler,
     ExpireExportsHandler,
   ],
