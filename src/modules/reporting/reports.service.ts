@@ -6,17 +6,22 @@ import { localDate, startOfLocalDay } from '../orders/dates';
 import { EligibilityService } from '../partners/eligibility.service';
 import { groupReady } from '../workflow/progress';
 import type { DashboardResponse } from './dashboard-response';
+import { rangeMetricsSchema, revenueByProduct } from './range-metrics';
+import type { RangeMetrics } from './range-metrics';
 import { addDays, emptyWeek, forReader, medianHours, onTimeRate, orderingLess, weekMetricsSchema, weekOf } from './week-metrics';
 import type { WeekMetrics } from './week-metrics';
 
 type Tx = Prisma.TransactionClient;
 
-/** One week being computed: its Monday, the instants it spans, and the day it is judged at. */
+/** The dates being computed (a week, or any range), the instants they span, and the day they are judged at. */
 interface Span {
+  /** The first date. */
   start: string;
+  /** The date after the last. */
+  until: string;
   from: Date;
   to: Date;
-  /** Today for the current week; the week's Sunday for an earlier one. */
+  /** Today while the span is still running; its last date once it has ended. */
   asOf: string;
   timeZone: string;
 }
@@ -130,6 +135,7 @@ export class ReportsService {
       for (const weekStart of [start, previousStart]) {
         const span: Span = {
           start: weekStart,
+          until: addDays(weekStart, 7),
           from: startOfLocalDay(weekStart, tenant.timezone),
           to: startOfLocalDay(addDays(weekStart, 7), tenant.timezone),
           asOf: weekStart === start ? today : addDays(weekStart, 6),
@@ -142,6 +148,39 @@ export class ReportsService {
           update: { data, computedAt: at },
         });
       }
+    });
+  }
+
+  /**
+   * The dashboard's numbers for any dates in the workspace's time zone, both ends included, plus revenue
+   * per product (Reporting 2 spec, goals 14–15), worked out from the records like a stored week. While
+   * the range is still running it is judged at today, with live partner load; once ended, at its last day,
+   * with the snapshots' load. Not shaped for a reader: the caller applies `forRangeReader`.
+   */
+  async metricsFor(tenantId: string, range: { from: string; to: string }, at: Date = new Date()): Promise<RangeMetrics> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, defaultCurrency: true } });
+      const today = localDate(at, tenant.timezone);
+      const until = addDays(range.to, 1);
+      const running = range.to >= today;
+      const span: Span = {
+        start: range.from,
+        until,
+        from: startOfLocalDay(range.from, tenant.timezone),
+        to: startOfLocalDay(until, tenant.timezone),
+        asOf: running ? today : range.to,
+        timeZone: tenant.timezone,
+      };
+      const week = weekMetricsSchema.parse(await this.compute(tx, span, tenant.defaultCurrency, today, running));
+      const lines = await tx.orderLine.findMany({
+        where: { cancelledAt: null, order: { cancelledAt: null, placedAt: { gte: span.from, lt: span.to } } },
+        select: { productId: true, quantity: true, total: true, product: { select: { name: true } }, order: { select: { currency: true } } },
+      });
+      const byProduct = revenueByProduct(
+        lines.map((line) => ({ productId: line.productId, name: line.product.name, quantity: line.quantity, total: line.total, currency: line.order.currency })),
+        tenant.defaultCurrency,
+      );
+      return rangeMetricsSchema.parse({ ...week, orders: { ...week.orders, by_product: byProduct } });
     });
   }
 
@@ -165,7 +204,8 @@ export class ReportsService {
     });
   }
 
-  private async compute(tx: Tx, span: Span, currency: string, today: string, isCurrent: boolean): Promise<WeekMetrics> {
+  /** The numbers of `span`; `live` takes partner load as it is now, else from the snapshots of its days. */
+  private async compute(tx: Tx, span: Span, currency: string, today: string, live: boolean): Promise<WeekMetrics> {
     const placed = await tx.order.findMany({
       where: { placedAt: { gte: span.from, lt: span.to }, cancelledAt: null },
       select: { customerId: true, total: true, taxAmount: true, currency: true },
@@ -204,7 +244,7 @@ export class ReportsService {
         slow_payers: slow.map((one) => ({ id: one.id, name: names.get(one.id) ?? '', overdue: one.overdue.toFixed(2) })),
       },
       partners: {
-        load: isCurrent ? await this.liveLoad(tx) : await this.snapshotLoad(tx, span),
+        load: live ? await this.liveLoad(tx) : await this.snapshotLoad(tx, span),
         on_time: await this.partnerOnTime(tx, span, today),
       },
     };
@@ -216,10 +256,10 @@ export class ReportsService {
   }
 
   /** The day a group's last live piece finished, when every live piece has. */
-  /** Lines whose order is promised within the week, ready by that date. */
+  /** Lines whose order is promised within the span, ready by that date. */
   private async onTime(tx: Tx, span: Span, today: string): Promise<number | null> {
     const lines = await tx.orderLine.findMany({
-      where: { cancelledAt: null, order: { cancelledAt: null, promisedOn: { gte: dateOnly(span.start), lt: dateOnly(addDays(span.start, 7)) } } },
+      where: { cancelledAt: null, order: { cancelledAt: null, promisedOn: { gte: dateOnly(span.start), lt: dateOnly(span.until) } } },
       select: { order: { select: { promisedOn: true } }, group: { select: { workOrders: PIECES_WITH_FINISH } } },
     });
     return onTimeRate(
@@ -318,10 +358,10 @@ export class ReportsService {
     return partnerLoads(tx, this.eligibility);
   }
 
-  /** An earlier week's fullest day per partner, from the daily capacity snapshots (D83). */
+  /** An ended span's fullest day per partner, from the daily capacity snapshots (D83). */
   private async snapshotLoad(tx: Tx, span: Span): Promise<WeekMetrics['partners']['load']> {
     const rows = await tx.partnerCapacitySnapshot.findMany({
-      where: { date: { gte: dateOnly(span.start), lt: dateOnly(addDays(span.start, 7)) }, capacity: { gt: 0 } },
+      where: { date: { gte: dateOnly(span.start), lt: dateOnly(span.until) }, capacity: { gt: 0 } },
       select: { load: true, capacity: true, partner: { select: { id: true, name: true } } },
     });
     const by = new Map<string, { id: string; name: string; percent: number }>();
@@ -333,8 +373,8 @@ export class ReportsService {
     return [...by.values()].sort((a, b) => b.percent - a.percent);
   }
 
-  /** Per partner, the share of its accepted jobs due within the week that were done by their due date. */
+  /** Per partner, the share of its accepted jobs due within the span that were done by their due date. */
   private partnerOnTime(tx: Tx, span: Span, today: string): Promise<WeekMetrics['partners']['on_time']> {
-    return partnerOnTimeBetween(tx, { from: span.start, until: addDays(span.start, 7) }, today, span.timeZone);
+    return partnerOnTimeBetween(tx, { from: span.start, until: span.until }, today, span.timeZone);
   }
 }
