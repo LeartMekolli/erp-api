@@ -160,9 +160,21 @@ export class OrdersService {
     try {
       placed = await this.prisma.inTenant(auth.tenantId, async (tx) => {
         // Row-level security hides other workspaces' customers, so a foreign id is simply not found.
-        const customer = await tx.customer.findUnique({ where: { id: customerId }, select: { id: true, customerGroupId: true } });
+        const customer = await tx.customer.findUnique({
+          where: { id: customerId },
+          select: { id: true, customerGroupId: true, shippingAddress: true },
+        });
         if (!customer) {
           throw new NotFoundException('Customer not found');
+        }
+        // The address given, else the customer's saved shipping address (Customers 2 spec, goal 8); the
+        // order keeps its own copy either way.
+        const address = body.address ?? (customer.shippingAddress as Address | null);
+        if (!address) {
+          throw new BadRequestException({
+            message: 'Give the order an address, or save a shipping address for the customer',
+            errors: [{ path: 'address', message: 'the customer has no saved shipping address' }],
+          });
         }
         const quotes = await this.orderable(tx, customerId, body.lines.map((line) => line.quote_id));
         await this.onePartner(tx, quotes);
@@ -188,7 +200,7 @@ export class OrdersService {
         const linesOnly = orderTotals(lineTotals, new Prisma.Decimal(0), new Prisma.Decimal(0)).linesTotal;
         const tax = await this.tax.calculate(tx, {
           customerId,
-          address: { country: body.address.country, region: body.address.region ?? null },
+          address: { country: address.country, region: address.region ?? null },
           lines: linesOnly,
           shipping: method.price,
         });
@@ -216,7 +228,7 @@ export class OrdersService {
             channelOrderId: body.channel_order_id ?? null,
             deliverySpeedKey: speed.speed,
             promisedOn: new Date(`${promisedOn}T00:00:00Z`),
-            address: body.address,
+            address,
             shippingMethodId: method.id,
             shippingPrice: method.price,
             linesTotal,

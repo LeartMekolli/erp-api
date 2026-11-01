@@ -6,6 +6,7 @@ import { FilesModule } from '../files/files.module';
 import { IdentityNotifierModule } from '../identity/identity-notifier';
 import { PartnersModule } from '../partners/partners.module';
 import { PricingModule } from '../pricing/pricing.module';
+import { CustomerAddressesService } from './addresses';
 import { CustomerInvitationsService } from './customer-invitations.service';
 import { CustomerSiteController } from './customer-site.controller';
 import { CustomerSiteService } from './customer-site.service';
@@ -29,7 +30,7 @@ import { PortalController } from './portal.controller';
     PortalFilesController,
     PortalQuotesController,
   ],
-  providers: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalMembersService, PortalCatalogService],
-  exports: [CustomersService, CustomerInvitationsService, CustomerSiteService, PortalCatalogService],
+  providers: [CustomersService, CustomerAddressesService, CustomerInvitationsService, CustomerSiteService, PortalMembersService, PortalCatalogService],
+  exports: [CustomersService, CustomerAddressesService, CustomerInvitationsService, CustomerSiteService, PortalCatalogService],
 })
 export class CustomersModule {}

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -6,6 +6,8 @@ import { CurrentCustomer, CurrentUser } from '../identity/auth-context';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { emailSchema } from '../identity/email';
 import { Authenticated, CustomerAccess } from '../identity/route-markers';
+import { CustomerAddressesService, customerAddressesResponseSchema, customerAddressesSchema } from './addresses';
+import type { CustomerAddressesInput, CustomerAddressesResponse } from './addresses';
 import {
   customerInvitationResponseSchema,
   customerMemberResponseSchema,
@@ -33,6 +35,7 @@ export class PortalController {
   constructor(
     private readonly members: PortalMembersService,
     private readonly customers: CustomersService,
+    private readonly addressBook: CustomerAddressesService,
   ) {}
 
   @ApiDoc({
@@ -56,6 +59,34 @@ export class PortalController {
   @Get('customers/:customerId/members')
   list(@CurrentCustomer() customer: CustomerAuth): Promise<{ data: CustomerMemberResponse[] }> {
     return this.customers.members(customer.tenantId, customer.customerId);
+  }
+
+  @ApiDoc({
+    summary: "The customer's saved shipping and billing addresses and VAT number.",
+    description: 'Orders placed without an address go to the shipping address.',
+    response: customerAddressesResponseSchema,
+    errors: [400, 404],
+  })
+  @CustomerAccess('viewer')
+  @Get('customers/:customerId/addresses')
+  addresses(@CurrentCustomer() customer: CustomerAuth): Promise<CustomerAddressesResponse> {
+    return this.addressBook.get(customer.tenantId, customer.customerId);
+  }
+
+  @ApiDoc({
+    summary: "Change the customer's saved addresses or VAT number; only the fields sent change, and null clears one.",
+    description: 'For the owner and admins. Placed orders and issued invoices keep the address they were made with.',
+    body: customerAddressesSchema,
+    response: customerAddressesResponseSchema,
+    errors: [400, 404],
+  })
+  @CustomerAccess('admin')
+  @Put('customers/:customerId/addresses')
+  setAddresses(
+    @CurrentCustomer() customer: CustomerAuth,
+    @Body(new ZodValidationPipe(customerAddressesSchema)) body: CustomerAddressesInput,
+  ): Promise<CustomerAddressesResponse> {
+    return this.addressBook.set(customer, customer.customerId, body);
   }
 
   @ApiDoc({

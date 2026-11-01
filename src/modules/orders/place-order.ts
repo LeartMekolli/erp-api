@@ -12,7 +12,8 @@ export const placeOrderSchema = z.strictObject({
     .min(1)
     .max(50)
     .refine((lines) => new Set(lines.map((line) => line.quote_id)).size === lines.length, 'a quote can be in an order once'),
-  address: addressSchema,
+  /** Where it goes; left out, the customer's saved shipping address (Customers 2). */
+  address: addressSchema.optional(),
   /** The key of an active shipping method. */
   shipping_method: keySchema,
   note: z.string().trim().min(1).max(2000).optional(),

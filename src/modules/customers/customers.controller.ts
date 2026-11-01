@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { pageSchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
@@ -8,6 +8,8 @@ import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { emailSchema } from '../identity/email';
 import { RequirePermission } from '../identity/route-markers';
+import { CustomerAddressesService, customerAddressesResponseSchema, customerAddressesSchema } from './addresses';
+import type { CustomerAddressesInput, CustomerAddressesResponse } from './addresses';
 import { CustomerInvitationsService } from './customer-invitations.service';
 import {
   customerInvitationResponseSchema,
@@ -31,6 +33,7 @@ export class CustomersController {
   constructor(
     private readonly customers: CustomersService,
     private readonly invitations: CustomerInvitationsService,
+    private readonly addressBook: CustomerAddressesService,
   ) {}
 
   @ApiDoc({
@@ -136,5 +139,36 @@ export class CustomersController {
     @Body(new ZodValidationPipe(updateMemberSchema)) body: z.infer<typeof updateMemberSchema>,
   ): Promise<CustomerMemberResponse> {
     return this.customers.updateMember(auth, id, userId, body);
+  }
+
+  @ApiDoc({
+    summary: "The customer's saved shipping and billing addresses and VAT number.",
+    description: 'Orders without an address go to the shipping address; invoices carry the billing address, else the shipping one.',
+    response: customerAddressesResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('customer.read')
+  @Get(':id/addresses')
+  addresses(@CurrentTenant() tenantId: string, @Param('id', idParam) id: string): Promise<CustomerAddressesResponse> {
+    return this.addressBook.get(tenantId, id);
+  }
+
+  @ApiDoc({
+    summary: "Change the customer's saved addresses or VAT number; only the fields sent change, and null clears one.",
+    description:
+      'Addresses are checked as an order address is. Placed orders and issued invoices keep the address they were made with. ' +
+      'The VAT number is printed on invoices as given and changes no tax.',
+    body: customerAddressesSchema,
+    response: customerAddressesResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('customer.write')
+  @Put(':id/addresses')
+  setAddresses(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(customerAddressesSchema)) body: CustomerAddressesInput,
+  ): Promise<CustomerAddressesResponse> {
+    return this.addressBook.set(auth, id, body);
   }
 }
