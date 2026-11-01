@@ -123,6 +123,11 @@ model Tenant {
   aiCustomerResults     AiCustomerResult[]
   aiBrandProfiles       AiBrandProfile[]
   reportExports         ReportExport[]
+  skills                Skill[]
+  userSkills            UserSkill[]
+  sampleDraws           SampleDraw[]
+  samplePieces          SamplePiece[]
+  orderProgressEmails   OrderProgressEmail[]
 
   @@map("tenant")
 }
@@ -184,6 +189,8 @@ model User {
   aiCustomerResultsDeleted AiCustomerResult[] @relation("ai_customer_result_deleted_by")
   aiBrandProfiles        AiBrandProfile[]
   reportExports          ReportExport[]
+  skills                 UserSkill[] @relation("user_skill_holder")
+  skillsGranted          UserSkill[] @relation("user_skill_granted_by")
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -229,6 +236,44 @@ model UserRole {
   @@id([userId, roleId])
   @@index([roleId])
   @@map("user_role")
+}
+
+// A skill a step may require, such as "Casting" (Workflow 2 spec, goal 9): the workspace's own list.
+// Names are unique per workspace regardless of case (a unique index on lower(name), in the migration).
+model Skill {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  name       String
+  // Archived skills can't be given or required; staff who hold one keep the row.
+  archivedAt DateTime? @map("archived_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users  UserSkill[]
+
+  @@unique([tenantId, id])
+  @@map("skill")
+}
+
+// A skill a staff member holds (goal 10). An expired one counts as not held.
+model UserSkill {
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  skillId         String    @map("skill_id") @db.Uuid
+  // The last day the skill is held; null: never expires.
+  expiresOn       DateTime? @map("expires_on") @db.Date
+  grantedByUserId String    @map("granted_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User   @relation("user_skill_holder", fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade)
+  skill     Skill  @relation(fields: [tenantId, skillId], references: [tenantId, id], onDelete: Cascade)
+  grantedBy User   @relation("user_skill_granted_by", fields: [tenantId, grantedByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@id([tenantId, userId, skillId])
+  @@index([tenantId, skillId])
+  @@index([tenantId, grantedByUserId])
+  @@map("user_skill")
 }
 
 /// One row per issued refresh token; a family is one login's rotation chain (F2, F3).
@@ -1282,6 +1327,7 @@ model WorkflowStep {
   workOrders     WorkOrder[]
   transitionsFrom Transition[] @relation("TransitionFrom")
   transitionsTo   Transition[] @relation("TransitionTo")
+  sampleDraws     SampleDraw[]
 
   @@unique([versionId, key])
   @@unique([versionId, position])
@@ -1325,6 +1371,7 @@ model WorkOrderGroup {
   // A part's group names its assembly's, whose pieces wait for every part (Orders spec, goal 6).
   parent          WorkOrderGroup?  @relation("GroupParts", fields: [tenantId, parentGroupId], references: [tenantId, id], onDelete: NoAction)
   children        WorkOrderGroup[] @relation("GroupParts")
+  sampleDraws     SampleDraw[]
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
@@ -1352,6 +1399,7 @@ model WorkOrder {
   // Several only when a restored piece is scrapped again; at most one is ever active.
   replacements WorkOrder[]   @relation("Replacement")
   transitions  Transition[]
+  samples      SamplePiece[]
 
   @@unique([tenantId, id])
   @@index([tenantId, replacesId])
@@ -1383,6 +1431,9 @@ model Transition {
   // The partner the move counts for: the job's accepted partner, at a partner step; null otherwise
   // (Partners spec, B5). Whoever made it, staff or the partner's own people.
   partnerId      String?  @map("partner_id") @db.Uuid
+  // False for a pass of a piece left out of its step's sample (Workflow 2 spec, goal 5): no checklist,
+  // no photos, never counted as a QC result.
+  inspected      Boolean  @default(true)
   createdAt      DateTime @default(now()) @map("created_at")
 
   tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1395,6 +1446,7 @@ model Transition {
   actor     User             @relation(fields: [tenantId, actorUserId], references: [tenantId, id], onDelete: NoAction)
   answers   TransitionAnswer[]
   photos    TransitionPhoto[]
+  endedDraws SampleDraw[]
 
   @@unique([tenantId, id])
   @@index([tenantId, workOrderId, id])
@@ -1405,6 +1457,47 @@ model Transition {
   @@index([tenantId, actorUserId])
   @@index([tenantId, partnerId])
   @@map("transition")
+}
+
+// The random sample of one group at one sampling step (Workflow 2 spec, goals 2–3): drawn once, the
+// first time a piece of the group reaches the step, and never changed. A fail at the step ends it.
+model SampleDraw {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  tenantId            String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  groupId             String    @map("group_id") @db.Uuid
+  stepId              String    @map("step_id") @db.Uuid
+  drawnAt             DateTime  @default(now()) @map("drawn_at")
+  // Set with the fail that ended sampling; every piece is inspected in full from then on (goal 6).
+  endedAt             DateTime? @map("ended_at")
+  endedByTransitionId String?   @map("ended_by_transition_id") @db.Uuid
+
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  group           WorkOrderGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
+  step            WorkflowStep   @relation(fields: [tenantId, stepId], references: [tenantId, id], onDelete: NoAction)
+  endedBy         Transition?    @relation(fields: [tenantId, endedByTransitionId], references: [tenantId, id], onDelete: NoAction)
+  pieces          SamplePiece[]
+
+  @@unique([tenantId, groupId, stepId])
+  @@unique([tenantId, id])
+  @@index([tenantId, stepId])
+  @@index([tenantId, endedByTransitionId])
+  @@map("sample_draw")
+}
+
+// A piece drawn into a sample, as drawn. A scrapped piece's place is followed to its replacement in
+// code, never by changing this row.
+model SamplePiece {
+  tenantId    String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  drawId      String @map("draw_id") @db.Uuid
+  workOrderId String @map("work_order_id") @db.Uuid
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  draw      SampleDraw @relation(fields: [tenantId, drawId], references: [tenantId, id], onDelete: Cascade)
+  workOrder WorkOrder  @relation(fields: [tenantId, workOrderId], references: [tenantId, id], onDelete: NoAction)
+
+  @@id([tenantId, drawId, workOrderId])
+  @@index([tenantId, workOrderId])
+  @@map("sample_piece")
 }
 
 // A checklist answer given with a move, as it was given: one row per item and transition.
@@ -1788,12 +1881,28 @@ model Order {
   payments       OrderPayment[]
   invoice        Invoice?
   refunds        Refund[]
+  progressEmails OrderProgressEmail[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
   @@unique([tenantId, id])
   @@index([tenantId, customerId])
   @@map("order")
+}
+
+// A progress email sent for an order (Workflow 2 spec, goals 16–18): one per customer-facing step name,
+// so rework, replacements and corrections never send it again.
+model OrderProgressEmail {
+  tenantId String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId  String   @map("order_id") @db.Uuid
+  stepName String   @map("step_name")
+  sentAt   DateTime @default(now()) @map("sent_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+
+  @@id([tenantId, orderId, stepName])
+  @@map("order_progress_email")
 }
 
 // A comment on an order or one of its lines, by staff, the customer's people or the partner holding the

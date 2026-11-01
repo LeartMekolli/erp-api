@@ -12,6 +12,8 @@ export type AuditAction =
   | 'role.deleted'
   | 'user.roles_changed'
   | 'user.deactivated'
+  | 'user.skills_changed'
+  | 'skill.changed'
   | 'auth.refresh_chain_revoked'
   | 'template.override_changed'
   | 'material.price_overridden'
