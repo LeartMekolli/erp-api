@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { JobsService } from '../src/jobs/jobs.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
@@ -382,6 +383,29 @@ describe('orders: progress emails', () => {
     );
     expect(rows).toEqual([{ status: 'pending' }]);
     expect(await recorded(tenant, order.id)).toEqual(['Casting']);
+  });
+
+  it('cancels an order while a move that drew one of its pieces commits, without a deadlock (final review)', async () => {
+    const tenant = await freshTenant();
+    const order = await placeOrder(tenant);
+    const groupId = order.lines[0]!.group_id;
+
+    // As a first arrival at a sampling step does: holds one piece and draws another, whose key is checked
+    // at commit. The cancel locks the drawn piece first (lower id), then waits on the held one.
+    let cancelled: Promise<request.Response> | undefined;
+    const moving = prisma.inTenant(tenant.id, async (tx) => {
+      const [drawnPiece, heldPiece] = await tx.workOrder.findMany({ where: { groupId }, orderBy: { id: 'asc' }, select: { id: true } });
+      await tx.$queryRaw`SELECT id FROM work_order WHERE id = ${heldPiece!.id}::uuid FOR NO KEY UPDATE`;
+      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
+      const step = await tx.workflowStep.findFirstOrThrow({ where: { versionId: group.workflowVersionId } });
+      const draw = await tx.sampleDraw.create({ data: { id: newId(), groupId, stepId: step.id } });
+      await tx.samplePiece.create({ data: { drawId: draw.id, workOrderId: drawnPiece!.id } });
+      cancelled = tenant.staff.post(`/orders/${order.id}/cancel`, { reason: 'Customer phoned' }).then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+
+    await expect(moving).resolves.toBeUndefined();
+    expect((await cancelled!).status).toBe(200);
   });
 
   it('counts a piece corrected past the emailed step (review fix)', async () => {

@@ -148,7 +148,8 @@ export class WorkOrdersService {
   ): Promise<void> {
     if (groups.length === 0) return;
     const groupIds = Prisma.join([...new Set(groups.map((group) => group.id))].sort().map((id) => Prisma.sql`${id}::uuid`));
-    await tx.$queryRaw`SELECT id FROM work_order WHERE group_id IN (${groupIds}) ORDER BY id FOR UPDATE`;
+    // NO KEY, as a move locks them, so a move's sample drawing one of these pieces can check its key at commit.
+    await tx.$queryRaw`SELECT id FROM work_order WHERE group_id IN (${groupIds}) ORDER BY id FOR NO KEY UPDATE`;
     await tx.$queryRaw`SELECT id FROM work_order_group WHERE id IN (${groupIds}) ORDER BY id FOR UPDATE`;
 
     const active = await tx.workOrder.findMany({ where: { groupId: { in: groups.map((group) => group.id) }, status: 'active' } });

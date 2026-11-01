@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
+import type { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { sampling } from '../src/modules/workflow/sampling';
@@ -404,6 +405,32 @@ describe('workflow: a step inspects a random sample', () => {
       tx.transition.count({ where: { workOrder: { groupId: pieces[0]!.group_id }, inspected: false } }),
     );
     expect(uninspected).toBe(0);
+  });
+
+  it("locks a pass's draws in the order a fail does, so the two never deadlock (final review)", async () => {
+    const tenant = await freshTenant();
+    // Two groups whose draws are made in the opposite order to their ids: the second group arrives first.
+    const first = await started(tenant);
+    const second = await started(tenant);
+    await toInspection(tenant, second);
+    await toInspection(tenant, first);
+    const [one, two] = [await reread(tenant, first), await reread(tenant, second)];
+    await inspect(tenant, [...drawn(one), ...drawn(two)]).expect(200);
+    const [low, high] = [first[0]!.group_id, second[0]!.group_id].sort();
+    const lockDraw = (tx: Prisma.TransactionClient, groupId: string) =>
+      tx.$queryRaw`SELECT id FROM sample_draw WHERE group_id = ${groupId}::uuid FOR UPDATE`;
+
+    // A fail at inspection locks the groups' draws in group order, as `MovesService.move` ends them.
+    let answered: Promise<request.Response> | undefined;
+    const failing = prisma.inTenant(tenant.id, async (tx) => {
+      await lockDraw(tx, low!);
+      answered = passUninspected(tenant, [...undrawn(one), ...undrawn(two)]).then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await lockDraw(tx, high!);
+    });
+
+    await expect(failing).resolves.toBeUndefined();
+    expect((await answered!).status).toBe(200);
   });
 
   it('draws once when two moves bring the first pieces to the step together (review fix)', async () => {

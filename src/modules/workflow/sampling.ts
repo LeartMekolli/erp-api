@@ -98,7 +98,7 @@ export interface DrawState {
 /**
  * Locks these groups' draws at a step until the transaction ends. An uninspected pass takes it before reading
  * the draws, so it waits for a fail at the step that is ending one (its update holds the same row lock) and
- * then reads the draw as ended.
+ * then reads the draw as ended. In group order, as a fail ends draws, so the two never wait on each other.
  */
 export async function lockDraws(tx: Prisma.TransactionClient, stepId: string, groupIds: string[]): Promise<void> {
   if (groupIds.length === 0) {
@@ -107,7 +107,7 @@ export async function lockDraws(tx: Prisma.TransactionClient, stepId: string, gr
   await tx.$queryRaw`
     SELECT id FROM sample_draw
     WHERE step_id = ${stepId}::uuid AND group_id IN (${Prisma.join(groupIds.map((id) => Prisma.sql`${id}::uuid`))})
-    ORDER BY id FOR UPDATE`;
+    ORDER BY group_id FOR UPDATE`;
 }
 
 /** The draws of these groups at a sampling step, by group. A group without one yet has none in the map. */
