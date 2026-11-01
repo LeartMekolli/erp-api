@@ -269,6 +269,50 @@ describe('payments: invoices on shipping', () => {
     expect(await raised(tenant, 'invoice.sent', placed.id)).toBe(1);
   });
 
+  const HEAD_OFFICE = { name: 'Brightline GmbH', line1: 'Ringstraße 4', city: 'Wien', postal_code: '1010', region: 'Wien', country: 'AT' };
+  const STUDIO = { name: 'Brightline', line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' };
+  /** What the provider holds for the customer: the address and VAT number its invoices print. */
+  const atProvider = async (tenant: Tenant, customerId: string) => {
+    const terms = await prisma.inTenant(tenant.id, (tx) => tx.customerPaymentTerms.findUniqueOrThrow({ where: { customerId } }));
+    return fake.customerDetails(terms.providerCustomerId!);
+  };
+
+  it('sends the billing address and VAT number to the provider before the invoice', async () => {
+    const tenant = await freshTenant();
+    await tenant.staff
+      .put(`/customers/${tenant.brightline}/addresses`, { shipping_address: STUDIO, billing_address: HEAD_OFFICE, vat_number: 'ATU12345678' })
+      .expect(200);
+    const placed = await tenant.place(tenant.brightline);
+    await finishAndShip(tenant, placed);
+    await invoiced(tenant, placed.id);
+
+    expect(await atProvider(tenant, tenant.brightline)).toEqual({ address: HEAD_OFFICE, vatNumber: 'ATU12345678' });
+  });
+
+  it('falls back to the shipping address when there is no billing address', async () => {
+    const tenant = await freshTenant();
+    await tenant.staff.put(`/customers/${tenant.brightline}/addresses`, { shipping_address: STUDIO }).expect(200);
+    const placed = await tenant.place(tenant.brightline);
+    await finishAndShip(tenant, placed);
+    await invoiced(tenant, placed.id);
+
+    expect(await atProvider(tenant, tenant.brightline)).toEqual({ address: STUDIO, vatNumber: null });
+  });
+
+  it('sends a change made after the first invoice at once', async () => {
+    const tenant = await freshTenant();
+    await tenant.staff.put(`/customers/${tenant.brightline}/addresses`, { shipping_address: STUDIO }).expect(200);
+    const placed = await tenant.place(tenant.brightline);
+    await finishAndShip(tenant, placed);
+    await invoiced(tenant, placed.id);
+
+    // The customer's admin changes it in the portal: the provider has it before any next invoice.
+    await tenant.brightlineOwner
+      .put(`/portal/customers/${tenant.brightline}/addresses`, { billing_address: HEAD_OFFICE, vat_number: 'ATU12345678' })
+      .expect(200);
+    expect(await atProvider(tenant, tenant.brightline)).toEqual({ address: HEAD_OFFICE, vatNumber: 'ATU12345678' });
+  });
+
   it('invoices only the lines left after one was cancelled', async () => {
     const tenant = await freshTenant();
     const placed = await tenant.place(tenant.brightline, 2);

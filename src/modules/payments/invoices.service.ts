@@ -13,6 +13,7 @@ import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
 import { DEFAULT_DAYS_TO_PAY } from './payment-response';
 import { billableTotals, paidAndRefunded } from './payment-state';
+import { CustomerAddressesService } from '../customers/addresses';
 import { ProviderCustomers } from './provider-customers';
 
 const DAY_MS = 86_400_000;
@@ -38,6 +39,7 @@ export class InvoicesService implements OnModuleInit {
     private readonly notifications: NotificationsService,
     private readonly orders: OrdersService,
     private readonly providerCustomers: ProviderCustomers,
+    private readonly addresses: CustomerAddressesService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
 
@@ -47,6 +49,8 @@ export class InvoicesService implements OnModuleInit {
     });
     registerEventHandler('invoice.paid', (tenantId, event) => this.paid(tenantId, event));
     registerEventHandler('invoice.payment_succeeded', (tenantId, event) => this.paid(tenantId, event));
+    // A changed address reaches the provider at once; if that fails, the next invoice sends it anyway.
+    this.addresses.afterAddressChange((tenantId, customerId) => this.providerCustomers.sync(tenantId, customerId));
   }
 
   /**
@@ -102,6 +106,9 @@ export class InvoicesService implements OnModuleInit {
     const { order, invoice } = prepared;
 
     const providerCustomerId = await this.providerCustomers.ensure(tenantId, order.customerId);
+    // The invoice prints the customer's address and VAT number as they are now (Customers 2 spec, goal 9);
+    // if the provider can't take them, no invoice is made and the job tries again.
+    await this.providerCustomers.sync(tenantId, order.customerId);
     const made = await this.provider.createInvoice(keys, {
       providerCustomerId,
       currency: invoice.currency,

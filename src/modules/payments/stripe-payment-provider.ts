@@ -4,11 +4,34 @@ import { InvalidSignatureError, ProviderNotFoundError, ProviderRefusedError } fr
 import type {
   InvoiceReason,
   PaymentProvider,
+  ProviderCustomerDetails,
   ProviderEvent,
   ProviderKeys,
   ProviderSubscription,
   ProviderSubscriptionStatus,
 } from './payment-provider';
+
+/**
+ * The Stripe customer fields a customer's invoices print (Customers 2): the billing address, and the VAT
+ * number as an invoice custom field, printed only. Stripe clears a field given '', so what is gone, or a
+ * missing part of an address, is sent as ''.
+ */
+export function stripeCustomerUpdate(input: ProviderCustomerDetails) {
+  const { address, vatNumber } = input;
+  return {
+    address: address
+      ? {
+          line1: address.line1,
+          line2: address.line2 ?? '',
+          city: address.city,
+          postal_code: address.postal_code,
+          state: address.region ?? '',
+          country: address.country,
+        }
+      : ('' as const),
+    invoice_settings: { custom_fields: vatNumber ? [{ name: 'VAT', value: vatNumber }] : ('' as const) },
+  };
+}
 
 function fractionDigits(currency: string): number {
   return new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
@@ -257,6 +280,10 @@ export class StripePaymentProvider implements PaymentProvider {
       { idempotencyKey: input.idempotencyKey },
     );
     return { id: customer.id };
+  }
+
+  async updateCustomer(keys: ProviderKeys, providerCustomerId: string, input: ProviderCustomerDetails): Promise<void> {
+    await this.client(keys).customers.update(providerCustomerId, stripeCustomerUpdate(input));
   }
 
   async createInvoice(

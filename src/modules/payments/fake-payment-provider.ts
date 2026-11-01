@@ -5,6 +5,7 @@ import { InvalidSignatureError, ProviderNotFoundError, ProviderRefusedError } fr
 import type {
   InvoiceReason,
   PaymentProvider,
+  ProviderCustomerDetails,
   ProviderEvent,
   ProviderKeys,
   ProviderSubscription,
@@ -58,6 +59,7 @@ const store = {
   byKey: new Map<string, unknown>(),
   checkouts: new Map<string, FakeCheckout>(),
   invoices: new Map<string, FakeInvoice>(),
+  customerDetails: new Map<string, ProviderCustomerDetails>(),
   accounts: new Map<string, PartnerAccountState>(),
   refunds: new Map<string, 'pending' | 'succeeded' | 'failed'>(),
   transfers: [] as { id: string; destination: string; amount: Prisma.Decimal }[],
@@ -387,6 +389,16 @@ export class FakePaymentProvider implements PaymentProvider {
 
   ensureCustomer(_keys: ProviderKeys, input: { idempotencyKey: string }): Promise<{ id: string }> {
     return Promise.resolve(this.once(input.idempotencyKey, () => ({ id: this.nextId('customer') })));
+  }
+
+  updateCustomer(_keys: ProviderKeys, providerCustomerId: string, input: ProviderCustomerDetails): Promise<void> {
+    store.customerDetails.set(providerCustomerId, { address: input.address, vatNumber: input.vatNumber });
+    return Promise.resolve();
+  }
+
+  /** Test control: what a customer's invoices would print; undefined until it was sent. */
+  customerDetails(providerCustomerId: string): ProviderCustomerDetails | undefined {
+    return store.customerDetails.get(providerCustomerId);
   }
 
   createInvoice(

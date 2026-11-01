@@ -1,8 +1,15 @@
 import type { Prisma } from '../../generated/prisma/client';
+import type { Address } from '../orders/order-response';
 
 /** The keys of one workspace's provider account. Sealed at rest, never logged. */
 export interface ProviderKeys {
   secretKey: string;
+}
+
+/** The address and VAT number a customer's invoices print (Customers 2 spec, goal 9). */
+export interface ProviderCustomerDetails {
+  address: Address | null;
+  vatNumber: string | null;
 }
 
 /** The facts of a webhook event; the payload itself is never kept. */
@@ -106,6 +113,11 @@ export interface PaymentProvider {
     /** `email` is null when the customer has no one to send its invoices to. */
     input: { customerId: string; name: string; email: string | null; idempotencyKey: string },
   ): Promise<{ id: string }>;
+  /**
+   * What the customer's invoices print (Customers 2 spec, goal 9): its billing address and VAT number.
+   * Null clears one. The VAT number is printed only; it changes no tax.
+   */
+  updateCustomer(keys: ProviderKeys, providerCustomerId: string, input: ProviderCustomerDetails): Promise<void>;
   createInvoice(
     keys: ProviderKeys,
     input: {

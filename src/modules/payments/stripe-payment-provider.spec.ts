@@ -1,8 +1,29 @@
 import Stripe from 'stripe';
 import { InvalidSignatureError } from './payment-provider';
-import { StripePaymentProvider, toMinorUnits } from './stripe-payment-provider';
+import { StripePaymentProvider, stripeCustomerUpdate, toMinorUnits } from './stripe-payment-provider';
 
 /** Offline only: nothing here talks to Stripe. */
+
+describe('stripeCustomerUpdate', () => {
+  it('sends the address with its region as the state, and the VAT number as a custom field invoices print', () => {
+    const update = stripeCustomerUpdate({
+      address: { name: 'Brightline GmbH', line1: 'Ringstraße 4', line2: '3. Stock', city: 'Wien', postal_code: '1010', region: 'Wien', country: 'AT' },
+      vatNumber: 'ATU12345678',
+    });
+    expect(update).toEqual({
+      address: { line1: 'Ringstraße 4', line2: '3. Stock', city: 'Wien', postal_code: '1010', state: 'Wien', country: 'AT' },
+      invoice_settings: { custom_fields: [{ name: 'VAT', value: 'ATU12345678' }] },
+    });
+  });
+
+  it('clears what is no longer there', () => {
+    expect(stripeCustomerUpdate({ address: null, vatNumber: null })).toEqual({ address: '', invoice_settings: { custom_fields: '' } });
+    // Missing parts of an address are sent empty, so an old line2 or state doesn't stay behind.
+    expect(
+      stripeCustomerUpdate({ address: { name: 'Brightline', line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' }, vatNumber: null }).address,
+    ).toEqual({ line1: 'Hauptstraße 1', line2: '', city: 'Berlin', postal_code: '10115', state: '', country: 'DE' });
+  });
+});
 describe('toMinorUnits', () => {
   it('rounds half up to cents', () => {
     expect(toMinorUnits('12.345', 'EUR')).toBe(1235);

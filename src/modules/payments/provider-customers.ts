@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import type { Address } from '../orders/order-response';
 import { PaymentAccountService } from './payment-account.service';
 import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
@@ -51,5 +52,28 @@ export class ProviderCustomers {
       await tx.customerPaymentTerms.updateMany({ where: { customerId, providerCustomerId: null }, data: { providerCustomerId: id } });
     });
     return id;
+  }
+
+  /**
+   * Sends what the customer's invoices print to its record at the provider (Customers 2 spec, goal 9): the
+   * billing address, else the shipping address, and the VAT number. Outside any transaction. A customer
+   * not yet known there is left alone: its first invoice makes the record, and syncs it first.
+   */
+  async sync(tenantId: string, customerId: string): Promise<void> {
+    const found = await this.prisma.inTenant(tenantId, async (tx) => {
+      const terms = await tx.customerPaymentTerms.findUnique({ where: { customerId }, select: { providerCustomerId: true } });
+      const customer = await tx.customer.findUniqueOrThrow({
+        where: { id: customerId },
+        select: { shippingAddress: true, billingAddress: true, vatNumber: true },
+      });
+      return { providerCustomerId: terms?.providerCustomerId ?? null, customer };
+    });
+    if (!found.providerCustomerId) return;
+    const { customer } = found;
+    const keys = (await this.accounts.keysFor(tenantId)).keys;
+    await this.provider.updateCustomer(keys, found.providerCustomerId, {
+      address: ((customer.billingAddress ?? customer.shippingAddress) as Address | null) ?? null,
+      vatNumber: customer.vatNumber,
+    });
   }
 }
