@@ -160,7 +160,8 @@ export class OrdersService {
     try {
       placed = await this.prisma.inTenant(auth.tenantId, async (tx) => {
         // Row-level security hides other workspaces' customers, so a foreign id is simply not found.
-        if (!(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
+        const customer = await tx.customer.findUnique({ where: { id: customerId }, select: { id: true, customerGroupId: true } });
+        if (!customer) {
           throw new NotFoundException('Customer not found');
         }
         const quotes = await this.orderable(tx, customerId, body.lines.map((line) => line.quote_id));
@@ -209,6 +210,8 @@ export class OrdersService {
           data: {
             number: await nextOrderNumber(tx),
             customerId,
+            // The group it is placed under, kept when the customer moves (Customers 2 spec, goal 5).
+            customerGroupId: customer.customerGroupId,
             channel,
             channelOrderId: body.channel_order_id ?? null,
             deliverySpeedKey: speed.speed,

@@ -1,7 +1,7 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
-import { toPage } from '../../common/pagination/page';
+import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
@@ -29,6 +29,13 @@ export const updateCustomerSchema = z.object({
   /** Lets the customer's people pick the workshop that makes their quote, at that workshop's price. */
   may_pick_partner: z.boolean().optional(),
 });
+/** The customer list's filters (Customers 2 spec, goal 3). */
+export const customerListQuerySchema = paginationQuerySchema.extend({
+  /** A customer group's id, or `none` for customers in no group. */
+  customer_group: z.union([z.uuid(), z.literal('none')]).optional(),
+});
+export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
+
 export const updateMemberSchema = z.object({
   /** Making someone owner turns the current owner into an admin. */
   role: z.enum(CUSTOMER_ROLES).optional(),
@@ -91,12 +98,21 @@ export class CustomersService {
     });
   }
 
-  async list(tenantId: string, query: { limit: number; cursor?: string }): Promise<Page<CustomerResponse>> {
+  async list(tenantId: string, query: CustomerListQuery): Promise<Page<CustomerResponse>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(tenantId, async (tx) => {
+      if (query.customer_group && query.customer_group !== 'none' && !(await tx.customerGroup.findUnique({ where: { id: query.customer_group } }))) {
+        throw new BadRequestException({
+          message: 'Filter by a customer group of the workspace',
+          errors: [{ path: 'customer_group', message: 'not a customer group of this workspace' }],
+        });
+      }
       const rows = await tx.customer.findMany({
-        where: after ? { id: { lt: after.id } } : {},
+        where: {
+          ...(after ? { id: { lt: after.id } } : {}),
+          ...(query.customer_group ? { customerGroupId: query.customer_group === 'none' ? null : query.customer_group } : {}),
+        },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
         include,

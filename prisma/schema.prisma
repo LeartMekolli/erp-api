@@ -128,6 +128,7 @@ model Tenant {
   sampleDraws           SampleDraw[]
   samplePieces          SamplePiece[]
   orderProgressEmails   OrderProgressEmail[]
+  customerPriorities    CustomerPriority[]
 
   @@map("tenant")
 }
@@ -191,6 +192,7 @@ model User {
   reportExports          ReportExport[]
   skills                 UserSkill[] @relation("user_skill_holder")
   skillsGranted          UserSkill[] @relation("user_skill_granted_by")
+  priorityOverrides      CustomerPriority[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -1072,8 +1074,10 @@ model CustomerGroup {
   percent   Decimal  @db.Decimal(9, 4)
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customers Customer[]
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customers       Customer[]
+  orders          Order[]
+  campaignTargets CreditCampaignTarget[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1181,6 +1185,11 @@ model Customer {
   customerGroupId String?  @map("customer_group_id") @db.Uuid
   // The customer's people may pick the workshop for a quote (Partners spec, goal 12).
   mayPickPartner  Boolean  @default(false) @map("may_pick_partner")
+  // Validated by addressSchema (Customers 2 spec, goals 6–7): orders start from the shipping address;
+  // invoices carry the billing address, else the shipping one, and the VAT number.
+  shippingAddress Json?    @map("shipping_address")
+  billingAddress  Json?    @map("billing_address")
+  vatNumber       String?  @map("vat_number")
   createdAt       DateTime @default(now()) @map("created_at")
 
   tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1204,6 +1213,7 @@ model Customer {
   campaignTargets     CreditCampaignTarget[]
   aiResults           AiCustomerResult[]
   aiBrandProfile      AiBrandProfile?
+  priority            CustomerPriority?
 
   @@unique([tenantId, id])
   @@index([tenantId])
@@ -1351,6 +1361,9 @@ model WorkOrderGroup {
   customerId        String?  @map("customer_id") @db.Uuid
   // How many good pieces the group must deliver.
   quantity          Int
+  // Higher first in the work queue: its customer's band in force when that band is first in line, else 0
+  // (Customers 2 spec, goal 17). Kept by PriorityService.rerank.
+  queueRank         Int      @default(0) @map("queue_rank")
   // The step types the source priced, which decide the priced steps on the path; null: every step runs.
   chainStepTypeIds  Json?    @map("chain_step_type_ids")
   parentGroupId     String?  @map("parent_group_id") @db.Uuid
@@ -1375,6 +1388,7 @@ model WorkOrderGroup {
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
+  @@index([tenantId, queueRank])
   @@map("work_order_group")
 }
 
@@ -1832,6 +1846,9 @@ model Order {
   // Readable, counted per workspace from 1001 (order_counter).
   number           Int
   customerId       String   @map("customer_id") @db.Uuid
+  // The customer's group when the order was placed, so revenue by group never moves with the customer
+  // (Customers 2 spec, goal 5).
+  customerGroupId  String?  @map("customer_group_id") @db.Uuid
   // staff | portal; outside channels later (goal 17)
   channel          String
   // The outside channel's own id, taken once per channel.
@@ -1873,6 +1890,7 @@ model Order {
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer       Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
+  customerGroup  CustomerGroup? @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: NoAction)
   shippingMethod ShippingMethod @relation(fields: [tenantId, shippingMethodId], references: [tenantId, id], onDelete: NoAction)
   releasedBy     User?          @relation(fields: [tenantId, releasedByUserId], references: [tenantId, id], onDelete: NoAction)
   lines          OrderLine[]
@@ -1903,6 +1921,33 @@ model OrderProgressEmail {
 
   @@id([tenantId, orderId, stepName])
   @@map("order_progress_email")
+}
+
+// A customer's priority (Customers 2 spec, goals 11–16): its score from its own history, computed each
+// night, the band that gives, and a staff override until a date. Band keys name `customers.priority`
+// bands; one no longer there reads as the default band. Never shown to the customer.
+model CustomerPriority {
+  tenantId         String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  customerId       String    @map("customer_id") @db.Uuid
+  score            Int
+  // { lifetime, recent, frequency, payment }, each 0–100.
+  parts            Json
+  // Null: the default band.
+  bandKey          String?   @map("band_key")
+  computedAt       DateTime  @map("computed_at")
+  // Set together, or not at all (check in the migration). In force through `overrideEndsOn`.
+  overrideBandKey  String?   @map("override_band_key")
+  overrideReason   String?   @map("override_reason")
+  overrideEndsOn   DateTime? @map("override_ends_on") @db.Date
+  overrideByUserId String?   @map("override_by_user_id") @db.Uuid
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer   Customer @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  overrideBy User?    @relation(fields: [tenantId, overrideByUserId], references: [tenantId, id], onDelete: NoAction)
+
+  @@id([tenantId, customerId])
+  @@index([tenantId, bandKey])
+  @@map("customer_priority")
 }
 
 // A comment on an order or one of its lines, by staff, the customer's people or the partner holding the
@@ -2546,15 +2591,19 @@ model CreditCampaignTarget {
   campaignId String  @map("campaign_id") @db.Uuid
   planId     String? @map("plan_id") @db.Uuid
   customerId String? @map("customer_id") @db.Uuid
+  // Every customer of the group (Customers 2 spec, goal 4).
+  customerGroupId String? @map("customer_group_id") @db.Uuid
 
-  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  campaign CreditCampaign @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade)
-  plan     Plan?          @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
-  customer Customer?      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign      CreditCampaign @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade)
+  plan          Plan?          @relation(fields: [tenantId, planId], references: [tenantId, id], onDelete: Cascade)
+  customer      Customer?      @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: Cascade)
+  customerGroup CustomerGroup? @relation(fields: [tenantId, customerGroupId], references: [tenantId, id], onDelete: Cascade)
 
   @@index([tenantId, campaignId])
   @@index([tenantId, planId])
   @@index([tenantId, customerId])
+  @@index([tenantId, customerGroupId])
   @@map("credit_campaign_target")
 }
 

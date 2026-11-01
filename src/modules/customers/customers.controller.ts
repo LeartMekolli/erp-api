@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
-import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
+import { pageSchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -16,7 +16,8 @@ import {
 } from './customer-response';
 import type { CustomerInvitationResponse, CustomerMemberResponse, CustomerResponse } from './customer-response';
 import { CUSTOMER_ROLES } from './customer-roles';
-import { CustomersService, createCustomerSchema, updateCustomerSchema, updateMemberSchema } from './customers.service';
+import { CustomersService, createCustomerSchema, customerListQuerySchema, updateCustomerSchema, updateMemberSchema } from './customers.service';
+import type { CustomerListQuery } from './customers.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -48,8 +49,8 @@ export class CustomersController {
   }
 
   @ApiDoc({
-    summary: 'Customer organisations, newest first.',
-    query: paginationQuerySchema,
+    summary: 'Customer organisations, newest first, optionally of one customer group or of none.',
+    query: customerListQuerySchema,
     response: pageSchema(customerResponseSchema),
     errors: [400],
   })
@@ -57,7 +58,7 @@ export class CustomersController {
   @Get()
   list(
     @CurrentTenant() tenantId: string,
-    @Query(new ZodValidationPipe(paginationQuerySchema)) query: z.infer<typeof paginationQuerySchema>,
+    @Query(new ZodValidationPipe(customerListQuerySchema)) query: CustomerListQuery,
   ): Promise<Page<CustomerResponse>> {
     return this.customers.list(tenantId, query);
   }

@@ -11,9 +11,38 @@ export const rangeMetricsSchema = weekMetricsSchema.extend({
   orders: weekMetricsSchema.shape.orders.extend({
     /** Every product with revenue in the range, most first. */
     by_product: z.array(z.strictObject({ product_id: z.uuid(), name: z.string(), quantity: z.number().int().min(0), revenue: money })),
+    /**
+     * Revenue per customer group the orders were placed under, most first; orders of customers in no
+     * group last. Adds up to `revenue` (Customers 2 spec, goal 5).
+     */
+    by_customer_group: z.array(
+      z.strictObject({ customer_group: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }).nullable(), revenue: money }),
+    ),
   }),
 });
 export type RangeMetrics = z.infer<typeof rangeMetricsSchema>;
+
+/**
+ * Revenue per customer group: each order's revenue (total less tax, as the dashboard counts it) under the
+ * group it was placed under, only those in `currency`; most first, then by name, with no group last.
+ */
+export function revenueByGroup(
+  orders: { groupId: string | null; net: Prisma.Decimal; currency: string }[],
+  groups: Map<string, { key: string; name: string }>,
+  currency: string,
+): RangeMetrics['orders']['by_customer_group'] {
+  const by = new Map<string | null, Prisma.Decimal>();
+  for (const order of orders.filter((one) => one.currency === currency)) {
+    by.set(order.groupId, (by.get(order.groupId) ?? new Prisma.Decimal(0)).add(order.net));
+  }
+  const grouped = [...by]
+    .filter((entry): entry is [string, Prisma.Decimal] => entry[0] !== null)
+    .map(([id, revenue]) => ({ group: { id, ...groups.get(id)! }, revenue }))
+    .sort((a, b) => b.revenue.cmp(a.revenue) || a.group.name.localeCompare(b.group.name))
+    .map(({ group, revenue }) => ({ customer_group: group, revenue: revenue.toFixed(2) }));
+  const none = by.get(null);
+  return none === undefined ? grouped : [...grouped, { customer_group: null, revenue: none.toFixed(2) }];
+}
 
 /**
  * Revenue per product: the totals of the lines given (the caller leaves out cancelled lines and orders),

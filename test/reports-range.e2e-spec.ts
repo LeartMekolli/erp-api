@@ -119,7 +119,7 @@ describe('reporting: numbers for any range', () => {
 
     for (const [week, row] of [previousStart, start].map((day, index) => [day, stored[index]] as const)) {
       const range = await reports.metricsFor(w.id, { from: week, to: addDays(week, 6) }, at);
-      const { by_product: _byProduct, ...orders } = range.orders;
+      const { by_product: _byProduct, by_customer_group: _byGroup, ...orders } = range.orders;
       expect({ ...range, orders }).toEqual(weekMetricsSchema.parse(row.data));
     }
   });

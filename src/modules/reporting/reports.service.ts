@@ -6,7 +6,7 @@ import { localDate, startOfLocalDay } from '../orders/dates';
 import { EligibilityService } from '../partners/eligibility.service';
 import { groupReady } from '../workflow/progress';
 import type { DashboardResponse } from './dashboard-response';
-import { rangeMetricsSchema, revenueByProduct } from './range-metrics';
+import { rangeMetricsSchema, revenueByGroup, revenueByProduct } from './range-metrics';
 import type { RangeMetrics } from './range-metrics';
 import { addDays, emptyWeek, forReader, medianHours, onTimeRate, orderingLess, weekMetricsSchema, weekOf } from './week-metrics';
 import type { WeekMetrics } from './week-metrics';
@@ -180,7 +180,17 @@ export class ReportsService {
         lines.map((line) => ({ productId: line.productId, name: line.product.name, quantity: line.quantity, total: line.total, currency: line.order.currency })),
         tenant.defaultCurrency,
       );
-      return rangeMetricsSchema.parse({ ...week, orders: { ...week.orders, by_product: byProduct } });
+      const orders = await tx.order.findMany({
+        where: { cancelledAt: null, placedAt: { gte: span.from, lt: span.to } },
+        select: { customerGroupId: true, total: true, taxAmount: true, currency: true, customerGroup: { select: { id: true, key: true, name: true } } },
+      });
+      const groups = new Map(orders.flatMap((order) => (order.customerGroup ? [[order.customerGroup.id, order.customerGroup] as const] : [])));
+      const byGroup = revenueByGroup(
+        orders.map((order) => ({ groupId: order.customerGroupId, net: order.total.sub(order.taxAmount), currency: order.currency })),
+        groups,
+        tenant.defaultCurrency,
+      );
+      return rangeMetricsSchema.parse({ ...week, orders: { ...week.orders, by_product: byProduct, by_customer_group: byGroup } });
     });
   }
 
