@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
@@ -79,6 +79,9 @@ export async function lockCustomer(tx: Prisma.TransactionClient, id: string): Pr
 /** Customer organisations and their people, as staff manage them (Customers spec, goals 1 and 9). */
 @Injectable()
 export class CustomersService {
+  private readonly logger = new Logger(CustomersService.name);
+  private readonly groupHooks: ((tenantId: string, customerId: string) => Promise<void>)[] = [];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
@@ -130,8 +133,16 @@ export class CustomersService {
     return this.prisma.inTenant(tenantId, async (tx) => this.toResponse(tx, await this.find(tx, id)));
   }
 
+  /**
+   * Runs once the transaction that put a customer into a customer group has committed (Customers 2 spec,
+   * goal 4: campaigns targeting the group). A hook failing is logged; the change stands.
+   */
+  afterGroupChange(hook: (tenantId: string, customerId: string) => Promise<void>): void {
+    this.groupHooks.push(hook);
+  }
+
   async update(auth: TenantAuth, id: string, patch: z.infer<typeof updateCustomerSchema>): Promise<CustomerResponse> {
-    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const { before, after } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const before = await this.toResponse(tx, await this.find(tx, id));
       if (patch.customer_group_id) await this.findGroup(tx, patch.customer_group_id);
       const row = await tx.customer.update({
@@ -146,8 +157,16 @@ export class CustomersService {
       });
       const after = await this.toResponse(tx, row);
       await this.record(tx, auth, id, before, after);
-      return after;
+      return { before, after };
     });
+    if (after.customer_group && after.customer_group.id !== before.customer_group?.id) {
+      for (const hook of this.groupHooks) {
+        await hook(auth.tenantId, id).catch((error: unknown) =>
+          this.logger.error({ err: error, tenantId: auth.tenantId, customerId: id }, 'a hook after a customer group change failed'),
+        );
+      }
+    }
+    return after;
   }
 
   /** The customer's people, in the order they joined. */

@@ -38,8 +38,10 @@ export class CampaignsController {
   }
 
   @ApiDoc({
-    summary: 'Create a campaign as a draft: credits per customer for the plans and customers it targets, within a budget.',
-    description: 'Nothing is granted until it is activated. Each customer gets its credits once; a grant is never split.',
+    summary: 'Create a campaign as a draft: credits per customer for the plans, customer groups and customers it targets, within a budget.',
+    description:
+      'Nothing is granted until it is activated. Each customer gets its credits once, however it is targeted, even after leaving ' +
+      'and rejoining a group; a customer moved into a targeted group while it runs gets them then. A grant is never split.',
     body: createCampaignSchema,
     response: campaignResponseSchema,
     errors: [400],

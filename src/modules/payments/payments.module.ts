@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { AuditModule } from '../audit/audit.module';
+import { CustomersModule } from '../customers/customers.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OrdersModule } from '../orders/orders.module';
 import { PartnersModule } from '../partners/partners.module';
@@ -61,7 +62,7 @@ import { WebhooksController } from './webhooks.controller';
  * never depends on Payments: Payments registers its hooks on OrdersService.
  */
 @Module({
-  imports: [AuditModule, NotificationsModule, OrdersModule, PartnersModule, SettingsModule],
+  imports: [AuditModule, CustomersModule, NotificationsModule, OrdersModule, PartnersModule, SettingsModule],
   controllers: [
     PaymentAccountController,
     LedgerController,

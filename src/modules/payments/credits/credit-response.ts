@@ -89,7 +89,10 @@ const campaignTargetsSchema = z.strictObject({
   plan_ids: z.array(z.uuid()).max(100).default([]),
   /** These customers, whatever their plan. */
   customer_ids: z.array(z.uuid()).max(1000).default([]),
+  /** Every customer in these customer groups, those moved in while it runs included (Customers 2 spec, goal 4). */
+  customer_group_ids: z.array(z.uuid()).max(100).default([]),
 });
+export type CampaignTargets = { plan_ids: string[]; customer_ids: string[]; customer_group_ids: string[] };
 
 const campaignFields = {
   name: z.string().trim().min(1).max(200),
@@ -109,11 +112,12 @@ export function campaignProblem(campaign: {
   starts_at: string | Date;
   ends_at: string | Date;
   budget: number;
-  targets: { plan_ids: string[]; customer_ids: string[] };
+  targets: CampaignTargets;
 }): string | null {
   if (new Date(campaign.ends_at) <= new Date(campaign.starts_at)) return 'ends_at: must be after starts_at';
   if (campaign.budget < campaign.credits_per_customer) return 'budget: must hold at least one grant of credits_per_customer';
-  if (campaign.targets.plan_ids.length + campaign.targets.customer_ids.length === 0) return 'targets: name at least one plan or customer';
+  const { plan_ids, customer_ids, customer_group_ids } = campaign.targets;
+  if (plan_ids.length + customer_ids.length + customer_group_ids.length === 0) return 'targets: name at least one plan, customer or customer group';
   return null;
 }
 
@@ -145,7 +149,7 @@ export const campaignResponseSchema = z.strictObject({
   ends_at: z.iso.datetime(),
   budget: z.number().int(),
   status: z.enum(CAMPAIGN_STATUSES),
-  targets: z.strictObject({ plan_ids: z.array(z.uuid()), customer_ids: z.array(z.uuid()) }),
+  targets: z.strictObject({ plan_ids: z.array(z.uuid()), customer_ids: z.array(z.uuid()), customer_group_ids: z.array(z.uuid()) }),
   /** Customers given its credits, and how many credits that was. */
   granted_customers: z.number().int(),
   granted_credits: z.number().int(),

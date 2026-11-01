@@ -131,7 +131,7 @@ export async function seedPlans(
       starts_at: new Date(now).toISOString(),
       ends_at: new Date(now + CAMPAIGN.runsForDays * DAY_MS).toISOString(),
       budget: CAMPAIGN.budget,
-      targets: { plan_ids: [planIds.get(CAMPAIGN.plan)!], customer_ids: [] },
+      targets: { plan_ids: [planIds.get(CAMPAIGN.plan)!], customer_ids: [], customer_group_ids: [] },
     });
     await deps.campaigns.activate(auth, campaign.id);
     created.campaigns++;

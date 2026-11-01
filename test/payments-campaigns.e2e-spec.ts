@@ -149,7 +149,7 @@ describe('payments: campaigns', () => {
     return id;
   }
 
-  const campaignBody = (w: Workspace, targets: { plan_ids?: string[]; customer_ids?: string[] }, budget = 150) => ({
+  const campaignBody = (w: Workspace, targets: { plan_ids?: string[]; customer_ids?: string[]; customer_group_ids?: string[] }, budget = 150) => ({
     name: 'Launch',
     credits_per_customer: 50,
     credit_days: 60,
@@ -201,6 +201,49 @@ describe('payments: campaigns', () => {
     expect((listed.body as { data: CampaignBody[] }).data[0]).toMatchObject({ id, spent_credits: 20 });
     await w.member.post('/payments/campaigns', campaignBody(w, { plan_ids: [w.pro] })).expect(403);
     await w.member.post(`/payments/campaigns/${id}/pause`).expect(403);
+  });
+
+  it('grants a campaign to every customer of a targeted group, and to one moved into it later', async () => {
+    const w = await workspace();
+    const wholesale = ((await w.staff.post('/pricing/customer-groups', { key: 'wholesale', name: 'Wholesale', percent: '0' }).expect(201)).body as {
+      id: string;
+    }).id;
+    const inGroup = ((await w.staff.post('/customers', { name: 'Luna Jewels', customer_group_id: wholesale }).expect(201)).body as { id: string }).id;
+    const later = await customer(w, 'Sol Studio');
+    const outside = await customer(w, 'Terra Rings');
+    const id = await create(w, campaignBody(w, { customer_group_ids: [wholesale] }));
+    const created = await w.staff.get(`/payments/campaigns/${id}`).expect(200);
+    expectDocumented(campaignResponseSchema, created.body);
+    expect((created.body as { targets: { customer_group_ids: string[] } }).targets.customer_group_ids).toEqual([wholesale]);
+
+    await w.staff.post(`/payments/campaigns/${id}/activate`).expect(200);
+    expect(await campaignCredits(w, inGroup)).toBe(50);
+    expect(await campaignCredits(w, later)).toBe(0);
+
+    // Moved into the group while the campaign runs: granted then, without waiting for the sweep.
+    await w.staff.patch(`/customers/${later}`, { customer_group_id: wholesale }).expect(200);
+    expect(await campaignCredits(w, later)).toBe(50);
+    expect(await campaignCredits(w, outside)).toBe(0);
+
+    // A group of another workspace, or none at all, is refused.
+    await w.staff.post('/payments/campaigns', campaignBody(w, { customer_group_ids: [newId()] })).expect(400);
+  });
+
+  it('never grants twice when a customer leaves the group and rejoins (Review Focus 2)', async () => {
+    const w = await workspace();
+    const wholesale = ((await w.staff.post('/pricing/customer-groups', { key: 'wholesale', name: 'Wholesale', percent: '0' }).expect(201)).body as {
+      id: string;
+    }).id;
+    const luna = ((await w.staff.post('/customers', { name: 'Luna Jewels', customer_group_id: wholesale }).expect(201)).body as { id: string }).id;
+    const id = await create(w, campaignBody(w, { customer_group_ids: [wholesale] }));
+    await w.staff.post(`/payments/campaigns/${id}/activate`).expect(200);
+
+    await w.staff.patch(`/customers/${luna}`, { customer_group_id: null }).expect(200);
+    await w.staff.patch(`/customers/${luna}`, { customer_group_id: wholesale }).expect(200);
+    await campaigns.run(w.id);
+
+    expect(await grantsOf(w, id)).toHaveLength(1);
+    expect(await campaignCredits(w, luna)).toBe(50);
   });
 
   it('reaches a customer who joins the plan while it runs, until the budget is used, and says so once', async () => {

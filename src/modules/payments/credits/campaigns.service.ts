@@ -2,13 +2,13 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { PrismaService } from '../../../database/prisma.service';
 import type { CreditCampaign, CreditCampaignTarget, Prisma } from '../../../generated/prisma/client';
 import { AuditService } from '../../audit/audit.service';
-import { lockCustomer } from '../../customers/customers.service';
+import { CustomersService, lockCustomer } from '../../customers/customers.service';
 import type { TenantAuth } from '../../identity/auth-context';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { PLAN_GIVING_STATUSES, planOf } from '../plans/plan-of';
 import { SubscriptionsService } from '../plans/subscriptions.service';
 import { campaignProblem } from './credit-response';
-import type { CampaignListResponse, CampaignResponse, CampaignStatus, CreateCampaign, UpdateCampaign } from './credit-response';
+import type { CampaignListResponse, CampaignResponse, CampaignStatus, CampaignTargets, CreateCampaign, UpdateCampaign } from './credit-response';
 import { CreditsService } from './credits.service';
 
 const DAY_MS = 86_400_000;
@@ -23,7 +23,7 @@ type Outcome =
 
 /**
  * Campaigns (Payments 2 spec, goal 11): free credits given automatically, once per customer, to the
- * customers on targeted plans and those named, while the campaign runs and its budget holds. Every
+ * customers on targeted plans, in targeted customer groups (Customers 2) and those named, while the campaign runs and its budget holds. Every
  * grant locks the customer, then the campaign, so two grants at once can't overspend the budget.
  */
 @Injectable()
@@ -36,11 +36,13 @@ export class CampaignsService implements OnModuleInit {
     private readonly credits: CreditsService,
     private readonly notifications: NotificationsService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly customers: CustomersService,
   ) {}
 
   onModuleInit(): void {
-    // A customer who joins a targeted plan while a campaign runs gets its credits then.
+    // A customer who joins a targeted plan or customer group while a campaign runs gets its credits then.
     this.subscriptions.afterPlanChange((tenantId, customerId) => this.grantFor(tenantId, customerId));
+    this.customers.afterGroupChange((tenantId, customerId) => this.grantFor(tenantId, customerId));
   }
 
   async list(tenantId: string): Promise<CampaignListResponse> {
@@ -142,13 +144,14 @@ export class CampaignsService implements OnModuleInit {
   async grantFor(tenantId: string, customerId: string): Promise<void> {
     const candidates = await this.prisma.inTenant(tenantId, async (tx) => {
       const plan = await planOf(tx, customerId);
+      const { customerGroupId } = await tx.customer.findUniqueOrThrow({ where: { id: customerId }, select: { customerGroupId: true } });
       const now = new Date();
       const running = await tx.creditCampaign.findMany({
         where: {
           status: 'active',
           startsAt: { lte: now },
           endsAt: { gt: now },
-          targets: { some: { OR: [{ planId: plan.id }, { customerId }] } },
+          targets: { some: { OR: [{ planId: plan.id }, { customerId }, ...(customerGroupId ? [{ customerGroupId }] : [])] } },
         },
         select: { id: true },
         orderBy: { id: 'asc' },
@@ -173,11 +176,12 @@ export class CampaignsService implements OnModuleInit {
       const now = new Date();
       const targets = await tx.creditCampaignTarget.findMany({
         where: { campaign: { status: 'active', startsAt: { lte: now }, endsAt: { gt: now } } },
-        select: { planId: true, customerId: true },
+        select: { planId: true, customerId: true, customerGroupId: true },
       });
       if (targets.length === 0) return [];
       const planIds = targets.flatMap((target) => (target.planId ? [target.planId] : []));
       const named = targets.flatMap((target) => (target.customerId ? [target.customerId] : []));
+      const groupIds = targets.flatMap((target) => (target.customerGroupId ? [target.customerGroupId] : []));
       const free = await tx.plan.findFirstOrThrow({ where: { isDefault: true }, select: { id: true } });
       const giving = [...PLAN_GIVING_STATUSES];
       const rows = await tx.customer.findMany({
@@ -185,6 +189,7 @@ export class CampaignsService implements OnModuleInit {
           status: 'active',
           OR: [
             { id: { in: named } },
+            { customerGroupId: { in: groupIds } },
             { subscription: { is: { status: { in: giving }, planPrice: { planId: { in: planIds } } } } },
             // The free plan's customers are those without a subscription that gives a plan.
             ...(planIds.includes(free.id)
@@ -282,19 +287,22 @@ export class CampaignsService implements OnModuleInit {
     return tx.creditCampaign.findUniqueOrThrow({ where: { id }, include: { targets: true } });
   }
 
-  private async checkTargets(tx: Prisma.TransactionClient, targets: { plan_ids: string[]; customer_ids: string[] }): Promise<void> {
+  private async checkTargets(tx: Prisma.TransactionClient, targets: CampaignTargets): Promise<void> {
     const plans = await tx.plan.count({ where: { id: { in: targets.plan_ids } } });
     if (plans !== new Set(targets.plan_ids).size) throw new BadRequestException('targets: a plan is not of this workspace');
     const customers = await tx.customer.count({ where: { id: { in: targets.customer_ids } } });
     if (customers !== new Set(targets.customer_ids).size) throw new BadRequestException('targets: a customer is not of this workspace');
+    const groups = await tx.customerGroup.count({ where: { id: { in: targets.customer_group_ids } } });
+    if (groups !== new Set(targets.customer_group_ids).size) throw new BadRequestException('targets: a customer group is not of this workspace');
   }
 
-  private async replaceTargets(tx: Prisma.TransactionClient, campaignId: string, targets: { plan_ids: string[]; customer_ids: string[] }): Promise<void> {
+  private async replaceTargets(tx: Prisma.TransactionClient, campaignId: string, targets: CampaignTargets): Promise<void> {
     await tx.creditCampaignTarget.deleteMany({ where: { campaignId } });
     await tx.creditCampaignTarget.createMany({
       data: [
         ...[...new Set(targets.plan_ids)].map((planId) => ({ campaignId, planId })),
         ...[...new Set(targets.customer_ids)].map((customerId) => ({ campaignId, customerId })),
+        ...[...new Set(targets.customer_group_ids)].map((customerGroupId) => ({ campaignId, customerGroupId })),
       ],
     });
   }
@@ -318,6 +326,7 @@ export class CampaignsService implements OnModuleInit {
       targets: {
         plan_ids: row.targets.flatMap((target) => (target.planId ? [target.planId] : [])).sort(),
         customer_ids: row.targets.flatMap((target) => (target.customerId ? [target.customerId] : [])).sort(),
+        customer_group_ids: row.targets.flatMap((target) => (target.customerGroupId ? [target.customerGroupId] : [])).sort(),
       },
       granted_customers: granted._count,
       granted_credits: grantedCredits,

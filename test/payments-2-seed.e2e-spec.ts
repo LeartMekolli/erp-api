@@ -142,7 +142,7 @@ describe('plans and credits demo seed', () => {
         credits_per_customer: 50,
         credit_days: 60,
         budget: 5000,
-        targets: { plan_ids: [pro.id], customer_ids: [] },
+        targets: { plan_ids: [pro.id], customer_ids: [], customer_group_ids: [] },
       }),
     ]);
 
