@@ -96,6 +96,8 @@ export const workflowStepInputSchema = z.strictObject({
    * current version, and a new step is the partner's.
    */
   done_by: z.enum(DONE_BY).optional(),
+  /** The skill staff need to pass or fail pieces here (Workflow 2 spec, goal 11); in-house steps only. */
+  required_skill_id: z.uuid().nullable().default(null),
 });
 export type WorkflowStepInput = z.infer<typeof workflowStepInputSchema>;
 
@@ -141,5 +143,7 @@ export const workflowStepsSchema = z
   });
 export type WorkflowStepsInput = z.infer<typeof workflowStepsSchema>;
 
-/** The `config` column of a workflow step. */
-export type StepConfig = Pick<WorkflowStepInput, 'checklist' | 'defects' | 'rework_targets' | 'pass' | 'fail' | 'customer'>;
+/** The `config` column of a workflow step. Versions made before Workflow 2 have no `required_skill_id`. */
+export type StepConfig = Pick<WorkflowStepInput, 'checklist' | 'defects' | 'rework_targets' | 'pass' | 'fail' | 'customer'> & {
+  required_skill_id?: string | null;
+};

@@ -21,6 +21,7 @@ import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
 import { customerView, groupProgress } from './progress';
 import type { TransitionFacts } from './progress';
+import { barredStepIds } from './step-skills';
 import type { StepConfig } from './workflow-config';
 import { WORK_ORDER_STATUSES } from './work-order-response';
 import type {
@@ -29,6 +30,7 @@ import type {
   TransitionListItem,
   TransitionResponse,
   WorkOrderDetailResponse,
+  WorkOrderListItem,
   WorkOrderResponse,
   WorkOrderStatus,
 } from './work-order-response';
@@ -44,6 +46,8 @@ export const workOrderQuerySchema = z.object({
   group_id: z.uuid().optional(),
   step_key: keySchema.optional(),
   status: z.enum(WORK_ORDER_STATUSES).optional(),
+  /** Only the pieces the caller may pass or fail where they are (`may_work`). */
+  workable: z.enum(['true', 'false']).optional(),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
 
@@ -338,17 +342,32 @@ export class WorkOrdersService {
     );
   }
 
-  /** Pieces in the order they started, filtered by group, current step or status. */
-  async list(tenantId: string, query: WorkOrderQuery): Promise<Page<WorkOrderResponse>> {
+  /**
+   * Pieces in the order they started, filtered by group, current step or status, each marked with whether
+   * the caller may work it (Workflow 2 spec, goal 13); `workable=true` keeps only those.
+   */
+  async list(auth: TenantAuth, query: WorkOrderQuery): Promise<Page<WorkOrderListItem>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
-    return this.prisma.inTenant(tenantId, async (tx) => {
+    const mayMove = auth.permissions.has('workflow.move');
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
+      let workable: Prisma.WorkOrderWhereInput = {};
+      if (query.workable === 'true') {
+        // Without the move permission, nothing is workable.
+        workable = mayMove ? { status: 'active', currentStepId: { notIn: [...barred] } } : { id: { in: [] } };
+      }
       const rows = await tx.workOrder.findMany({
         where: {
-          ...(after ? { id: { gt: after.id } } : {}),
-          ...(query.group_id ? { groupId: query.group_id } : {}),
-          ...(query.step_key ? { currentStep: { key: query.step_key } } : {}),
-          ...(query.status ? { status: query.status } : {}),
+          AND: [
+            {
+              ...(after ? { id: { gt: after.id } } : {}),
+              ...(query.group_id ? { groupId: query.group_id } : {}),
+              ...(query.step_key ? { currentStep: { key: query.step_key } } : {}),
+              ...(query.status ? { status: query.status } : {}),
+            },
+            workable,
+          ],
         },
         orderBy: { id: 'asc' },
         take: query.limit + 1,
@@ -357,7 +376,10 @@ export class WorkOrdersService {
       const data = rows.slice(0, query.limit);
       const last = data.at(-1);
       return {
-        data: data.map(toWorkOrder),
+        data: data.map((row) => ({
+          ...toWorkOrder(row),
+          may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
+        })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
       };
     });

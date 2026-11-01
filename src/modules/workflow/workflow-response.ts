@@ -44,6 +44,8 @@ export const workflowStepResponseSchema = z.strictObject({
   ]),
   /** A partner's step, or one the workspace does in-house. */
   done_by: z.enum(DONE_BY),
+  /** The skill staff need to pass or fail pieces here; null when anyone who may move pieces may. */
+  required_skill_id: z.uuid().nullable(),
 });
 export type WorkflowStepResponse = z.infer<typeof workflowStepResponseSchema>;
 

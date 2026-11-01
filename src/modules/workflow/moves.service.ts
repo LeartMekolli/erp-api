@@ -8,6 +8,7 @@ import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
 import { keySchema } from '../pricing/decimals';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
+import { assertSkills } from './step-skills';
 import { groupReady } from './progress';
 import { MAX_TEXT, MOVE_KINDS, checkMove, judge } from './qc-gate';
 import type { GateStep, MoveProblem } from './qc-gate';
@@ -197,6 +198,12 @@ export class MovesService {
         if (inHouse.length > 0) {
           throw new ConflictException({ message: "Some pieces would move at the workspace's own steps", errors: inHouse });
         }
+      } else {
+        // A pass or fail needs the skill of the step it is made at; a correction, of the step each piece is at.
+        const atSteps = here
+          ? [here]
+          : pieces.flatMap((piece) => (piece.currentStepId ? [stepById.get(piece.currentStepId)!] : []));
+        await assertSkills(tx, auth, atSteps);
       }
       /** The partner a move made at `stepId` counts for. */
       const creditFor = (groupId: string, stepId: string | null): string | null =>

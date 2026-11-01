@@ -22,6 +22,13 @@ export const workOrderResponseSchema = z.strictObject({
 });
 export type WorkOrderResponse = z.infer<typeof workOrderResponseSchema>;
 
+/** A piece in a work list, for the staff member reading it. */
+export const workOrderListItemSchema = workOrderResponseSchema.extend({
+  /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
+  may_work: z.boolean(),
+});
+export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
+
 export const transitionResponseSchema = z.strictObject({
   id: z.uuid(),
   kind: z.enum(['pass', 'fail', 'correction']),

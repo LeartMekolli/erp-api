@@ -15,7 +15,7 @@ import {
   moveResponseSchema,
   transitionListItemSchema,
   workOrderDetailResponseSchema,
-  workOrderResponseSchema,
+  workOrderListItemSchema,
 } from './work-order-response';
 import type {
   CustomerViewResponse,
@@ -23,7 +23,7 @@ import type {
   MoveResponse,
   TransitionListItem,
   WorkOrderDetailResponse,
-  WorkOrderResponse,
+  WorkOrderListItem,
 } from './work-order-response';
 import { MAX_PIECES, WorkOrdersService, startGroupSchema, transitionQuerySchema, workOrderQuerySchema } from './work-orders.service';
 import type { TransitionQuery, WorkOrderQuery } from './work-orders.service';
@@ -88,17 +88,21 @@ export class WorkOrdersController {
 
   @ApiDoc({
     summary: 'Pieces in the order they started, such as the work list of one step.',
+    description:
+      'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
+      "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
+      '`workable=true` keeps only those pieces.',
     query: workOrderQuerySchema,
-    response: pageSchema(workOrderResponseSchema),
+    response: pageSchema(workOrderListItemSchema),
     errors: [400],
   })
   @RequirePermission('workflow.read')
   @Get('work-orders')
   list(
-    @CurrentTenant() tenantId: string,
+    @CurrentUser() auth: TenantAuth,
     @Query(new ZodValidationPipe(workOrderQuerySchema)) query: WorkOrderQuery,
-  ): Promise<Page<WorkOrderResponse>> {
-    return this.workOrders.list(tenantId, query);
+  ): Promise<Page<WorkOrderListItem>> {
+    return this.workOrders.list(auth, query);
   }
 
   @ApiDoc({
@@ -109,7 +113,9 @@ export class WorkOrdersController {
       `required answer passing plus the step's pass photos and comment; a fail needs a defect the step records and ` +
       `its fail evidence, and follows the defect's outcome unless \`outcome\` or \`rework_to\` overrides it with ` +
       `\`override_reason\`. A correction puts the pieces at \`to_step\` of their path, reopening finished ones, and ` +
-      `needs a comment. Pieces of an assembly can't leave its first step until every part is ready: that move is a ` +
+      `needs a comment. At a step that requires a skill, a pass or fail needs that skill, and so does a correction ` +
+      `of a piece standing there; without it the move is a 403 naming the skill (the owner always may). ` +
+      `Pieces of an assembly can't leave its first step until every part is ready: that move is a ` +
       `409. Gate problems are a 400 listing each one. At most ${MAX_PIECES_PER_MOVE} pieces and ` +
       `${MAX_PHOTOS_PER_MOVE} photos per move.`,
     body: moveSchema,

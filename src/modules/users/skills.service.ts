@@ -16,15 +16,16 @@ export async function holdsSkill(
   skillId: string,
   today: string,
 ): Promise<boolean> {
-  const held = await tx.userSkill.count({
-    where: {
-      userId,
-      skillId,
-      skill: { archivedAt: null },
-      OR: [{ expiresOn: null }, { expiresOn: { gte: dateOf(today) } }],
-    },
+  return (await heldSkillIds(tx, userId, today)).has(skillId);
+}
+
+/** Every skill the user may count on `today`, as `holdsSkill` decides it. */
+export async function heldSkillIds(tx: Prisma.TransactionClient, userId: string, today: string): Promise<Set<string>> {
+  const held = await tx.userSkill.findMany({
+    where: { userId, skill: { archivedAt: null }, OR: [{ expiresOn: null }, { expiresOn: { gte: dateOf(today) } }] },
+    select: { skillId: true },
   });
-  return held > 0;
+  return new Set(held.map((row) => row.skillId));
 }
 
 /** Whether the user holds the system owner role, who may always move pieces (goal 12). */

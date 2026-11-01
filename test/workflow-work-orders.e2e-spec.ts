@@ -11,7 +11,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import {
   groupResponseSchema,
   workOrderDetailResponseSchema,
-  workOrderResponseSchema,
+  workOrderListItemSchema,
 } from '../src/modules/workflow/work-order-response';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -123,7 +123,7 @@ describe('workflow: starting work orders from a quote', () => {
     ]);
 
     const listed = await tenant.owner.get(`/workflow/work-orders?group_id=${group.id}&limit=20`).expect(200);
-    expectDocumented(pageSchema(workOrderResponseSchema), listed.body);
+    expectDocumented(pageSchema(workOrderListItemSchema), listed.body);
     const data = (listed.body as { data: WorkOrder[] }).data;
     expect(data.map((piece) => piece.label)).toEqual(Array.from({ length: 10 }, (_, index) => `${index + 1}/10`));
     expect(data.every((piece) => piece.status === 'active' && piece.step?.key === 'print_pattern')).toBe(true);

@@ -111,6 +111,7 @@ export class WorkflowsService {
           errors: [{ path: 'payout_step', message: `${input.payout_step} is not a partner step of the workflow` }],
         });
       }
+      await this.checkSkills(tx, input, doneBy);
 
       const version = await tx.workflowVersion.create({
         data: { workflowId: id, number: (latest?.number ?? 0) + 1, createdByUserId: auth.userId },
@@ -124,6 +125,7 @@ export class WorkflowsService {
             pass: step.pass,
             fail: step.fail,
             customer: step.customer,
+            required_skill_id: step.required_skill_id,
           };
           return {
             versionId: version.id,
@@ -231,6 +233,31 @@ export class WorkflowsService {
     }
   }
 
+  /**
+   * A step may require one skill from the catalogue that isn't archived, and only a step the workspace
+   * does in-house: what a partner can do is its capabilities (Workflow 2 spec, goal 11).
+   */
+  private async checkSkills(tx: Prisma.TransactionClient, input: WorkflowStepsInput, doneBy: Map<string, DoneBy>): Promise<void> {
+    const requiring = input.steps.filter((step) => step.required_skill_id !== null);
+    const skillIds = [...new Set(requiring.map((step) => step.required_skill_id!))];
+    const usable = new Set(
+      (await tx.skill.findMany({ where: { id: { in: skillIds }, archivedAt: null }, select: { id: true } })).map((skill) => skill.id),
+    );
+    const errors = requiring.flatMap((step) => {
+      const path = `steps.${input.steps.indexOf(step)}.required_skill_id`;
+      if (doneBy.get(step.key) !== 'workspace') {
+        return [{ path, message: `${step.name} is a partner step; only in-house steps can require a skill` }];
+      }
+      if (!usable.has(step.required_skill_id!)) {
+        return [{ path, message: `${step.name} requires a skill that is not in the catalogue, or is archived` }];
+      }
+      return [];
+    });
+    if (errors.length > 0) {
+      throw new BadRequestException({ message: errors.map((error) => error.message).join('; '), errors });
+    }
+  }
+
   private async toVersion(tx: Prisma.TransactionClient, version: VersionRow): Promise<WorkflowVersionResponse> {
     const configs = version.steps.map((step) => step.config as StepConfig);
     const defectIds = [...new Set(configs.flatMap((config) => config.defects.map((defect) => defect.defect_id)))];
@@ -302,5 +329,6 @@ function toStep(
     expected_minutes: step.expectedMinutes?.toFixed() ?? null,
     customer: config.customer,
     done_by: step.doneBy as DoneBy,
+    required_skill_id: config.required_skill_id ?? null,
   };
 }
