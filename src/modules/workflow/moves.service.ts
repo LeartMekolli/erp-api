@@ -1,8 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { newId } from '../../common/ids/uuid';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
+import { JobsService } from '../../jobs/jobs.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
 import { keySchema } from '../pricing/decimals';
@@ -110,7 +111,12 @@ interface ReplacementRow {
 /** The move command (Workflow/QC spec, goals 5 and 6): the only writer of transitions. */
 @Injectable()
 export class MovesService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(MovesService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jobs: JobsService,
+  ) {}
 
   /**
    * With a `scope`, a partner's own people move: every piece must be of a job the partner has
@@ -119,6 +125,22 @@ export class MovesService {
    * step, whoever made it (Partners spec, goal 13 and B5).
    */
   async move(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, body: MoveBody, scope?: { partnerId: string }): Promise<MoveResponse> {
+    const { response, groupIds } = await this.moveInTransaction(auth, body, scope);
+    // After the move commits, never inside it: the progress emails due (Workflow 2 spec, goal 18). A queue
+    // failure is only logged; the sweep sends what the job would have.
+    try {
+      await this.jobs.enqueue('orders.progress', { tenantId: auth.tenantId, groupIds, moveId: newId() });
+    } catch (error) {
+      this.logger.warn({ err: error, tenantId: auth.tenantId, groupIds }, 'queueing the progress emails of a move failed');
+    }
+    return response;
+  }
+
+  private async moveInTransaction(
+    auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
+    body: MoveBody,
+    scope?: { partnerId: string },
+  ): Promise<{ response: MoveResponse; groupIds: string[] }> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const ids = body.work_order_ids;
       // In id order, so two moves sharing pieces can't deadlock; the second sees where the first left them.
@@ -332,7 +354,7 @@ export class MovesService {
 
       const moved = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: pieceInclude });
       const movedById = new Map(moved.map((row) => [row.id, row]));
-      return { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) };
+      return { response: { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) }, groupIds };
     });
   }
 

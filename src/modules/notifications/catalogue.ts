@@ -333,6 +333,22 @@ export const EVENTS = {
       },
     },
   },
+  // Once per order and customer-facing step name, on plans with progress emails (Workflow 2 spec, goals 15–20).
+  'order.progress': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '1001' },
+      step: { sample: 'Casting' },
+    },
+    defaults: {
+      en: {
+        subject: 'Order {{ number }}: {{ step }} is done',
+        body: 'Your order {{ number }} has moved on: {{ step }} is done.',
+      },
+    },
+  },
   'order.shipped': {
     audience: { kind: 'customer' },
     channels: ['email', 'feed'],

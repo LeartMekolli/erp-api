@@ -40,7 +40,8 @@ export const workflowStepResponseSchema = z.strictObject({
   expected_minutes: z.string().nullable(),
   customer: z.union([
     z.strictObject({ visible: z.literal(false) }),
-    z.strictObject({ visible: z.literal(true), name: z.string() }),
+    /** `email`: customers on a plan with progress emails hear once the order's pieces are done here. */
+    z.strictObject({ visible: z.literal(true), name: z.string(), email: z.boolean() }),
   ]),
   /** A partner's step, or one the workspace does in-house. */
   done_by: z.enum(DONE_BY),

@@ -328,7 +328,7 @@ function toStep(
     fail: config.fail,
     sop_file_version_id: step.sopFileVersionId,
     expected_minutes: step.expectedMinutes?.toFixed() ?? null,
-    customer: config.customer,
+    customer: config.customer.visible ? { ...config.customer, email: config.customer.email ?? false } : config.customer,
     done_by: step.doneBy as DoneBy,
     required_skill_id: config.required_skill_id ?? null,
     sampling: config.sampling ?? null,

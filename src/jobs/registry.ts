@@ -107,6 +107,14 @@ export const JOBS = {
     jobId: (p) => [p.exportId],
     attempts: 3,
   }),
+  // Sends the progress emails due for the orders of the groups one move touched (Workflow 2 spec, goals
+  // 15–20). Per move, so a later move is never dropped as a copy of one still waiting; sending twice is
+  // safe, since each email is recorded once per order and step name.
+  'orders.progress': defineJob({
+    queue: 'maintenance',
+    payload: z.object({ tenantId: z.uuid(), groupIds: z.array(z.uuid()).min(1), moveId: z.uuid() }),
+    jobId: (p) => [p.moveId],
+  }),
   // Runs one AI call and writes its result; after the last attempt, a failed result (AI 1 spec).
   'ai.run': defineJob({
     queue: 'ai',
@@ -185,6 +193,9 @@ export const SCHEDULED_JOBS = {
   // Grants running campaigns to the customers they target and haven't reached yet (Payments 2 spec);
   // once per customer and campaign, however often this runs.
   'payments.campaigns.grant': { queue: 'payments', schedule: { every: 300_000 }, lockTtlMs: 280_000 },
+  // Sends the progress emails a lost `orders.progress` job would have, for groups moved in the last 24
+  // hours (Workflow 2 spec). Whether an email went out is decided by its row, never by this having run.
+  'orders.progress.sweep': { queue: 'maintenance', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
   // Recomputes every workspace's dashboard numbers for this week and last (AI 1 spec, goal 4).
   'reports.refresh': { queue: 'maintenance', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
   // Removes the file of each export 30 days after it was ready; the export's row stays as the log

@@ -10,6 +10,8 @@ import { OrderCommentsController, PortalOrderCommentsController } from './commen
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { PortalOrdersController } from './portal-orders.controller';
+import { ProgressEmailsHandler, ProgressEmailsSweepHandler } from './progress-emails.handler';
+import { ProgressEmailsService } from './progress-emails.service';
 import { OrderSetupController } from './shipping-methods.controller';
 import { ShippingMethodsService } from './shipping-methods.service';
 import { RateTableTaxCalculator, TAX_CALCULATOR } from './tax';
@@ -35,6 +37,9 @@ import { TaxRatesService } from './tax-rates.service';
     TaxRatesService,
     OrdersService,
     CommentsService,
+    ProgressEmailsService,
+    ProgressEmailsHandler,
+    ProgressEmailsSweepHandler,
     { provide: TAX_CALCULATOR, useClass: RateTableTaxCalculator },
   ],
   // CommentsService is also the partner's way into an order's comments (PartnersModule), so Orders never depends on Partners.

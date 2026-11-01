@@ -57,11 +57,14 @@ const evidenceSchema = z
   .strictObject({ min_photos: z.number().int().min(0).max(20), comment_required: z.boolean() })
   .default({ min_photos: 0, comment_required: false });
 
-/** Hidden from customers, or shown under a customer-facing name (D19). */
+/**
+ * Hidden from customers, or shown under a customer-facing name (D19). A shown step may email the
+ * customer once it is done (Workflow 2 spec, goal 15); left out, it doesn't. A hidden one never does.
+ */
 const customerSchema = z
   .discriminatedUnion('visible', [
     z.strictObject({ visible: z.literal(false) }),
-    z.strictObject({ visible: z.literal(true), name: labelSchema }),
+    z.strictObject({ visible: z.literal(true), name: labelSchema, email: z.boolean().optional() }),
   ])
   .default({ visible: false });
 

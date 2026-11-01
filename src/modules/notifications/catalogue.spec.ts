@@ -21,6 +21,7 @@ describe('notification catalogue', () => {
       'order.delivered',
       'order.partner_lost',
       'order.placed',
+      'order.progress',
       'order.received',
       'order.shipped',
       'order.unpaid_cancelled',
@@ -67,11 +68,14 @@ describe('notification catalogue', () => {
   });
 
   it('tells the customer of its orders, and staff who read orders of each new one', () => {
-    for (const event of ['order.placed', 'order.shipped', 'order.delivered', 'order.cancelled'] as const) {
+    for (const event of ['order.placed', 'order.progress', 'order.shipped', 'order.delivered', 'order.cancelled'] as const) {
       expect([event, EVENTS[event].audience, EVENTS[event].subjectType]).toEqual([event, { kind: 'customer' }, 'order']);
     }
     expect(EVENTS['order.received'].audience).toEqual({ kind: 'permission', permission: 'order.read' });
     expect(Object.keys(variablesOf('order.shipped')).sort()).toEqual(['courier', 'number', 'tracking']);
+    // Workflow 2: the customer-facing step name only, never defects, photos or comments.
+    expect(Object.keys(variablesOf('order.progress')).sort()).toEqual(['number', 'step']);
+    expect(EVENTS['order.progress'].channels).toEqual(['email', 'feed']);
   });
 
   it("tells the customer's people when a subscription starts, about the customer itself", () => {
