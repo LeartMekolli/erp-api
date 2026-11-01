@@ -130,7 +130,7 @@ void runCli(async (app) => {
 
   const workflows = await seedWorkflows(prisma, demo.id);
   process.stdout.write(
-    `workflows for demo: created ${workflows.defects} defects, ${workflows.stepTypes} step types, ${workflows.workflows} workflows\n`,
+    `workflows for demo: created ${workflows.skills} skills, ${workflows.defects} defects, ${workflows.stepTypes} step types, ${workflows.workflows} workflows\n`,
   );
 
   const customers = await seedCustomers(prisma, demo.id);

@@ -52,9 +52,22 @@ describe('pricing demo seed', () => {
     ]);
     expect((await prisma.inTenant(tenant.id, (tx) => tx.pricingProfile.findFirstOrThrow())).quoteValidHours).toBe(4);
 
-    // 3 defects, final QC and packing, and one workflow per demo category.
-    expect(await seedWorkflows(prisma, tenant.id)).toEqual({ defects: 3, stepTypes: 2, workflows: 3 });
-    expect(await seedWorkflows(prisma, tenant.id)).toEqual({ defects: 0, stepTypes: 0, workflows: 0 });
+    // 2 skills, 3 defects, final QC and packing, and one workflow per demo category.
+    expect(await seedWorkflows(prisma, tenant.id)).toEqual({ skills: 2, defects: 3, stepTypes: 2, workflows: 3 });
+    expect(await seedWorkflows(prisma, tenant.id)).toEqual({ skills: 0, defects: 0, stepTypes: 0, workflows: 0 });
+    // Workflow 2: casting emails customers; final QC inspects 1 of every 10. Every demo step is a partner's,
+    // so none requires a skill.
+    const cast = await prisma.inTenant(tenant.id, (tx) =>
+      tx.workflowStep.findMany({ where: { version: { workflow: { key: 'cast_metal' } }, key: { in: ['casting', 'final_qc'] } }, orderBy: { position: 'asc' } }),
+    );
+    expect(cast.map((step) => [step.key, step.doneBy, step.config])).toEqual([
+      ['casting', 'partner', expect.objectContaining({ customer: { visible: true, name: 'Casting', email: true }, required_skill_id: null, sampling: null })],
+      ['final_qc', 'partner', expect.objectContaining({ required_skill_id: null, sampling: { inspect: 1, of_every: 10 } })],
+    ]);
+    expect((await prisma.inTenant(tenant.id, (tx) => tx.skill.findMany({ orderBy: { name: 'asc' } }))).map((skill) => skill.name)).toEqual([
+      'Casting',
+      'Final QC',
+    ]);
   });
 
   it('seeds pricing that quotes the demo products', async () => {

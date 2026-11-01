@@ -30,6 +30,13 @@ const surface = {
   ],
 };
 
+/**
+ * The demo's skill list (Workflow 2 spec, goal 9). Only steps done in-house may require one, and every
+ * demo step is a partner's, so none does yet: staff set it on a step they take in-house.
+ */
+const SKILLS = ['Casting', 'Final QC'];
+
+// Final QC inspects 1 of every 10 pieces of a batch (Workflow 2).
 const finalQc = {
   key: 'final_qc',
   name: 'Final QC',
@@ -40,6 +47,7 @@ const finalQc = {
   defects: [{ defect: 'scratch', outcome: 'rework', rework_to: 'polishing' }],
   pass: { min_photos: 1, comment_required: false },
   customer: { visible: true, name: 'Quality check' },
+  sampling: { inspect: 1, of_every: 10 },
 };
 
 /** Category key → workflow, its steps by step type key, with defects by key. */
@@ -59,7 +67,8 @@ const WORKFLOWS: Record<string, { key: string; name: string; steps: Record<strin
         ],
         rework_targets: ['casting'],
         expected_minutes: '45',
-        customer: { visible: true, name: 'Casting' },
+        // Customers on a plan with progress emails hear once their order is cast.
+        customer: { visible: true, name: 'Casting', email: true },
       },
       {
         key: 'polishing',
@@ -115,20 +124,29 @@ const WORKFLOWS: Record<string, { key: string; name: string; steps: Record<strin
 };
 
 export interface WorkflowSeedCounts {
+  skills: number;
   defects: number;
   stepTypes: number;
   workflows: number;
 }
 
 /**
- * Seeds the demo workflows into one workspace that already has the demo catalog and pricing, each
- * assigned to its category. Idempotent: defects, step types and workflows that exist (by key) are left
- * as they are, and a category that has a workflow keeps it.
+ * Seeds the demo skills and workflows into one workspace that already has the demo catalog and pricing,
+ * each workflow assigned to its category. Idempotent: skills (by name, in any case), defects, step types
+ * and workflows (by key) that exist are left as they are, and a category that has a workflow keeps it.
  */
 export async function seedWorkflows(prisma: PrismaService, tenantId: string): Promise<WorkflowSeedCounts> {
-  const created: WorkflowSeedCounts = { defects: 0, stepTypes: 0, workflows: 0 };
+  const created: WorkflowSeedCounts = { skills: 0, defects: 0, stepTypes: 0, workflows: 0 };
 
   await prisma.inTenant(tenantId, async (tx) => {
+    const skillIds = new Map<string, string>();
+    for (const name of SKILLS) {
+      const existing = await tx.skill.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
+      const row = existing ?? (await tx.skill.create({ data: { name } }));
+      if (!existing) created.skills++;
+      skillIds.set(name, row.id);
+    }
+
     const defectIds = new Map<string, string>();
     for (const defect of DEFECTS) {
       const existing = await tx.defect.findFirst({ where: { key: defect.key } });
@@ -150,10 +168,11 @@ export async function seedWorkflows(prisma: PrismaService, tenantId: string): Pr
       const category = await tx.category.findFirst({ where: { key: categoryKey } });
       if (!category || (await tx.workflow.findFirst({ where: { key: workflow.key } }))) continue;
 
-      // Keys become ids, then the steps are checked as the API would.
+      // Keys and names become ids, then the steps are checked as the API would.
       const { steps } = workflowStepsSchema.parse({
-        steps: workflow.steps.map((step) => ({
+        steps: workflow.steps.map(({ required_skill, ...step }) => ({
           ...step,
+          ...(required_skill ? { required_skill_id: skillIds.get(required_skill as string) } : {}),
           step_type_id: stepTypeIds.get(step.key as string),
           defects: ((step.defects ?? []) as { defect: string }[]).map(({ defect, ...rest }) => ({
             ...rest,
@@ -172,6 +191,8 @@ export async function seedWorkflows(prisma: PrismaService, tenantId: string): Pr
             pass: step.pass,
             fail: step.fail,
             customer: step.customer,
+            required_skill_id: step.required_skill_id,
+            sampling: step.sampling,
           };
           return {
             versionId: version.id,
