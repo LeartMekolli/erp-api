@@ -312,9 +312,12 @@ export class ReportsService {
       .sort((a, b) => b.median_hours - a.median_hours);
   }
 
-  /** QC moves (every pass or fail) recording a defect, of all QC moves in the week. */
+  /**
+   * QC moves (every inspected pass or fail) recording a defect, of all QC moves in the week. A pass left
+   * out of a sample never had a chance to find a defect (Workflow 2 spec).
+   */
   private async defectRate(tx: Tx, span: Span): Promise<number | null> {
-    const where = { createdAt: { gte: span.from, lt: span.to }, kind: { in: ['pass', 'fail'] } };
+    const where = { createdAt: { gte: span.from, lt: span.to }, kind: { in: ['pass', 'fail'] }, inspected: true };
     const moves = await tx.transition.count({ where });
     if (moves === 0) return null;
     return (await tx.transition.count({ where: { ...where, defectId: { not: null } } })) / moves;

@@ -98,6 +98,12 @@ export const workflowStepInputSchema = z.strictObject({
   done_by: z.enum(DONE_BY).optional(),
   /** The skill staff need to pass or fail pieces here (Workflow 2 spec, goal 11); in-house steps only. */
   required_skill_id: z.uuid().nullable().default(null),
+  /** Inspect only `inspect` of every `of_every` pieces of a group, drawn at random (goals 1–3); null: every piece. */
+  sampling: z
+    .strictObject({ inspect: z.number().int().min(1), of_every: z.number().int().min(1).max(100_000) })
+    .refine((rule) => rule.inspect <= rule.of_every, { path: ['inspect'], message: 'inspect must not be above of_every' })
+    .nullable()
+    .default(null),
 });
 export type WorkflowStepInput = z.infer<typeof workflowStepInputSchema>;
 
@@ -143,7 +149,8 @@ export const workflowStepsSchema = z
   });
 export type WorkflowStepsInput = z.infer<typeof workflowStepsSchema>;
 
-/** The `config` column of a workflow step. Versions made before Workflow 2 have no `required_skill_id`. */
+/** The `config` column of a workflow step. Versions made before Workflow 2 have no `required_skill_id` or `sampling`. */
 export type StepConfig = Pick<WorkflowStepInput, 'checklist' | 'defects' | 'rework_targets' | 'pass' | 'fail' | 'customer'> & {
   required_skill_id?: string | null;
+  sampling?: WorkflowStepInput['sampling'];
 };

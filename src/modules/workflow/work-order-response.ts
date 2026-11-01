@@ -22,8 +22,15 @@ export const workOrderResponseSchema = z.strictObject({
 });
 export type WorkOrderResponse = z.infer<typeof workOrderResponseSchema>;
 
+/**
+ * At a step that samples, whether the piece must be inspected in full: drawn, a replacement, back from
+ * rework, or sampling has ended for its group there. Null when the piece isn't at a sampling step.
+ */
+const toInspectSchema = z.boolean().nullable();
+
 /** A piece in a work list, for the staff member reading it. */
 export const workOrderListItemSchema = workOrderResponseSchema.extend({
+  to_inspect: toInspectSchema,
   /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
   may_work: z.boolean(),
 });
@@ -48,6 +55,8 @@ export const transitionResponseSchema = z.strictObject({
   actor: z.strictObject({ id: z.uuid(), name: z.string() }),
   /** The partner the move counts for: the job's partner, at one of its steps; null otherwise. */
   partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+  /** False for a pass of a piece left out of its step's sample: no checklist, no photos, not a QC result. */
+  inspected: z.boolean(),
   created_at: z.iso.datetime(),
 });
 export type TransitionResponse = z.infer<typeof transitionResponseSchema>;
@@ -59,6 +68,7 @@ export const transitionListItemSchema = transitionResponseSchema.extend({
 export type TransitionListItem = z.infer<typeof transitionListItemSchema>;
 
 export const workOrderDetailResponseSchema = workOrderResponseSchema.extend({
+  to_inspect: toInspectSchema,
   /** Every step the piece goes through, in order. */
   path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
   /** The instructions for the piece's current step. */

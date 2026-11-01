@@ -46,6 +46,8 @@ export const workflowStepResponseSchema = z.strictObject({
   done_by: z.enum(DONE_BY),
   /** The skill staff need to pass or fail pieces here; null when anyone who may move pieces may. */
   required_skill_id: z.uuid().nullable(),
+  /** Inspect only `inspect` of every `of_every` pieces of a group; null when every piece is inspected. */
+  sampling: z.strictObject({ inspect: z.number().int(), of_every: z.number().int() }).nullable(),
 });
 export type WorkflowStepResponse = z.infer<typeof workflowStepResponseSchema>;
 

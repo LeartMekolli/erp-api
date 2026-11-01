@@ -21,6 +21,7 @@ import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
 import { customerView, groupProgress } from './progress';
 import type { TransitionFacts } from './progress';
+import { ensureDraw, toInspect } from './sampling';
 import { barredStepIds } from './step-skills';
 import type { StepConfig } from './workflow-config';
 import { WORK_ORDER_STATUSES } from './work-order-response';
@@ -62,6 +63,8 @@ export const transitionQuerySchema = z.object({
   /** The design file the piece's group was started with (D21). */
   file_version_id: z.uuid().optional(),
   actor_user_id: z.uuid().optional(),
+  /** `false`: only passes of pieces left out of a step's sample. */
+  inspected: z.enum(['true', 'false']).optional(),
   /** From this moment on, inclusive. */
   from: z.iso.datetime({ offset: true }).optional(),
   /** Before this moment. */
@@ -308,6 +311,8 @@ export class WorkOrdersService {
         currentStepId: path[0],
       })),
     });
+    // When the first step samples, every piece has just reached it (Workflow 2 spec, goal 3).
+    await ensureDraw(tx, group, steps.find((step) => step.id === path[0])!);
     return this.groupView(tx, group.id);
   }
 
@@ -375,9 +380,11 @@ export class WorkOrdersService {
       });
       const data = rows.slice(0, query.limit);
       const last = data.at(-1);
+      const inspect = await toInspect(tx, data);
       return {
         data: data.map((row) => ({
           ...toWorkOrder(row),
+          to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
@@ -402,6 +409,7 @@ export class WorkOrdersService {
           ...(query.step_key ? { fromStep: { key: query.step_key } } : {}),
           ...(query.defect_key ? { defect: { key: query.defect_key } } : {}),
           ...(query.actor_user_id ? { actorUserId: query.actor_user_id } : {}),
+          ...(query.inspected ? { inspected: query.inspected === 'true' } : {}),
           ...(query.from || query.to
             ? { createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lt: new Date(query.to) } : {}) } }
             : {}),
@@ -438,6 +446,7 @@ export class WorkOrdersService {
       });
       return {
         ...toWorkOrder(row),
+        to_inspect: (await toInspect(tx, [row])).get(row.id) ?? null,
         path: path.map((stepId) => ({ key: byId.get(stepId)!.key, name: byId.get(stepId)!.name })),
         sop_file_version_id: row.currentStepId ? (byId.get(row.currentStepId)?.sopFileVersionId ?? null) : null,
         history: history.map(toTransition),
@@ -537,6 +546,7 @@ export function toTransition(row: TransitionRow): TransitionResponse {
     photo_file_version_ids: row.photos.map((photo) => photo.fileVersionId),
     actor: row.actor,
     partner: row.partner,
+    inspected: row.inspected,
     created_at: row.createdAt.toISOString(),
   };
 }

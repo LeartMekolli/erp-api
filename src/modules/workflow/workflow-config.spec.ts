@@ -44,6 +44,8 @@ describe('workflow step configuration', () => {
       sop_file_version_id: null,
       expected_minutes: null,
       customer: { visible: false },
+      required_skill_id: null,
+      sampling: null,
     });
     // Left out, `done_by` is decided against the current version when the steps are saved.
     expect(parsed.steps[0].done_by).toBeUndefined();

@@ -285,7 +285,8 @@ export class AttentionService {
     const { start, previousStart } = weekOf(context.now, context.timeZone);
     const span = (from: string) => ({ gte: startOfLocalDay(from, context.timeZone), lt: startOfLocalDay(addDays(from, 7), context.timeZone) });
     const rate = async (from: string) => {
-      const moves = await tx.transition.count({ where: { createdAt: span(from), kind: { in: ['pass', 'fail'] } } });
+      // As the dashboard's rate: passes left out of a sample are no QC result.
+      const moves = await tx.transition.count({ where: { createdAt: span(from), kind: { in: ['pass', 'fail'] }, inspected: true } });
       const defects = await tx.transition.count({ where: { createdAt: span(from), kind: { in: ['pass', 'fail'] }, defectId: { not: null } } });
       return { defects, rate: moves === 0 ? 0 : defects / moves };
     };

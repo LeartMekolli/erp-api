@@ -126,6 +126,7 @@ export class WorkflowsService {
             fail: step.fail,
             customer: step.customer,
             required_skill_id: step.required_skill_id,
+            sampling: step.sampling,
           };
           return {
             versionId: version.id,
@@ -330,5 +331,6 @@ function toStep(
     customer: config.customer,
     done_by: step.doneBy as DoneBy,
     required_skill_id: config.required_skill_id ?? null,
+    sampling: config.sampling ?? null,
   };
 }

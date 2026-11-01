@@ -8,6 +8,7 @@ import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
 import { keySchema } from '../pricing/decimals';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
+import { drawsAt, ensureDraw, historiesOf, mustInspect } from './sampling';
 import { assertSkills } from './step-skills';
 import { groupReady } from './progress';
 import { MAX_TEXT, MOVE_KINDS, checkMove, judge } from './qc-gate';
@@ -47,6 +48,11 @@ export const moveSchema = z
     override_reason: text.min(1).optional(),
     comment: text.optional(),
     photo_file_version_ids: z.array(z.uuid()).max(MAX_PHOTOS_PER_MOVE).refine(unique, 'a photo must not repeat').optional(),
+    /**
+     * False passes pieces left out of the step's sample without the checklist (Workflow 2 spec, goal 5): only
+     * a pass, with no answers and no photos, once every drawn piece of the group has passed the step.
+     */
+    inspected: z.boolean().default(true),
   })
   .superRefine((move, context) => {
     const refuse = (path: string, message: string) => context.addIssue({ code: 'custom', path: [path], message });
@@ -66,6 +72,17 @@ export const moveSchema = z
     for (const field of ['defect_id', 'outcome', 'rework_to', 'override_reason'] as const) {
       if (move.kind !== 'fail' && move[field] !== undefined) {
         refuse(field, 'only a fail takes this');
+      }
+    }
+    if (!move.inspected) {
+      if (move.kind !== 'pass') {
+        refuse('inspected', 'only a pass can leave pieces uninspected');
+      }
+      if ((move.answers ?? []).length > 0) {
+        refuse('answers', 'a pass without inspection takes no answers');
+      }
+      if ((move.photo_file_version_ids ?? []).length > 0) {
+        refuse('photo_file_version_ids', 'a pass without inspection takes no photos');
       }
     }
   });
@@ -209,7 +226,11 @@ export class MovesService {
       const creditFor = (groupId: string, stepId: string | null): string | null =>
         stepId !== null && stepById.get(stepId)?.doneBy === 'partner' ? (partnerOf.get(groupId) ?? null) : null;
 
-      const problems = checkMove(config ?? NO_CHECKS, body);
+      // An uninspected pass skips the QC gate, so it is allowed only where the sample says so.
+      if (!body.inspected) {
+        await this.checkUninspected(tx, here!, pieces.map((piece) => ({ ...piece, label: label(piece) })));
+      }
+      const problems = body.inspected ? checkMove(config ?? NO_CHECKS, body) : [];
       if (problems.length > 0) {
         throw new BadRequestException({ message: 'The move does not pass the QC gate', errors: problems });
       }
@@ -244,7 +265,20 @@ export class MovesService {
       const credited = pieces.map((piece, index) =>
         creditFor(piece.groupId, piece.currentStepId ?? (landings[index] as Landing).stepId),
       );
-      await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[], credited);
+      const written = await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[], credited);
+
+      // Any fail at a sampling step ends sampling there for the pieces' groups (goal 6), by the first such fail.
+      if (body.kind === 'fail' && config?.sampling) {
+        for (const groupId of groupIds) {
+          const first = written.find((transition) => byId.get(transition.workOrderId)!.groupId === groupId);
+          if (first) {
+            await tx.sampleDraw.updateMany({
+              where: { groupId, stepId: here!.id, endedAt: null },
+              data: { endedAt: new Date(), endedByTransitionId: first.id },
+            });
+          }
+        }
+      }
 
       // A scrapped piece is replaced at once, under its number, at the first step of the same path.
       const scrapped = pieces.filter((_, index) => (landings[index] as Landing).status === 'scrapped');
@@ -281,6 +315,19 @@ export class MovesService {
           where: { id: { in: cancelled.map((replacement) => replacement.id) } },
           data: { status: 'cancelled', currentStepId: null },
         });
+      }
+
+      // The first piece of a group to land on a sampling step draws the group's sample there (goal 3);
+      // a scrapped piece's replacement lands on the first step of the path.
+      const arrivals = new Map<string, { group: (typeof pieces)[number]['group']; stepId: string }>();
+      pieces.forEach((piece, index) => {
+        const stepIds = [(landings[index] as Landing).stepId, scrapped.includes(piece) ? pathOf(piece)[0] : null];
+        for (const stepId of stepIds) {
+          if (stepId) arrivals.set(`${piece.groupId}:${stepId}`, { group: piece.group, stepId });
+        }
+      });
+      for (const { group, stepId } of arrivals.values()) {
+        await ensureDraw(tx, group, stepById.get(stepId)!);
       }
 
       const moved = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: pieceInclude });
@@ -433,7 +480,7 @@ export class MovesService {
     pieces: { id: string; status: string; currentStepId: string | null }[],
     landings: Landing[],
     partnerIds: (string | null)[],
-  ): Promise<void> {
+  ): Promise<{ id: string; workOrderId: string }[]> {
     const comment = body.comment && body.comment.length > 0 ? body.comment : null;
     const transitions = pieces.map((piece, index) => ({
       id: newId(),
@@ -449,6 +496,7 @@ export class MovesService {
       comment,
       actorUserId,
       partnerId: partnerIds[index],
+      inspected: body.inspected,
     }));
     await tx.transition.createMany({ data: transitions });
 
@@ -480,5 +528,60 @@ export class MovesService {
       const [status, stepId] = key.split(':');
       await tx.workOrder.updateMany({ where: { id: { in: ids } }, data: { status, currentStepId: stepId || null } });
     }
+    return transitions;
+  }
+
+  /**
+   * A pass without inspection (goals 5–7): refused with 409 when the step doesn't sample, when a piece must
+   * be inspected in full (drawn, a replacement, back from rework, or the draw has ended), or while a drawn
+   * piece of its group hasn't passed the step yet.
+   */
+  private async checkUninspected(
+    tx: Prisma.TransactionClient,
+    step: { id: string; key: string; config: Prisma.JsonValue },
+    pieces: { id: string; groupId: string; replacesId: string | null; label: string }[],
+  ): Promise<void> {
+    if (!(step.config as StepConfig).sampling) {
+      throw new ConflictException({
+        message: `${step.key} inspects every piece`,
+        errors: [{ path: 'inspected', message: `${step.key} doesn't sample, so every piece is inspected` }],
+      });
+    }
+    const groupIds = [...new Set(pieces.map((piece) => piece.groupId))];
+    const draws = await drawsAt(tx, step.id, groupIds);
+    const histories = await historiesOf(tx, pieces.map((piece) => piece.id));
+    const inspect: MoveProblem[] = [];
+    pieces.forEach((piece, index) => {
+      const draw = draws.get(piece.groupId) ?? null;
+      if (!draw || mustInspect({ ...piece, history: histories.get(piece.id) ?? [] }, draw)) {
+        inspect.push({ path: `work_order_ids.${index}`, message: `${piece.label} must be inspected in full` });
+      }
+    });
+    if (inspect.length > 0) {
+      throw new ConflictException({ message: 'Some pieces must be inspected in full', errors: inspect });
+    }
+
+    // Every live drawn piece of each group must have passed the step, its replacement in its place.
+    const drawnIds = [...draws.values()].flatMap((draw) => [...draw.drawn]);
+    const passed = new Set(
+      (
+        await tx.transition.findMany({
+          where: { workOrderId: { in: drawnIds }, fromStepId: step.id, kind: 'pass' },
+          select: { workOrderId: true },
+        })
+      ).map((row) => row.workOrderId),
+    );
+    const waiting: MoveProblem[] = [];
+    pieces.forEach((piece, index) => {
+      const draw = draws.get(piece.groupId)!;
+      if ([...draw.drawn].some((id) => !passed.has(id))) {
+        waiting.push({ path: `work_order_ids.${index}`, message: `${piece.label}: ${WAITING_FOR_SAMPLE}` });
+      }
+    });
+    if (waiting.length > 0) {
+      throw new ConflictException({ message: WAITING_FOR_SAMPLE, errors: waiting });
+    }
   }
 }
+
+export const WAITING_FOR_SAMPLE = 'Waiting for the sample to pass';
