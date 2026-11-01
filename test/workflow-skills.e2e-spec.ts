@@ -8,6 +8,7 @@ import { newId } from '../src/common/ids/uuid';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { localDate } from '../src/modules/orders/dates';
 import { moveResponseSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { workflowVersionResponseSchema } from '../src/modules/workflow/workflow-response';
 import { expectDocumented } from './documented';
@@ -268,7 +269,24 @@ describe('workflow: a step requires a skill', () => {
     expect(await list(tenant.member, '&workable=true&step_key=stone_setting')).toHaveLength(2);
     await tenant.owner.put(`/users/${tenant.memberId}/skills`, { skills: [] }).expect(200);
     expect(await list(tenant.member, '&workable=true&step_key=stone_setting')).toEqual([]);
-    expect(await list(tenant.member, '&workable=false')).toHaveLength(4);
+    // Only `true` filters; anything else is refused rather than ignored.
+    await tenant.member.get(`/workflow/work-orders?workable=false`).expect(400);
     await tenant.member.get(`/workflow/work-orders?workable=yes`).expect(400);
+  });
+
+  it("reads a skill's last day in the workspace's time zone (review fix, Review Focus 5)", async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant);
+    await toSetting(tenant, pieces);
+    const setTimezone = (timezone: string) =>
+      prisma.inTenant(tenant.id, (tx) => tx.tenant.update({ where: { id: tenant.id }, data: { timezone } }));
+
+    // Today in Pago Pago (UTC−11), which is always before today in Kiritimati (UTC+14).
+    await setTimezone('Pacific/Pago_Pago');
+    await giveSkill(tenant, localDate(new Date(), 'Pacific/Pago_Pago'));
+    await pass(tenant.member, pieces.slice(0, 1), 'stone_setting').expect(200);
+
+    await setTimezone('Pacific/Kiritimati');
+    await pass(tenant.member, pieces.slice(1, 2), 'stone_setting').expect(403);
   });
 });

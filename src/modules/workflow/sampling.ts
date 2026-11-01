@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
 import { newId } from '../../common/ids/uuid';
-import type { Prisma } from '../../generated/prisma/client';
+import { Prisma } from '../../generated/prisma/client';
 import { inRework } from './progress';
 import type { TransitionFacts } from './progress';
 import type { StepConfig } from './workflow-config';
@@ -93,6 +93,21 @@ export interface DrawState {
   id: string;
   ended: boolean;
   drawn: ReadonlySet<string>;
+}
+
+/**
+ * Locks these groups' draws at a step until the transaction ends. An uninspected pass takes it before reading
+ * the draws, so it waits for a fail at the step that is ending one (its update holds the same row lock) and
+ * then reads the draw as ended.
+ */
+export async function lockDraws(tx: Prisma.TransactionClient, stepId: string, groupIds: string[]): Promise<void> {
+  if (groupIds.length === 0) {
+    return;
+  }
+  await tx.$queryRaw`
+    SELECT id FROM sample_draw
+    WHERE step_id = ${stepId}::uuid AND group_id IN (${Prisma.join(groupIds.map((id) => Prisma.sql`${id}::uuid`))})
+    ORDER BY id FOR UPDATE`;
 }
 
 /** The draws of these groups at a sampling step, by group. A group without one yet has none in the map. */

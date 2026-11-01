@@ -69,7 +69,8 @@ export class SkillsController {
   @ApiDoc({
     summary: 'Rename a skill, or archive or restore it.',
     description:
-      'An archived skill can no longer be given or required, and staff who hold it count as not holding it. ' +
+      'An archived skill can no longer be given or required, and staff who hold it count as not holding it, ' +
+      'so a step that requires it is open only to the owner until it is restored or the step requires another. ' +
       'Names are unique per workspace regardless of case (409).',
     body: updateSchema,
     response: skillResponseSchema,

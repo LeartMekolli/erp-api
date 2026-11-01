@@ -115,6 +115,10 @@ export class WorkOrdersController {
       `\`override_reason\`. A correction puts the pieces at \`to_step\` of their path, reopening finished ones, and ` +
       `needs a comment. At a step that requires a skill, a pass or fail needs that skill, and so does a correction ` +
       `of a piece standing there; without it the move is a 403 naming the skill (the owner always may). ` +
+      `At a step that samples, a pass with \`inspected: false\` leaves the pieces uninspected: no answers, no ` +
+      `photos, no QC gate. It is a 409 while a drawn piece hasn't passed (\`Waiting for the sample to pass\`) and ` +
+      `for a piece that must be inspected in full: a drawn piece, a replacement, one back from rework, or any ` +
+      `piece once a fail has ended the sample. ` +
       `Pieces of an assembly can't leave its first step until every part is ready: that move is a ` +
       `409. Gate problems are a 400 listing each one. At most ${MAX_PIECES_PER_MOVE} pieces and ` +
       `${MAX_PHOTOS_PER_MOVE} photos per move.`,

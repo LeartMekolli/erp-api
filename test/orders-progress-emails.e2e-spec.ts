@@ -8,6 +8,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { JobsService } from '../src/jobs/jobs.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { resolveAudience } from '../src/modules/notifications/audience';
+import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { ProgressEmailsSweepHandler } from '../src/modules/orders/progress-emails.handler';
 import { ProgressEmailsService } from '../src/modules/orders/progress-emails.service';
 import { SettingsService } from '../src/modules/settings/settings.service';
@@ -43,6 +44,7 @@ describe('orders: progress emails', () => {
   let tokens: AccessTokenService;
   let settings: SettingsService;
   let progress: ProgressEmailsService;
+  let notifications: NotificationsService;
   let sweep: ProgressEmailsSweepHandler;
   let enqueue: jest.SpyInstance;
   const createdTenants: string[] = [];
@@ -199,6 +201,7 @@ describe('orders: progress emails', () => {
     tokens = moduleRef.get(AccessTokenService);
     settings = moduleRef.get(SettingsService);
     progress = moduleRef.get(ProgressEmailsService);
+    notifications = moduleRef.get(NotificationsService);
     sweep = moduleRef.get(ProgressEmailsSweepHandler);
     enqueue = jest.spyOn(moduleRef.get(JobsService), 'enqueue');
   });
@@ -343,5 +346,55 @@ describe('orders: progress emails', () => {
     expect((version.body as { steps: { key: string; customer: object }[] }).steps.find((step) => step.key === 'wax_casting')).toMatchObject({
       customer: { visible: true, name: 'Casting', email: false },
     });
+  });
+
+  it('records nothing when its notification cannot be written, and sends it on the next run (review fix)', async () => {
+    const tenant = await freshTenant();
+    const order = await placeOrder(tenant);
+    await toCastRings(tenant, order);
+    await toCastPendant(tenant, order);
+
+    const store = jest.spyOn(notifications, 'store').mockRejectedValueOnce(new Error('disk full'));
+    try {
+      await expect(sendDue(tenant, order)).rejects.toThrow('disk full');
+      expect(await recorded(tenant, order.id)).toEqual([]);
+      expect(await raised(tenant, order.id)).toEqual([]);
+
+      await expect(sendDue(tenant, order)).resolves.toBe(1);
+      expect(await raised(tenant, order.id)).toEqual([{ number: String(order.number), step: 'Casting' }]);
+    } finally {
+      store.mockRestore();
+    }
+  });
+
+  it('leaves the notification pending for its sweeper when dispatch cannot be queued (review fix)', async () => {
+    const tenant = await freshTenant();
+    const order = await placeOrder(tenant);
+    await toCastRings(tenant, order);
+    await toCastPendant(tenant, order);
+
+    enqueue.mockImplementation((name: string) =>
+      name === 'notification.dispatch' ? Promise.reject(new Error('Redis is down')) : Promise.resolve(undefined),
+    );
+    await expect(sendDue(tenant, order)).resolves.toBe(1);
+    const rows = await prisma.inTenant(tenant.id, (tx) =>
+      tx.notification.findMany({ where: { eventKey: 'order.progress', subjectType: 'order', subjectId: order.id }, select: { status: true } }),
+    );
+    expect(rows).toEqual([{ status: 'pending' }]);
+    expect(await recorded(tenant, order.id)).toEqual(['Casting']);
+  });
+
+  it('counts a piece corrected past the emailed step (review fix)', async () => {
+    const tenant = await freshTenant();
+    const order = await placeOrder(tenant);
+    await toCastRings(tenant, order);
+
+    // The pendant is put forward past casting by a correction, so it never passes casting itself.
+    await pass(tenant, order.lines[1]!.group_id, 'print_pattern', 'casting_tree');
+    const [pendant] = await piecesOf(tenant, order.lines[1]!.group_id);
+    await move(tenant, { work_order_ids: [pendant!.id], kind: 'correction', to_step: 'polishing', comment: 'Cast in the last batch' });
+
+    await expect(sendDue(tenant, order)).resolves.toBe(1);
+    expect(await raised(tenant, order.id)).toEqual([{ number: String(order.number), step: 'Casting' }]);
   });
 });

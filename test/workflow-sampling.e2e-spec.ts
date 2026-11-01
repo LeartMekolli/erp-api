@@ -378,4 +378,48 @@ describe('workflow: a step inspects a random sample', () => {
     const rate = (dashboard.body as { current: { production: { defect_rate: number } } }).current.production.defect_rate;
     expect(rate).toBeCloseTo(1 / 43, 6);
   });
+
+  it('makes an uninspected pass wait for a fail at the same step (review fix, Review Focus 4)', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant);
+    await toInspection(tenant, pieces);
+    const now = await reread(tenant, pieces);
+    const [sample, rest] = [drawn(now), undrawn(now)];
+    await inspect(tenant, sample).expect(200);
+    const samplePass = await prisma.inTenant(tenant.id, (tx) =>
+      tx.transition.findFirstOrThrow({ where: { workOrderId: sample[0]!.id, kind: 'pass' }, orderBy: { createdAt: 'desc' } }),
+    );
+
+    // A fail at inspection that has ended the draw but not yet committed, as a concurrent move would.
+    let answered: Promise<request.Response> | undefined;
+    await prisma.inTenant(tenant.id, async (tx) => {
+      await tx.sampleDraw.updateMany({ where: { groupId: pieces[0]!.group_id }, data: { endedAt: new Date(), endedByTransitionId: samplePass.id } });
+      // Supertest sends nothing until `then`.
+      answered = passUninspected(tenant, rest).then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+
+    expect((await answered!).status).toBe(409);
+    const uninspected = await prisma.inTenant(tenant.id, (tx) =>
+      tx.transition.count({ where: { workOrder: { groupId: pieces[0]!.group_id }, inspected: false } }),
+    );
+    expect(uninspected).toBe(0);
+  });
+
+  it('draws once when two moves bring the first pieces to the step together (review fix)', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant);
+    for (const step of ['print_pattern', 'casting_tree', 'casting']) {
+      await pass(tenant, pieces, step).expect(200);
+    }
+
+    const polish = (half: Piece[]) => pass(tenant, half, 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).then((response) => response);
+    const moved = await Promise.all([polish(pieces.slice(0, 5)), polish(pieces.slice(5))]);
+    expect(moved.map((response) => response.status)).toEqual([200, 200]);
+
+    const made = await draws(tenant);
+    expect(made).toHaveLength(1);
+    expect(made[0]!.pieces).toHaveLength(2);
+    expect(drawn(await reread(tenant, pieces))).toHaveLength(2);
+  });
 });

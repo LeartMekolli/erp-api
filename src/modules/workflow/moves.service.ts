@@ -9,7 +9,7 @@ import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
 import { keySchema } from '../pricing/decimals';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
-import { drawsAt, ensureDraw, historiesOf, mustInspect } from './sampling';
+import { drawsAt, ensureDraw, historiesOf, lockDraws, mustInspect } from './sampling';
 import { assertSkills } from './step-skills';
 import { groupReady } from './progress';
 import { MAX_TEXT, MOVE_KINDS, checkMove, judge } from './qc-gate';
@@ -144,8 +144,10 @@ export class MovesService {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const ids = body.work_order_ids;
       // In id order, so two moves sharing pieces can't deadlock; the second sees where the first left them.
+      // NO KEY, so another move's sample drawing one of these pieces can still check its key at commit
+      // (a key share lock), instead of waiting on this move while this one waits on its draw.
       const locked = await tx.$queryRaw<{ id: string }[]>`
-        SELECT id FROM work_order WHERE id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR UPDATE`;
+        SELECT id FROM work_order WHERE id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR NO KEY UPDATE`;
       if (locked.length !== ids.length) {
         throw new NotFoundException('Work order not found');
       }
@@ -414,7 +416,7 @@ export class MovesService {
     await tx.$queryRaw`
       SELECT id FROM work_order
       WHERE replaces_id IN (${Prisma.join(scrapped.map((id) => Prisma.sql`${id}::uuid`))}) AND status = 'active'
-      ORDER BY id FOR UPDATE`;
+      ORDER BY id FOR NO KEY UPDATE`;
     const rows = await tx.workOrder.findMany({
       where: { replacesId: { in: scrapped }, status: 'active', transitions: { none: {} } },
       select: { id: true, replacesId: true, currentStepId: true },
@@ -570,6 +572,7 @@ export class MovesService {
       });
     }
     const groupIds = [...new Set(pieces.map((piece) => piece.groupId))];
+    await lockDraws(tx, step.id, groupIds);
     const draws = await drawsAt(tx, step.id, groupIds);
     const histories = await historiesOf(tx, pieces.map((piece) => piece.id));
     const inspect: MoveProblem[] = [];

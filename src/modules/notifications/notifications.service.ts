@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import type { Prisma } from '../../generated/prisma/client';
 import { JobsService } from '../../jobs/jobs.service';
 import { EVENTS, EventKey, EventVariables, variablesOf } from './catalogue';
 import { NotificationSecrets } from './notification-secrets';
@@ -31,6 +32,22 @@ export class NotificationsService {
     subject: { type: string; id: string },
     variables: EventVariables<E>,
   ): Promise<string> {
+    const notificationId = await this.prisma.inTenant(tenantId, (tx) => this.store(tx, event, subject, variables));
+    await this.queue(tenantId, notificationId);
+    return notificationId;
+  }
+
+  /**
+   * Stores the notification as pending inside the caller's transaction, so it
+   * commits or rolls back with the change it belongs to; call `queue` once
+   * that transaction has committed. Answers the notification's id.
+   */
+  async store<E extends EventKey>(
+    tx: Prisma.TransactionClient,
+    event: E,
+    subject: { type: string; id: string },
+    variables: EventVariables<E>,
+  ): Promise<string> {
     const values = variables as Record<string, string>;
     const plain: Record<string, string> = {};
     const secret: Record<string, string> = {};
@@ -43,30 +60,34 @@ export class NotificationsService {
       (spec.secret ? secret : plain)[name] = value;
     }
 
-    const notification = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.notification.create({
-        data: {
-          eventKey: event,
-          audience: EVENTS[event].audience.kind,
-          subjectType: subject.type,
-          subjectId: subject.id,
-          payload: plain,
-          secrets: Object.keys(secret).length > 0 ? this.secrets.seal(secret) : null,
-          status: 'pending',
-        },
-      }),
-    );
+    const notification = await tx.notification.create({
+      data: {
+        eventKey: event,
+        audience: EVENTS[event].audience.kind,
+        subjectType: subject.type,
+        subjectId: subject.id,
+        payload: plain,
+        secrets: Object.keys(secret).length > 0 ? this.secrets.seal(secret) : null,
+        status: 'pending',
+      },
+    });
+    return notification.id;
+  }
 
+  /**
+   * Queues a stored notification's dispatch. If queueing fails, the row stays
+   * pending and the claim sweeper queues it within a minute, so this never
+   * throws.
+   */
+  async queue(tenantId: string, notificationId: string): Promise<void> {
     try {
-      await this.jobs.enqueue('notification.dispatch', { tenantId, notificationId: notification.id });
+      await this.jobs.enqueue('notification.dispatch', { tenantId, notificationId });
     } catch (error) {
       this.logger.warn(
-        `Could not queue notification ${notification.id}; the sweeper will retry: ${
+        `Could not queue notification ${notificationId}; the sweeper will retry: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
-
-    return notification.id;
   }
 }

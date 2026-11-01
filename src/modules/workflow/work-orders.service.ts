@@ -48,7 +48,7 @@ export const workOrderQuerySchema = z.object({
   step_key: keySchema.optional(),
   status: z.enum(WORK_ORDER_STATUSES).optional(),
   /** Only the pieces the caller may pass or fail where they are (`may_work`). */
-  workable: z.enum(['true', 'false']).optional(),
+  workable: z.literal('true').optional(),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
 
