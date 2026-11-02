@@ -53,6 +53,16 @@ export const SETTING_KEYS = {
     onTime: z.number().int().min(0).max(10),
     rating: z.number().int().min(0).max(10),
   }),
+  // Claims after delivery (Orders 3 spec, goal 1): within how many days of delivery, and the reasons a
+  // claim may give. Unset: DEFAULT_CLAIM_SETTINGS in src/modules/claims/claim-settings.ts.
+  'orders.claims': z.object({
+    windowDays: z.number().int().min(1).max(365),
+    reasons: z
+      .array(z.object({ key: keySchema, name: z.string().trim().min(1).max(100) }))
+      .min(1)
+      .max(20)
+      .refine((reasons) => new Set(reasons.map((reason) => reason.key)).size === reasons.length, { message: 'reason keys must be unique' }),
+  }),
   // How a pay-first order is paid (Payments spec): within how many hours, and where the checkout
   // returns to. Unset: 24 hours, and the customer site's order page.
   'payments.collection': z.object({

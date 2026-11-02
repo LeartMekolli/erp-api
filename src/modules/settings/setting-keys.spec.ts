@@ -104,4 +104,21 @@ describe('setting keys', () => {
     }
     expect(() => parseSetting('customers.priority', { ...priority, weights: { ...priority.weights, payment: 11 } })).toThrow(ZodError);
   });
+
+  it('accepts a claim window of 1 to 365 days and up to 20 reasons with unique keys', () => {
+    const reasons = [
+      { key: 'defect', name: 'Defect' },
+      { key: 'wrong_size', name: 'Wrong size' },
+      { key: 'damaged_in_transit', name: 'Damaged in transit' },
+      { key: 'other', name: 'Other' },
+    ];
+    expect(parseSetting('orders.claims', { windowDays: 30, reasons })).toEqual({ windowDays: 30, reasons });
+    for (const windowDays of [0, 366, 1.5]) {
+      expect(() => parseSetting('orders.claims', { windowDays, reasons })).toThrow(ZodError);
+    }
+    const tooMany = Array.from({ length: 21 }, (_, index) => ({ key: `reason_${index}`, name: `Reason ${index}` }));
+    for (const bad of [[], tooMany, [...reasons, { key: 'defect', name: 'Another defect' }], [{ key: 'Not A Key', name: 'Bad' }]]) {
+      expect(() => parseSetting('orders.claims', { windowDays: 30, reasons: bad })).toThrow(ZodError);
+    }
+  });
 });

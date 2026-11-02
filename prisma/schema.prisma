@@ -129,6 +129,8 @@ model Tenant {
   samplePieces          SamplePiece[]
   orderProgressEmails   OrderProgressEmail[]
   customerPriorities    CustomerPriority[]
+  claims                Claim[]
+  creditNotes           CreditNote[]
 
   @@map("tenant")
 }
@@ -193,6 +195,8 @@ model User {
   skills                 UserSkill[] @relation("user_skill_holder")
   skillsGranted          UserSkill[] @relation("user_skill_granted_by")
   priorityOverrides      CustomerPriority[]
+  claimsOpened           Claim[]
+  claimLinesDecided      ClaimLine[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, id])
@@ -603,6 +607,7 @@ model FileVersion {
   transitionPhotos TransitionPhoto[]
   partnerAgreements Partner[]
   commentAttachments OrderCommentAttachment[]
+  claimPhotos        ClaimPhoto[]
 
   @@unique([fileId, number])
   @@unique([tenantId, id])
@@ -1351,7 +1356,7 @@ model WorkOrderGroup {
   id                String   @id @default(uuid(7)) @db.Uuid
   tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
   workflowVersionId String   @map("workflow_version_id") @db.Uuid
-  // quote | order_line
+  // quote | order_line | claim_line (a remake, Orders 3 spec, goal 3)
   sourceType        String   @map("source_type")
   sourceId          String   @map("source_id") @db.Uuid
   // The quote the pieces were priced by, whichever source started them (Orders plan, Task 3).
@@ -1385,6 +1390,7 @@ model WorkOrderGroup {
   parent          WorkOrderGroup?  @relation("GroupParts", fields: [tenantId, parentGroupId], references: [tenantId, id], onDelete: NoAction)
   children        WorkOrderGroup[] @relation("GroupParts")
   sampleDraws     SampleDraw[]
+  remakeOf        ClaimLine?
 
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
@@ -1588,6 +1594,7 @@ model Partner {
   ledgerLines      LedgerLine[]
   payoutAccount    PartnerPayoutAccount?
   payouts          Payout[]
+  claimLines       ClaimLine[]
 
   @@unique([tenantId, id])
   @@index([tenantId, status])
@@ -1900,6 +1907,8 @@ model Order {
   invoice        Invoice?
   refunds        Refund[]
   progressEmails OrderProgressEmail[]
+  claims         Claim[]
+  creditNotes    CreditNote[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
@@ -1921,6 +1930,136 @@ model OrderProgressEmail {
 
   @@id([tenantId, orderId, stepName])
   @@map("order_progress_email")
+}
+
+// A claim on a delivered order (Orders 3 spec, goals 1–7): some pieces of some lines are faulty,
+// damaged or wrong. Its state is derived from its return and its lines, never stored.
+model Claim {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId          String    @map("order_id") @db.Uuid
+  // Readable, counted per workspace from 1.
+  number           Int
+  // A key of the `orders.claims` reasons when opened; kept as it was if the reason is removed later.
+  reason           String
+  description      String
+  openedByUserId   String    @map("opened_by_user_id") @db.Uuid
+  // staff | customer
+  openedByKind     String    @map("opened_by_kind")
+  // Staff asked for the pieces back; the claim waits until they are received.
+  returnRequestedAt DateTime? @map("return_requested_at")
+  returnedAt       DateTime? @map("returned_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order    Order          @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  openedBy User           @relation(fields: [tenantId, openedByUserId], references: [tenantId, id], onDelete: NoAction)
+  lines    ClaimLine[]
+  photos   ClaimPhoto[]
+  shipment ClaimShipment?
+
+  @@unique([tenantId, number])
+  @@unique([tenantId, id])
+  @@index([tenantId, orderId])
+  @@map("claim")
+}
+
+// Some pieces of one order line, and staff's decision on them, stored once and never changed.
+model ClaimLine {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  claimId         String    @map("claim_id") @db.Uuid
+  orderLineId     String    @map("order_line_id") @db.Uuid
+  pieces          Int
+  // workshop | workspace | courier | customer
+  fault           String?
+  // remake | refund | refuse
+  outcome         String?
+  // Staff's own, never shown to the customer.
+  note            String?
+  // Shown to the customer; required for a refusal.
+  customerReason  String?   @map("customer_reason")
+  refundAmount    Decimal?  @map("refund_amount") @db.Decimal(18, 2)
+  // The workshop at fault.
+  partnerId       String?   @map("partner_id") @db.Uuid
+  remakeGroupId   String?   @map("remake_group_id") @db.Uuid
+  // What the workshop at fault is owed less for the original job; set once.
+  owedReduction   Decimal?  @map("owed_reduction") @db.Decimal(18, 2)
+  // What it was already paid and should not have been, for staff to settle by hand.
+  shortfall       Decimal?  @db.Decimal(18, 2)
+  decidedByUserId String?   @map("decided_by_user_id") @db.Uuid
+  decidedAt       DateTime? @map("decided_at")
+
+  claim       Claim           @relation(fields: [tenantId, claimId], references: [tenantId, id], onDelete: Cascade)
+  orderLine   OrderLine       @relation(fields: [tenantId, orderLineId], references: [tenantId, id], onDelete: NoAction)
+  partner     Partner?        @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
+  remakeGroup WorkOrderGroup? @relation(fields: [tenantId, remakeGroupId], references: [tenantId, id], onDelete: NoAction)
+  decidedBy   User?           @relation(fields: [tenantId, decidedByUserId], references: [tenantId, id], onDelete: NoAction)
+  creditNotes CreditNote[]
+
+  @@unique([claimId, orderLineId])
+  @@unique([tenantId, id])
+  @@unique([tenantId, remakeGroupId])
+  @@index([tenantId, orderLineId])
+  @@index([tenantId, partnerId, decidedAt])
+  @@map("claim_line")
+}
+
+model ClaimPhoto {
+  id            String @id @default(uuid(7)) @db.Uuid
+  tenantId      String @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  claimId       String @map("claim_id") @db.Uuid
+  fileVersionId String @map("file_version_id") @db.Uuid
+  position      Int
+
+  claim       Claim       @relation(fields: [tenantId, claimId], references: [tenantId, id], onDelete: Cascade)
+  fileVersion FileVersion @relation(fields: [tenantId, fileVersionId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([claimId, position])
+  @@unique([claimId, fileVersionId])
+  @@index([tenantId, fileVersionId])
+  @@map("claim_photo")
+}
+
+// The parcel carrying a claim's remakes; the original order stays delivered (Orders 3 spec, goal 3).
+model ClaimShipment {
+  claimId     String    @id @map("claim_id") @db.Uuid
+  tenantId    String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  courier     String?
+  tracking    String?
+  shippedAt   DateTime  @default(now()) @map("shipped_at")
+  deliveredAt DateTime? @map("delivered_at")
+
+  claim Claim @relation(fields: [tenantId, claimId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, claimId])
+  @@map("claim_shipment")
+}
+
+// Lowers what is still open on an order's invoice, at the payment provider (Orders 3 spec, goal 3):
+// the part of a claim's refund that was never paid.
+model CreditNote {
+  id                   String   @id @default(uuid(7)) @db.Uuid
+  tenantId             String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  orderId              String   @map("order_id") @db.Uuid
+  invoiceId            String   @map("invoice_id") @db.Uuid
+  claimLineId          String   @map("claim_line_id") @db.Uuid
+  amount               Decimal  @db.Decimal(18, 2)
+  providerCreditNoteId String?  @map("provider_credit_note_id")
+  // pending | issued | failed
+  status               String   @default("pending")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order     Order     @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  invoice   Invoice   @relation(fields: [tenantId, invoiceId], references: [tenantId, id], onDelete: NoAction)
+  claimLine ClaimLine @relation(fields: [tenantId, claimLineId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, providerCreditNoteId])
+  @@index([tenantId, invoiceId])
+  @@index([tenantId, claimLineId])
+  @@map("credit_note")
 }
 
 // A customer's priority (Customers 2 spec, goals 11–16): its score from its own history, computed each
@@ -2023,6 +2162,7 @@ model OrderLine {
   product Product         @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: NoAction)
   group   WorkOrderGroup? @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: NoAction)
   parts   OrderLinePart[]
+  claimLines ClaimLine[]
 
   @@unique([tenantId, quoteId])
   @@unique([tenantId, groupId])
@@ -2197,8 +2337,9 @@ model Invoice {
   overdueNotifiedAt DateTime? @map("overdue_notified_at")
   createdAt         DateTime  @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  order  Order  @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order       Order        @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  creditNotes CreditNote[]
 
   @@unique([tenantId, id])
   @@unique([tenantId, orderId])
@@ -2908,7 +3049,10 @@ model ReportExport {
   rows              Int?
   fileId            String?   @map("file_id") @db.Uuid
   error             String?
-  requestedByUserId String    @map("requested_by_user_id") @db.Uuid
+  // Null for a scheduled export, which nobody asked for (Orders 3 spec, goal 10).
+  requestedByUserId String?   @map("requested_by_user_id") @db.Uuid
+  // `<schedule kind>:<YYYY-MM>` for a scheduled export, so each is made once per month.
+  scheduleKey       String?   @map("schedule_key")
   createdAt         DateTime  @default(now()) @map("created_at")
   finishedAt        DateTime? @map("finished_at")
   // When a download link was first issued.
@@ -2918,9 +3062,10 @@ model ReportExport {
 
   tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   file        File?  @relation(fields: [tenantId, fileId], references: [tenantId, id], onDelete: NoAction)
-  requestedBy User   @relation(fields: [tenantId, requestedByUserId], references: [tenantId, id], onDelete: NoAction)
+  requestedBy User?  @relation(fields: [tenantId, requestedByUserId], references: [tenantId, id], onDelete: NoAction)
 
   @@unique([tenantId, id])
+  @@unique([tenantId, scheduleKey])
   @@index([tenantId, requestedByUserId, id])
   @@index([tenantId, status, expiresAt])
   @@map("report_export")

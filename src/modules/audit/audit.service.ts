@@ -29,6 +29,7 @@ export type AuditAction =
   | 'partner.member_changed'
   | 'partner.job'
   | 'order.changed'
+  | 'claim.changed'
   | 'payment.account.changed'
   | 'customer.payment_terms.changed'
   | 'order.paid_by_hand'

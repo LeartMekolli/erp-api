@@ -138,6 +138,8 @@ export class ExportsService {
       tenant: await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, defaultCurrency: true } }),
     }));
     if (!row || row.status !== 'pending') return;
+    const asker = row.requestedByUserId;
+    if (!asker) throw new Error(`Export ${exportId} has no requester`);
     const builder = this.builderOf(row.kind as ExportKind);
     if (!builder) throw new Error(`No builder for exports of kind ${row.kind}`);
 
@@ -175,11 +177,11 @@ export class ExportsService {
     await this.files.storeGenerated(tenantId, {
       // The export's id: a retried job finds the file it wrote.
       fileId: exportId,
-      owner: { type: 'user', id: row.requestedByUserId },
+      owner: { type: 'user', id: asker },
       name: `${row.kind}-${localDate(row.createdAt, ctx.timeZone)}.${extension}`,
       bytes,
       contentType: builder.format === 'csv' ? 'text/csv; charset=utf-8' : 'application/pdf',
-      createdByUserId: row.requestedByUserId,
+      createdByUserId: asker,
       kind: 'document',
     });
     const finishedAt = new Date();
@@ -189,7 +191,7 @@ export class ExportsService {
         data: { status: 'ready', rows, fileId: exportId, finishedAt, expiresAt: new Date(finishedAt.getTime() + KEEP_MS) },
       }),
     );
-    if (updated.count === 1) await this.tell(tenantId, 'report.export_ready', row.requestedByUserId, exportId, row.kind);
+    if (updated.count === 1) await this.tell(tenantId, 'report.export_ready', asker, exportId, row.kind);
   }
 
   /** After the job's last attempt, or a build past the row limit: failed, with a plain message, and the asker told. */
@@ -201,7 +203,7 @@ export class ExportsService {
       });
       return failed.count === 1 ? tx.reportExport.findUnique({ where: { id: exportId } }) : null;
     });
-    if (row) await this.tell(tenantId, 'report.export_failed', row.requestedByUserId, exportId, row.kind);
+    if (row?.requestedByUserId) await this.tell(tenantId, 'report.export_failed', row.requestedByUserId, exportId, row.kind);
   }
 
   /** The dead letter's message for the asker: never the job's raw error. */
@@ -229,7 +231,7 @@ export class ExportsService {
     for (const row of due) {
       if (row.fileId) {
         try {
-          await this.files.remove(tenantId, row.fileId, { type: 'user', id: row.requestedByUserId });
+          await this.files.remove(tenantId, row.fileId, row.requestedByUserId ? { type: 'user', id: row.requestedByUserId } : undefined);
         } catch (error) {
           // Already removed by an earlier run that stopped before marking it.
           if (!(error instanceof NotFoundException)) throw error;

@@ -11,6 +11,7 @@ import { JobsModule } from './jobs/jobs.module';
 import { AiModule } from './modules/ai/ai.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { ClaimsModule } from './modules/claims/claims.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { FilesModule } from './modules/files/files.module';
 import { HealthModule } from './modules/health/health.module';
@@ -58,6 +59,7 @@ import { StorageModule } from './storage/storage.module';
     PartnersModule,
     OrdersModule,
     PaymentsModule,
+    ClaimsModule,
     AiModule,
     ReportsModule,
   ],

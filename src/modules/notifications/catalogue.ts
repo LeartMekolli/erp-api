@@ -411,6 +411,23 @@ export const EVENTS = {
       },
     },
   },
+  // Staff hear of each new claim, from the portal or staff (Orders 3 spec, goal 7).
+  'claim.opened': {
+    audience: { kind: 'permission', permission: 'order.read' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '12' },
+      order_number: { sample: '1001' },
+      customer_name: { sample: 'Luna Jewels' },
+    },
+    defaults: {
+      en: {
+        subject: 'Claim {{ number }} on order {{ order_number }}',
+        body: '{{ customer_name }} has a claim on order {{ order_number }}: claim {{ number }} waits for a decision.',
+      },
+    },
+  },
   // A pay-first order waits for its payment (Payments spec, goal 13).
   'payment.requested': {
     audience: { kind: 'customer' },

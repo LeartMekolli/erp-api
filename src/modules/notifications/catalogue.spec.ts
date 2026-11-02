@@ -10,6 +10,7 @@ describe('notification catalogue', () => {
       'ai.limit_used',
       'auth.password_reset_requested',
       'campaign.budget_used',
+      'claim.opened',
       'credits.added',
       'customer.invited',
       'file.measured',
@@ -76,6 +77,12 @@ describe('notification catalogue', () => {
     // Workflow 2: the customer-facing step name only, never defects, photos or comments.
     expect(Object.keys(variablesOf('order.progress')).sort()).toEqual(['number', 'step']);
     expect(EVENTS['order.progress'].channels).toEqual(['email', 'feed']);
+  });
+
+  it('tells staff who read orders of each new claim, about its order (Orders 3 spec, goal 7)', () => {
+    expect(EVENTS['claim.opened'].audience).toEqual({ kind: 'permission', permission: 'order.read' });
+    expect(EVENTS['claim.opened'].subjectType).toBe('order');
+    expect(Object.keys(variablesOf('claim.opened')).sort()).toEqual(['customer_name', 'number', 'order_number']);
   });
 
   it("tells the customer's people when a subscription starts, about the customer itself", () => {
