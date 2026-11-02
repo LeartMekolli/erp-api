@@ -50,6 +50,17 @@ describe('customers demo seed', () => {
       password: PASSWORD,
     });
     expect(await seedCustomers(prisma, tenant.id)).toEqual({ counts: { customers: 0, people: 0 }, password: null });
+
+    // Customers 2: saved addresses, Luna's VAT number, and the priority bands.
+    const seeded = await prisma.inTenant(tenant.id, async (tx) => ({
+      customers: await tx.customer.findMany({ orderBy: { name: 'asc' }, select: { name: true, shippingAddress: true, billingAddress: true, vatNumber: true } }),
+      priority: await tx.tenantSetting.findFirst({ where: { key: 'customers.priority' } }),
+    }));
+    expect(seeded.customers).toEqual([
+      expect.objectContaining({ name: 'Luna Jewels', shippingAddress: expect.objectContaining({ city: 'Berlin' }), billingAddress: expect.objectContaining({ city: 'Wien' }), vatNumber: 'ATU12345678' }),
+      expect.objectContaining({ name: 'Mira Studio', shippingAddress: expect.objectContaining({ city: 'Milano' }), billingAddress: null, vatNumber: null }),
+    ]);
+    expect(seeded.priority?.value).toMatchObject({ bands: [expect.objectContaining({ key: 'gold' }), expect.objectContaining({ key: 'silver' })] });
   });
 
   it('makes up a password when none is given, and returns it only when someone was created', async () => {

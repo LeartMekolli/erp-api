@@ -120,6 +120,8 @@ const TIERS = [
 const GROUPS = [
   { key: 'retail', name: 'Retail', percent: '0' },
   { key: 'trade', name: 'Trade', percent: '-10' },
+  // 0 %: a group only to sort customers by, for lists, campaigns and the dashboard (Customers 2).
+  { key: 'jewellery_brands', name: 'Jewellery brands', percent: '0' },
 ];
 const SPEEDS = [
   { key: 'standard', name: 'Standard', surchargePercent: '0', workingDays: 10, isDefault: true },
