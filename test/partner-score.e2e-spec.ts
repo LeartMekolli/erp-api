@@ -340,9 +340,9 @@ describe('partners: ratings and score', () => {
     await rate(tenant.buyer, tenant.luna, jobs[1], { stars: 3, comment: 'A bit late' }).expect(201);
     await finishByCastco(tenant, jobs[4]);
 
-    // (3 × 59/60 + 2 × 1 + 2 × 5/6 + 3 × 0.75) / 10 × 5 = 4.43.
+    // (3 × 59/60 + 2 × 1 + 2 × 5/6 + 3 × 0.75 + 2 × 1 for no claims) / 12 × 5 = 4.53.
     score = await staffScore(tenant, tenant.castco);
-    expect(score).toMatchObject({ overall: 4.4, finished_jobs: 5 });
+    expect(score).toMatchObject({ overall: 4.5, finished_jobs: 5 });
     expect(score.parts.quality).toBeCloseTo(59 / 60);
     expect(score.parts.rating).toBeCloseTo(0.75);
     expect((await staffScore(tenant, tenant.metalworks)).overall).toBeNull();
@@ -373,7 +373,7 @@ describe('partners: ratings and score', () => {
     expectDocumented(eligiblePartnersResponseSchema, eligible.body);
     const rows = (eligible.body as { data: { partner: { name: string }; cost: string; score: Score }[] }).data;
     expect(rows.map((row) => [row.partner.name, row.score.overall])).toEqual([
-      ['CastCo Ltd', 4.4],
+      ['CastCo Ltd', 4.5],
       ['MetalWorks Ltd', null],
     ]);
     expect(new Prisma.Decimal(rows[0].cost).greaterThan(rows[1].cost)).toBe(true);
@@ -383,14 +383,17 @@ describe('partners: ratings and score', () => {
     const choices = await tenant.buyer.post(`/portal/customers/${tenant.luna}/quotes/partners`, tenant.body).expect(200);
     expectDocumented(partnerChoicesResponseSchema, choices.body);
     expect((choices.body as { data: { partner: { display_name: string }; score: number | null }[] }).data).toEqual([
-      expect.objectContaining({ partner: expect.objectContaining({ display_name: 'CastCo' }), score: 4.4 }),
+      expect.objectContaining({ partner: expect.objectContaining({ display_name: 'CastCo' }), score: 4.5 }),
     ]);
     for (const secret of ['quality', 'reliability', 'finished_jobs']) {
       expect({ secret, found: choices.text.includes(secret) }).toEqual({ secret, found: false });
     }
 
     // The workspace weighs only ratings: 0.75 × 5 = 3.75.
-    await tenant.staff.put('/settings/partners.scoreWeights', { quality: 0, scrap: 0, reliability: 0, onTime: 0, rating: 1 }).expect(200);
+    await tenant.staff.put('/settings/partners.scoreWeights', { quality: 0, scrap: 0, reliability: 0, onTime: 0, rating: 1, claims: 0 }).expect(200);
     expect((await staffScore(tenant, tenant.castco)).overall).toBe(3.8);
+    // Weights stored without claims count them at 2: (0.75 + 2 × 1) / 3 × 5 = 4.58.
+    await tenant.staff.put('/settings/partners.scoreWeights', { quality: 0, scrap: 0, reliability: 0, onTime: 0, rating: 1 }).expect(200);
+    expect((await staffScore(tenant, tenant.castco)).overall).toBe(4.6);
   });
 });

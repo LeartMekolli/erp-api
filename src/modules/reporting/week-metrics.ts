@@ -21,6 +21,9 @@ export const weekMetricsSchema = z.strictObject({
     on_time_rate: rate.nullable(),
     step_hours: z.array(z.strictObject({ step_type_id: z.uuid(), name: z.string(), median_hours: z.number().min(0) })),
     defect_rate: rate.nullable(),
+    /** Claims opened, and claimed lines decided a remake, in the week (Orders 3 spec, goal 11); 0 in a week stored before. */
+    claims: count.default(0),
+    remakes: count.default(0),
   }),
   customers: z.strictObject({
     new: count,
@@ -40,7 +43,7 @@ export function emptyWeek(currency: string): WeekMetrics {
   return {
     currency,
     orders: { placed: 0, revenue: '0.00', average_value: null },
-    production: { on_time_rate: null, step_hours: [], defect_rate: null },
+    production: { on_time_rate: null, step_hours: [], defect_rate: null, claims: 0, remakes: 0 },
     customers: { new: 0, top: [], ordering_less: [], slow_payers: [] },
     partners: { load: [], on_time: [] },
   };

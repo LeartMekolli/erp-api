@@ -21,7 +21,9 @@ export class ScoreService {
     const ids = [...new Set(partnerIds)];
     if (ids.length === 0) return new Map();
     const since = new Date(Date.now() - SCORE_DAYS * DAY_MS);
-    const weights = ((await this.settings.list(tx))['partners.scoreWeights'] as ScoreWeights | undefined) ?? DEFAULT_SCORE_WEIGHTS;
+    // A value stored before claims counted has no weight for them: theirs is the default.
+    const stored = (await this.settings.list(tx))['partners.scoreWeights'] as Partial<ScoreWeights> | undefined;
+    const weights: ScoreWeights = { ...DEFAULT_SCORE_WEIGHTS, ...stored };
 
     const moves = await tx.transition.findMany({
       where: { partnerId: { in: ids }, createdAt: { gte: since } },
@@ -47,6 +49,17 @@ export class ScoreService {
       _count: { _all: true },
     });
 
+    // Claims (Orders 3 spec, goal 6): pieces on lines decided at its fault, against the pieces of the jobs it accepted.
+    const claimed = await tx.claimLine.groupBy({
+      by: ['partnerId'],
+      where: { partnerId: { in: ids }, fault: 'workshop', decidedAt: { gte: since } },
+      _sum: { pieces: true },
+    });
+    const made = await tx.jobAssignment.findMany({
+      where: { partnerId: { in: ids }, status: 'accepted', createdAt: { gte: since } },
+      select: { partnerId: true, group: { select: { quantity: true } } },
+    });
+
     const { jobs, today } = await this.dueJobs(tx, ids, since);
 
     return new Map(
@@ -56,6 +69,8 @@ export class ScoreService {
           offers: offers.filter((offer) => offer.partnerId === partnerId),
           stars: ratings.filter((rating) => rating.partnerId === partnerId).map((rating) => rating.stars),
           jobs: jobs.get(partnerId) ?? [],
+          claimedPieces: claimed.find((row) => row.partnerId === partnerId)?._sum.pieces ?? 0,
+          madePieces: made.filter((row) => row.partnerId === partnerId).reduce((sum, row) => sum + row.group.quantity, 0),
           today,
         });
         const finishedJobs = finished.find((row) => row.partnerId === partnerId)?._count._all ?? 0;
@@ -69,6 +84,7 @@ export class ScoreService {
               reliability: parts.reliability,
               on_time: parts.onTime,
               rating: parts.rating,
+              claims: parts.claims,
             },
             finished_jobs: finishedJobs,
           },

@@ -16,7 +16,7 @@ const metrics: RangeMetrics = {
     by_product: [{ product_id: RING, name: 'Signet ring', quantity: 12, revenue: '400.00' }],
     by_customer_group: [{ customer_group: null, revenue: '450.00' }],
   },
-  production: { on_time_rate: 0.875, step_hours: [{ step_type_id: STEP, name: 'Casting', median_hours: 6.5 }], defect_rate: 0.1 },
+  production: { on_time_rate: 0.875, step_hours: [{ step_type_id: STEP, name: 'Casting', median_hours: 6.5 }], defect_rate: 0.1, claims: 2, remakes: 1 },
   customers: {
     new: 1,
     top: [{ id: LUNA, name: 'Luna Jewels', revenue: '300.00' }],
@@ -76,7 +76,7 @@ describe('dashboard pdf', () => {
     const empty: RangeMetrics = {
       ...metrics,
       orders: { placed: 0, revenue: '0.00', average_value: null, by_product: [], by_customer_group: [] },
-      production: { on_time_rate: null, step_hours: [], defect_rate: null },
+      production: { on_time_rate: null, step_hours: [], defect_rate: null, claims: 0, remakes: 0 },
       customers: { new: 0, top: [], ordering_less: [], slow_payers: [] },
       partners: { load: [], on_time: [] },
     };

@@ -4,7 +4,7 @@ import type { ScoreFacts, ScoreParts } from './score';
 type Move = ScoreFacts['moves'][number];
 const pass = (workOrderId: string, fromStepId: string): Move => ({ workOrderId, fromStepId, kind: 'pass', toStatus: 'active' });
 const fail = (workOrderId: string, fromStepId: string, toStatus = 'active'): Move => ({ workOrderId, fromStepId, kind: 'fail', toStatus });
-const none: ScoreFacts = { moves: [], offers: [], stars: [], jobs: [], today: '2026-10-27' };
+const none: ScoreFacts = { moves: [], offers: [], stars: [], jobs: [], claimedPieces: 0, madePieces: 0, today: '2026-10-27' };
 
 describe('the parts of a partner score', () => {
   it('rates quality as the share of pieces that passed a step first time', () => {
@@ -64,15 +64,22 @@ describe('the parts of a partner score', () => {
     expect(scoreParts({ ...none, jobs: [{ dueOn: '2026-10-26', finishedOn: null }] }).onTime).toBe(0);
   });
 
+  it('rates claims as one less the share of pieces made that were claimed at its fault (Orders 3 spec, goal 6)', () => {
+    expect(scoreParts({ ...none, claimedPieces: 2, madePieces: 10 }).claims).toBeCloseTo(0.8);
+    expect(scoreParts({ ...none, claimedPieces: 0, madePieces: 10 }).claims).toBe(1);
+    // Nothing made: nothing to go on, whatever was claimed.
+    expect(scoreParts({ ...none, claimedPieces: 2, madePieces: 0 }).claims).toBeNull();
+  });
+
   it('leaves out a part with nothing to go on', () => {
-    expect(scoreParts(none)).toEqual({ quality: null, scrap: null, reliability: null, onTime: null, rating: null });
+    expect(scoreParts(none)).toEqual({ quality: null, scrap: null, reliability: null, onTime: null, rating: null, claims: null });
     expect(scoreParts({ ...none, offers: [{ status: 'withdrawn' }, { status: 'offered' }] }).reliability).toBeNull();
     expect(scoreParts({ ...none, jobs: [{ dueOn: '2026-10-30', finishedOn: null }] }).onTime).toBeNull();
   });
 });
 
 describe('the overall score', () => {
-  const parts: ScoreParts = { quality: 0.9, scrap: 0.95, reliability: 0.75, onTime: null, rating: 0.75 };
+  const parts: ScoreParts = { quality: 0.9, scrap: 0.95, reliability: 0.75, onTime: null, rating: 0.75, claims: null };
 
   it('is the weighted mean of the parts it has, out of 5, to one decimal', () => {
     // (3 × 0.9 + 2 × 0.95 + 2 × 0.75 + 3 × 0.75) / 10 × 5 = 4.175; on time has no data, so its weight is left out.
@@ -83,18 +90,24 @@ describe('the overall score', () => {
 
   it('counts on time once it has data', () => {
     // (3 + 2 + 2 + 0.5 + 3) / 11 × 5 = 4.77, against 5 when on time has no data.
-    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: 0.5, rating: 1 }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(4.8);
-    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: null, rating: 1 }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(5);
+    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: 0.5, rating: 1, claims: null }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(4.8);
+    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: null, rating: 1, claims: null }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(5);
+  });
+
+  it('counts claims at weight 2 by default', () => {
+    expect(DEFAULT_SCORE_WEIGHTS.claims).toBe(2);
+    // (3 + 2 + 2 + 3 + 2 × 0.5) / 12 × 5 = 4.58, against 5 with no claims part.
+    expect(overallScore({ quality: 1, scrap: 1, reliability: 1, onTime: null, rating: 1, claims: 0.5 }, DEFAULT_SCORE_WEIGHTS, 5)).toBe(4.6);
   });
 
   it('follows the workspace weights, leaving out a part weighted 0', () => {
-    const ratingOnly = { quality: 0, scrap: 0, reliability: 0, onTime: 0, rating: 1 };
+    const ratingOnly = { quality: 0, scrap: 0, reliability: 0, onTime: 0, rating: 1, claims: 0 };
     expect(overallScore(parts, ratingOnly, 5)).toBe(3.8);
     expect(overallScore({ ...parts, rating: null }, ratingOnly, 5)).toBeNull();
   });
 
   it('is "new", null, with fewer than 5 finished jobs, or with no part to go on', () => {
     expect(overallScore(parts, DEFAULT_SCORE_WEIGHTS, 4)).toBeNull();
-    expect(overallScore({ quality: null, scrap: null, reliability: null, onTime: null, rating: null }, DEFAULT_SCORE_WEIGHTS, 9)).toBeNull();
+    expect(overallScore({ quality: null, scrap: null, reliability: null, onTime: null, rating: null, claims: null }, DEFAULT_SCORE_WEIGHTS, 9)).toBeNull();
   });
 });

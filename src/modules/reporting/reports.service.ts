@@ -246,6 +246,8 @@ export class ReportsService {
         on_time_rate: await this.onTime(tx, span, today),
         step_hours: await this.stepHours(tx, span),
         defect_rate: await this.defectRate(tx, span),
+        claims: await tx.claim.count({ where: { createdAt: { gte: span.from, lt: span.to } } }),
+        remakes: await tx.claimLine.count({ where: { outcome: 'remake', decidedAt: { gte: span.from, lt: span.to } } }),
       },
       customers: {
         new: await tx.customer.count({ where: { createdAt: { gte: span.from, lt: span.to } } }),

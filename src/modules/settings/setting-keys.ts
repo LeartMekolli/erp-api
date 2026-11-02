@@ -52,6 +52,8 @@ export const SETTING_KEYS = {
     reliability: z.number().int().min(0).max(10),
     onTime: z.number().int().min(0).max(10),
     rating: z.number().int().min(0).max(10),
+    // Pieces claimed at the partner's fault (Orders 3 spec, goal 6); 2 when left out.
+    claims: z.number().int().min(0).max(10).optional(),
   }),
   // Claims after delivery (Orders 3 spec, goal 1): within how many days of delivery, and the reasons a
   // claim may give. Unset: DEFAULT_CLAIM_SETTINGS in src/modules/claims/claim-settings.ts.

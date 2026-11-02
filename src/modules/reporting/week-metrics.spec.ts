@@ -1,4 +1,15 @@
-import { medianHours, onTimeRate, orderingLess, weekOf } from './week-metrics';
+import { emptyWeek, medianHours, onTimeRate, orderingLess, weekMetricsSchema, weekOf } from './week-metrics';
+
+describe('claims and remakes in a week (Orders 3 spec, goal 11)', () => {
+  it('start at 0 in an empty week', () => {
+    expect(emptyWeek('EUR').production).toMatchObject({ claims: 0, remakes: 0 });
+  });
+
+  it('read as 0 from a week stored before they were counted', () => {
+    const stored = { ...emptyWeek('EUR'), production: { on_time_rate: null, step_hours: [], defect_rate: 0.1 } };
+    expect(weekMetricsSchema.parse(stored).production).toEqual({ on_time_rate: null, step_hours: [], defect_rate: 0.1, claims: 0, remakes: 0 });
+  });
+});
 
 /** `days` calendar days before `date`. */
 function daysBefore(date: string, days: number): string {

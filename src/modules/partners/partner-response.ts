@@ -34,6 +34,8 @@ export const partnerScoreSchema = z.strictObject({
     on_time: scorePartSchema,
     /** Customers' stars, 1 to 5 as 0 to 1. */
     rating: scorePartSchema,
+    /** One less the share of the pieces it made that were claimed at its fault (Orders 3 spec, goal 6). */
+    claims: scorePartSchema,
   }),
   /** Jobs the partner has finished, ever. */
   finished_jobs: z.number().int(),

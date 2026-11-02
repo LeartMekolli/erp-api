@@ -14,10 +14,11 @@ export interface ScoreWeights {
   reliability: number;
   onTime: number;
   rating: number;
+  claims: number;
 }
 
-/** Used until the workspace sets `partners.scoreWeights`. */
-export const DEFAULT_SCORE_WEIGHTS: ScoreWeights = { quality: 3, scrap: 2, reliability: 2, onTime: 1, rating: 3 };
+/** Used until the workspace sets `partners.scoreWeights`; `claims` too when a stored value has none. */
+export const DEFAULT_SCORE_WEIGHTS: ScoreWeights = { quality: 3, scrap: 2, reliability: 2, onTime: 1, rating: 3, claims: 2 };
 
 /** Each part a share from 0 to 1; null when there is nothing to go on. */
 export interface ScoreParts {
@@ -26,6 +27,7 @@ export interface ScoreParts {
   reliability: number | null;
   onTime: number | null;
   rating: number | null;
+  claims: number | null;
 }
 
 /** What the parts are worked out from, over the score's period. */
@@ -38,6 +40,10 @@ export interface ScoreFacts {
   stars: number[];
   /** Its jobs that have a due date, with the day the last piece passed the payout step, or null while one hasn't. */
   jobs: { dueOn: string; finishedOn: string | null }[];
+  /** Pieces on claim lines decided at its fault (Orders 3 spec, goal 6). */
+  claimedPieces: number;
+  /** Pieces of the jobs it accepted. */
+  madePieces: number;
   /** Today in the workspace's timezone: a job past due is judged even if unfinished. */
   today: string;
 }
@@ -79,6 +85,7 @@ export function scoreParts(facts: ScoreFacts): ScoreParts {
       stars.reduce((sum, value) => sum + value, 0),
       stars.length,
     ),
+    claims: facts.madePieces === 0 ? null : Math.max(0, 1 - facts.claimedPieces / facts.madePieces),
   };
 }
 
