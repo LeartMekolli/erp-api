@@ -136,7 +136,9 @@ describe('customers: priority score', () => {
 
   it('scores customers from their history and puts them in bands', async () => {
     const w = await workspace();
-    // Before the first run, everyone is in the default band.
+    // Before the first run, everyone is in the default band. In a full run, another suite's worker may
+    // already have run the hourly job on this workspace, so its rows are cleared first.
+    await prisma.inTenant(w.id, (tx) => tx.customerPriority.deleteMany());
     expect(await priorityOf(w, w.sol)).toMatchObject({ score: 0, band: { key: 'standard', name: 'Standard' }, override: null, computed_at: null });
 
     const refreshed = await w.staff.post(`/customers/${w.sol}/priority/refresh`).expect(200);
@@ -235,6 +237,8 @@ describe('customers: priority score', () => {
     const computedAt = async () =>
       (await prisma.inTenant(w.id, (tx) => tx.customerPriority.findUniqueOrThrow({ where: { tenantId_customerId: { tenantId: w.id, customerId: w.sol } } }))).computedAt;
 
+    // As above: another suite's worker may have computed it already.
+    await prisma.inTenant(w.id, (tx) => tx.customerPriority.deleteMany());
     await expect(priority.refreshDue(w.id, new Date())).resolves.toBe(true);
     const first = await computedAt();
     await expect(priority.refreshDue(w.id, new Date())).resolves.toBe(false);
