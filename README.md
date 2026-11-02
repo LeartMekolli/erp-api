@@ -222,6 +222,26 @@ A walkthrough in Swagger, after the Partners walkthrough, on the demo data (`tes
 8. An assembly: as Ben, quote and order 2 `pendant_set` in brass. The order has one line with two parts. `POST /workflow/moves` `pass` at `assembly` for the line's pieces is a 409 until every piece of the pendant and the bail is finished; then assembly, final QC and packing pass and the order is `ready`.
 9. Due dates and comments: offer a new line to Northcast and, as Northcast, accept it. As Ben, `POST /portal/customers/{id}/orders/{id}/comments`; as the owner, `POST /orders/{id}/comments` twice on the line, one with `for_partner: true`. `GET .../jobs/{groupId}/comments` as Northcast lists only that one, never Luna. Once Northcast's pieces pass every step, `GET .../score` shows `on_time` at 1.
 
+### Claims and remakes
+
+A delivered order can be claimed within `orders.claims.windowDays` of delivery (30 when unset), by the customer's buyers and above (`POST /portal/customers/{id}/orders/{id}/claims`) or by staff (`POST /orders/{id}/claims`, `order.write`): a reason from `orders.claims.reasons`, a description, photos, and each line by its position with how many of its pieces; a line's pieces are claimed once. Staff may ask for the pieces back first (`POST /claims/{id}/return`, then `.../returned`). Each claimed line is then decided once (`POST /claims/{id}/lines/{lineId}/decision`): whose fault it was (the workshop, the workspace, the courier, the customer), a note only staff see, and one outcome:
+
+- **Refuse**, with a reason the customer sees.
+- **Refund** (`payment.refund`), at most the claimed pieces' share of the line with tax. What the customer paid is given back; the rest is a credit note on the order's open invoice at the payment provider, so a pay-later customer never pays first to be paid back.
+- **Remake**: the claimed pieces start again from the line's quote, free for the customer, as a new group linked to the claim line, due by a date counted from the decision with the order's speed. An assembly's line is never remade. At a workshop's fault, the remake is offered back to that workshop at cost 0, and it is never paid for its own remake; if it can't take it, the decision's `remake.unassigned_reasons` says why. Declined or not offered, staff offer the remake's group as any job, or make it in-house. The remakes ship as the claim's own parcel (`POST /claims/{id}/ship`, then `.../delivered`, `order.ship`); the original order stays delivered and its invoice untouched.
+
+A workshop at fault is owed less for the original job, never below 0: the claimed pieces' share of its cost for a refund or an in-house remake, the new job's cost for a remake another workshop takes. If the original job was paid out already, the claim line records the shortfall for staff to settle by hand. Pieces claimed at a workshop's fault lower the `claims` part of its score (weight `partners.scoreWeights.claims`, 2 when unset). Staff list claims by state, fault, workshop and customer (`GET /claims`); the customer follows its own in the portal, with the decision and the reason, never whose fault it was. Staff are told of each new claim; the customer of each decision and of the remakes shipping. The dashboard counts the claims and remakes of each week. `npm run seed` sets the demo's claim window and reasons to the defaults.
+
+A walkthrough in Swagger, after the Orders walkthrough, on the demo data (`test/orders-3a-slice.e2e-spec.ts` runs the same; it is the spec's "Done when" 1 and 2):
+
+1. As the owner: two delivered orders of Luna's made by Northcast (offer, accept, move every piece, ship, deliver). As Ben: `POST /portal/customers/{id}/files` a photo, then `POST /portal/customers/{id}/orders/{id}/claims` 2 pieces of the first as `defect`, with it.
+2. As the owner: `POST /claims/{id}/return`; Ben sees `awaiting_return`. `POST /claims/{id}/returned`.
+3. `POST /claims/{id}/lines/{lineId}/decision` `{ "fault": "workshop", "outcome": "remake" }`: `remake.group_id`, and `GET /partners/jobs/{groupId}` shows Northcast's offer at `0.00`. `GET /partners/{id}`: `parts.claims` below 1. Ben sees the decision, without the fault.
+4. As Northcast: decline it. As the owner: offer it to another workshop, which accepts at its cost; `GET /partners/{id}/owed`: Northcast is owed that much less for the original job.
+5. A claim on the second order decided `refund` at the workshop's fault with a part of the share: refunded, and Northcast owed the claimed pieces' share less.
+6. Brightline (paying later): an order shipped and so invoiced, delivered and unpaid. A claim decided `refund` at the courier's fault: no refund, but a credit note; `GET /orders/{id}` shows the invoice open with `credited`.
+7. Another claim of Ben's decided `refuse` at the customer's fault with a `customer_reason`: Ben sees the reason.
+
 ## Payments
 
 Customers pay through each workspace's own Stripe account; partners are paid through Stripe Connect Express accounts. Every movement of money is a journal in an append-only, double-entry ledger (`GET /payments/ledger`): its lines sum to zero, or the database refuses it, and a mistake is corrected with a reversal. A customer pays first (the default) or later (`PUT /customers/{id}/payment-terms`: days to pay and a credit limit). A pay-first order, or a pay-later one past its limit, waits for payment: its workshop's capacity is held, nothing is made, and the customer gets a Checkout link (`payments.collection.payWithinHours`, then it is cancelled). Paid, it starts as if placed then; staff can release a held order with a reason, or record a payment made outside Stripe (`POST /orders/{id}/paid-by-hand`). A pay-later order is invoiced through Stripe when it ships, due in its days to pay, and staff are told of an overdue one. Cancelling a paid order refunds what staff decide, suggested from the work partners are owed for (`GET /orders/{id}/refund-suggestion`); a customer cancelling gets everything back, and so does a payment arriving for an order already cancelled. A partner connects its payout account through a Stripe onboarding link; staff pay it what is due (owed less paid) in one transfer, never twice, and a refused or reversed transfer makes the jobs due again. Webhooks arrive at `/webhooks/payments/{tenantId}` and `/webhooks/payments/{tenantId}/connect`, each checked against its own signing secret, stored once and applied by the worker. `PAYMENT_PROVIDER=fake` (the default, and every test) never calls Stripe. `npm run seed` makes Luna Jewels pay first and adds Brightline paying later (30 days, 5,000.00); with the `DEMO_STRIPE_*` test keys it also sets the demo's payment account and gives Northcast Foundry a payout account to onboard.
@@ -332,7 +352,7 @@ A walkthrough in Swagger, on the demo data with real keys (`test/ai-tools-slice.
 
 ## Reporting
 
-Staff export data as files. `POST /reports/exports` with a `kind` and its `params` answers 202 with the export's id; a job builds the file, and the asker is told in the feed when it is ready or failed. `GET /reports/exports/{id}` shows its status, `POST /reports/exports/{id}/download` gives a short-lived link, and `GET /reports/exports` lists your own. Only the person who asked sees an export or downloads it, never through `/files` either; files are removed after 30 days, and the export's row stays as the log of who exported what, when, and when they first downloaded it.
+Staff export data as files. `POST /reports/exports` with a `kind` and its `params` answers 202 with the export's id; a job builds the file, and the asker is told in the feed when it is ready or failed. `GET /reports/exports/{id}` shows its status, `POST /reports/exports/{id}/download` gives a short-lived link, and `GET /reports/exports` lists your own and the scheduled ones you may read. Only the person who asked sees an export or downloads it, never through `/files` either (a scheduled one, anyone with `report.export` and its kind's permission; see "Scheduled reports"); files are removed after 30 days, and the export's row stays as the log of who exported what, when, and when they first downloaded it.
 
 Exporting needs `report.export` (owners have it; give it to other roles on purpose) and the permission of the screen the data comes from. The file is built from the permissions the asker held when asking: columns needing a permission they lacked are left out, not blanked (money columns need `payment.read`, partner columns `partner.read`).
 
@@ -343,6 +363,7 @@ Exporting needs `report.export` (owners have it; give it to other roles on purpo
 | `partners` | `status` | `partner.read` | partner: capabilities, open jobs, load, on-time rate over 90 days |
 | `accounting_invoices`, `accounting_payments`, `accounting_refunds`, `accounting_payouts` | `month` (`YYYY-MM`) | `payment.read` | record of the month; a payment carries its fee and net, a reversal is its own negative row |
 | `dashboard_pdf` | `from`, `to` (at most 366 days) | `report.read` | a PDF of the dashboard's numbers for those dates, with revenue per product |
+| `top_customers` | `from`, `to` (at most 366 days) | `payment.read` | customer who ordered in the range, by revenue: group, band, orders and revenue against the period of the same length before, claims and remakes |
 
 CSV files are UTF-8 with a BOM (so spreadsheet programs read accents right), comma separated, money with two places and its own currency column, dates as `YYYY-MM-DD` and times as ISO 8601, all in the workspace's time zone. A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, so a spreadsheet never runs it. An export holds at most 100,000 rows; a larger one fails, asking for a shorter period. The PDF is A4 tables in Noto Sans, which draws Latin, Greek and Cyrillic names (not Chinese, Japanese, Korean, Arabic or Hebrew); the font ships in `src/modules/reporting/exports/fonts/`, and the PDF reads nothing else from disk or the network.
 
@@ -353,6 +374,19 @@ A walkthrough in Swagger, on the demo data (`test/reports-slice.e2e-spec.ts` run
 3. `{ "kind": "dashboard_pdf", "params": { "from": "<90 days ago>", "to": "<today>" } }`: the dashboard's sections for the quarter, and revenue per product.
 4. As another owner: `GET /reports/exports/{id}` of the first export is a 404. `GET /reports/exports` as the first owner shows `downloaded_at`.
 5. As a member: any export is 403.
+
+### Scheduled reports
+
+Two exports are made every month for the month before, on or after the workspace's local 1st (`PUT /settings/reports.schedules`, both off when unset): `accounting`, the four `accounting_*` files, and `top_customers`. Each schedule is `enabled` or not, with up to 20 `recipientUserIds`. An hourly job makes each file once per month (its `schedule_key`, such as `accounting_invoices:2026-10`), with no asker and only the permissions its kind needs. Once all of a schedule's files for the month are ready, each recipient who is still active and holds `report.export` and the kind's permission is told once (`export.scheduled_ready`, naming the exports); a schedule with no recipient is still made. Anyone with `report.export` and the kind's permission lists, reads and downloads a scheduled export; nobody reaches its file through `/files`.
+
+The Accountant system role holds `payment.read`, `report.read` and `report.export`: it reads payments, the ledger and the dashboard, and downloads exports, and changes nothing. Every workspace has it. `npm run seed` gives the demo an accountant (`accountant@demo.example.test`, password printed once) and turns the `accounting` schedule on for them.
+
+A walkthrough in Swagger, on the demo data after the Claims walkthrough (`test/orders-3a-slice.e2e-spec.ts` runs the same, with the 1st brought forward; it is the spec's "Done when" 3):
+
+1. As the owner: `PUT /settings/reports.schedules` with `accounting` on for the accountant and `top_customers` on for yourself.
+2. On the 1st, within the hour the worker runs `reports.schedules`: the accountant is told in the feed that last month's accounting exports are ready. As the accountant: `GET /reports/exports` lists the four; download the invoices. `POST /orders/{id}/cancel` or any `PUT /settings/...` is 403.
+3. As the owner: the feed names the top-customers export; downloaded, it lists last month's customers by revenue, Luna first, with its claims and remakes.
+4. A staff member without `payment.read` on the recipients is never told, and `GET /reports/exports/{id}` of these is a 404 for them.
 
 ## API docs
 

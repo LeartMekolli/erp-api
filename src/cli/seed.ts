@@ -21,6 +21,7 @@ import { createPlatformAdmin } from './platform-admins';
 import { CliModule, runCli } from './run-cli';
 import { seedAi } from './seed-ai';
 import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
+import { seedClaims } from './seed-claims';
 import { seedCustomers } from './seed-customers';
 import { seedOrders } from './seed-orders';
 import { seedPartners } from './seed-partners';
@@ -67,7 +68,7 @@ class SeedModule {}
  * Idempotent: existing records are skipped, any other failure stops the run.
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
- * (`seed-orders.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
+ * (`seed-orders.ts`), its claim settings, an accountant and the accountant's monthly files (`seed-claims.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
  * and campaign (`seed-plans.ts`) and its AI limit, knowledge articles, AI plan switches and a brand
  * profile (`seed-ai.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
@@ -152,6 +153,15 @@ void runCli(async (app) => {
     `orders for demo: created ${orders.shippingMethods} shipping methods, ${orders.taxRates} tax rates` +
       (orders.calendar ? ', the business calendar' : '') +
       (orders.scheduling ? ', the job due dates' : '') +
+      '\n',
+  );
+
+  const claims = await seedClaims(prisma, demo.id);
+  process.stdout.write(
+    `claims for demo: ${claims.counts.claims ? 'set the claim window and reasons, ' : ''}` +
+      `created ${claims.counts.accountants} accountants` +
+      (claims.password ? ` with password ${claims.password} (accountant@demo.example.test)` : '') +
+      (claims.counts.schedules ? ", turned on the accountant's monthly files" : '') +
       '\n',
   );
 

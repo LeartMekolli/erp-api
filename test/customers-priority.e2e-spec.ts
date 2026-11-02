@@ -243,16 +243,22 @@ describe('customers: priority score', () => {
     expect(await ids('standard')).toEqual([w.sol, w.luna, w.mare, w.nova, vega].sort());
   });
 
+  // 20 000 rows take more than the default 5 s transaction and 20 s test on CI's database: the insert gets
+  // the refresh's own 60 s, and the test two minutes.
   it('scores a workspace of thousands of customers in one run (final review)', async () => {
     const w = await workspace();
     // Customers that never ordered, written straight in: each still gets its row.
-    await prisma.inTenant(w.id, (tx) => tx.customer.createMany({ data: Array.from({ length: 20_000 }, (_, index) => ({ name: `Bulk customer ${index}` })) }));
+    await prisma.inTenant(
+      w.id,
+      (tx) => tx.customer.createMany({ data: Array.from({ length: 20_000 }, (_, index) => ({ name: `Bulk customer ${index}` })) }),
+      { timeoutMs: 60_000 },
+    );
 
     await priority.refresh(w.id, new Date());
 
     expect(await prisma.inTenant(w.id, (tx) => tx.customerPriority.count())).toBe(20_004);
     expect(await priorityOf(w, w.sol)).toMatchObject({ score: 88, band: { key: 'gold' } });
-  });
+  }, 120_000);
 
   it('never shows the score or band to the customer', async () => {
     const w = await workspace();
