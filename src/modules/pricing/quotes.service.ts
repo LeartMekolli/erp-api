@@ -592,13 +592,16 @@ export class QuotesService {
    * What a saved quote's job costs with a partner (Partners spec, goal 8 and B1): its inputs priced
    * again at today's prices, with the partner's prices on the partner's steps, summing only those
    * steps. A step the partner hasn't priced, or anything else that can't be priced, is a refusal.
+   * `quantity`: the job's pieces when they aren't the quote's, as for a remake (Orders 3 spec, goal 4).
    */
   async costFor(
     tx: Prisma.TransactionClient,
     quoteId: string,
     partnerId: string,
+    quantity?: number,
   ): Promise<{ cost: Prisma.Decimal; refusals: [] } | { cost: null; refusals: QuoteRefusal[] }> {
     const quote = await this.find(tx, quoteId);
+    const pieces = quantity ?? quote.quantity;
     const product = await tx.product.findUniqueOrThrow({
       where: { id: quote.productId },
       select: { id: true, name: true, categoryId: true },
@@ -609,7 +612,7 @@ export class QuotesService {
       options: inputs.options,
       size: inputs.size ?? undefined,
       file_version_id: inputs.file_version_id ?? undefined,
-      quantity: quote.quantity,
+      quantity: pieces,
     };
     const result = await this.run(tx, quote.tenantId, product, request, {
       adjustments,
@@ -622,7 +625,7 @@ export class QuotesService {
     if (!result.accepted) {
       return { cost: null, refusals: result.reasons };
     }
-    return { cost: partnerCost(result.breakdown.steps, result.partnerStepKeys, quote.quantity), refusals: [] };
+    return { cost: partnerCost(result.breakdown.steps, result.partnerStepKeys, pieces), refusals: [] };
   }
 
   /**

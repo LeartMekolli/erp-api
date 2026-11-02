@@ -102,7 +102,8 @@ export type WorkOrderDetailResponse = z.infer<typeof workOrderDetailResponseSche
 export const groupResponseSchema = z.strictObject({
   id: z.uuid(),
   workflow: z.strictObject({ id: z.uuid(), name: z.string(), version: z.number().int() }),
-  source: z.strictObject({ type: z.enum(['quote', 'order_line']), id: z.uuid() }),
+  /** `claim_line`: a remake of claimed pieces (Orders 3 spec, goal 3). */
+  source: z.strictObject({ type: z.enum(['quote', 'order_line', 'claim_line']), id: z.uuid() }),
   product_id: z.uuid().nullable(),
   customer_id: z.uuid().nullable(),
   /** How many good pieces the group delivers. */

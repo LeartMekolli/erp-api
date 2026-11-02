@@ -200,7 +200,8 @@ export class EligibilityService {
         costed.set(partnerId, verdict);
         continue;
       }
-      const priced = await this.quotes.costFor(tx, job.quoteId, partnerId);
+      // Costed for the group's own pieces: a remake makes fewer than its quote priced.
+      const priced = await this.quotes.costFor(tx, job.quoteId, partnerId, job.group.quantity);
       costed.set(
         partnerId,
         priced.cost === null ? { ok: false, reasons: priced.refusals.map((refusal) => refusal.message) } : { ok: true, cost: priced.cost, left: verdict.left },

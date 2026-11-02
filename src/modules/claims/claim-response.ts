@@ -52,6 +52,12 @@ export const claimResponseSchema = z.strictObject({
 });
 export type ClaimResponse = z.infer<typeof claimResponseSchema>;
 
+/** A line decided: the claim, and for a remake its group and why the workshop at fault wasn't offered it. */
+export const claimDecisionResponseSchema = claimResponseSchema.extend({
+  remake: z.strictObject({ group_id: z.uuid(), unassigned_reasons: z.array(z.string()) }).nullable(),
+});
+export type ClaimDecisionResponse = z.infer<typeof claimDecisionResponseSchema>;
+
 /** A claim as its customer sees it: never whose fault staff found, nor their note. */
 export const customerClaimResponseSchema = claimResponseSchema.extend({
   lines: z.array(claimLineSchema.extend({ decision: decisionSchema.omit({ fault: true, note: true }).nullable() })),

@@ -446,6 +446,24 @@ export const EVENTS = {
       },
     },
   },
+  // The customer hears when the pieces made again ship, as the claim's own parcel (Orders 3 spec, goal 7).
+  'claim.remake_shipped': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '12' },
+      order_number: { sample: '1001' },
+      courier: { sample: 'DHL' },
+      tracking: { sample: 'JD014600006281234567' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your claim {{ number }}: the pieces made again have shipped',
+        body: 'The pieces made again for your claim {{ number }} on order {{ order_number }} are on their way.\n\nCourier: {{ courier }}\nTracking: {{ tracking }}',
+      },
+    },
+  },
   // A pay-first order waits for its payment (Payments spec, goal 13).
   'payment.requested': {
     audience: { kind: 'customer' },

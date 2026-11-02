@@ -72,13 +72,16 @@ export const transitionQuerySchema = z.object({
 });
 export type TransitionQuery = z.infer<typeof transitionQuerySchema>;
 
+/** What a group starts from: a quote, an order line, or a claimed line it remakes. */
+export type GroupSourceType = 'quote' | 'order_line' | 'claim_line';
+
 /** What a group of pieces starts from: a quote now, an order line once Orders exists. */
 export interface StartInput {
   workflowVersionId: string;
   quantity: number;
   /** The step types the source priced; null runs every step. */
   chainStepTypeIds: string[] | null;
-  source: { type: 'quote' | 'order_line'; id: string };
+  source: { type: GroupSourceType; id: string };
   /** The quote the pieces were priced by, whichever source started them; Partners reads it. */
   quoteId?: string | null;
   productId?: string | null;
@@ -95,10 +98,11 @@ type GroupRow = WorkOrderGroup & { workflowVersion: { number: number; workflow: 
  * Runs inside the transaction that starts a quote's group, once the group exists, so another module
  * can add to the start or refuse it by throwing, which creates nothing. What it returns runs after
  * commit. Partners uses it for a workshop the customer picked, so Workflow never depends on Partners.
+ * `remake`: the group remakes claimed pieces, so the quote's picked workshop and cost don't apply.
  */
 export type StartHook = (
   tx: Prisma.TransactionClient,
-  started: { groupId: string; quote: Quote; userId: string; tenantId: string },
+  started: { groupId: string; quote: Quote; userId: string; tenantId: string; remake: boolean },
 ) => Promise<(() => Promise<void>) | undefined>;
 
 /** A group whose pieces were cancelled, as its cancel hooks hear of it. */
@@ -218,28 +222,33 @@ export class WorkOrdersService {
    * Starts a quote's pieces inside the caller's transaction, for the quote itself or for an order line
    * priced by it (Orders plan, Task 3), and runs the start hooks, which may refuse by throwing. A quote
    * started on its own must still hold; an order checks its quotes when it is placed. What it returns
-   * in `afterCommit` is for the caller to run once its transaction has committed.
+   * in `afterCommit` is for the caller to run once its transaction has committed. A remake (Orders 3
+   * spec, goal 3) starts `quantity` pieces of the quote, from its claim line.
    */
   async startQuoted(
     tx: Prisma.TransactionClient,
     auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
     quote: Quote,
-    source: { type: 'quote' | 'order_line'; id: string },
-    options: { parentGroupId?: string } = {},
+    source: { type: GroupSourceType; id: string },
+    options: { parentGroupId?: string; quantity?: number; remake?: { claimLineId: string } } = {},
   ): Promise<{ group: GroupResponse; afterCommit: (() => Promise<void>)[] }> {
+    const remake = options.remake !== undefined;
     // A picked workshop's job is handed over by a start hook; without one it would silently be made in-house.
-    if (quote.partnerId && this.startHooks.length === 0) {
+    if (quote.partnerId && !remake && this.startHooks.length === 0) {
       throw new InternalServerErrorException('This process cannot hand jobs to partners');
     }
     if (source.type === 'quote' && quote.expiresAt.getTime() <= Date.now()) {
       throw new ConflictException('The quote has expired; quote again to start production');
     }
-    if (quote.quantity > MAX_PIECES) {
+    const quantity = options.quantity ?? quote.quantity;
+    if (quantity > MAX_PIECES) {
       throw new BadRequestException(`A group holds at most ${MAX_PIECES} pieces`);
     }
     if (await tx.workOrderGroup.findFirst({ where: { sourceType: source.type, sourceId: source.id } })) {
       throw new ConflictException(
-        source.type === 'quote' ? 'Production has already started for this quote' : 'Production has already started for this order line',
+        { quote: 'Production has already started for this quote', order_line: 'Production has already started for this order line', claim_line: 'The claimed line is being made again already' }[
+          source.type
+        ],
       );
     }
 
@@ -263,7 +272,7 @@ export class WorkOrdersService {
     const inputs = quote.inputs as { file_version_id: string | null };
     const group = await this.start(tx, {
       workflowVersionId: workflow.versionId,
-      quantity: quote.quantity,
+      quantity,
       chainStepTypeIds: chain,
       source,
       quoteId: quote.id,
@@ -275,7 +284,7 @@ export class WorkOrdersService {
     });
     const afterCommit: (() => Promise<void>)[] = [];
     for (const hook of this.startHooks) {
-      const after = await hook(tx, { groupId: group.id, quote, userId: auth.userId, tenantId: auth.tenantId });
+      const after = await hook(tx, { groupId: group.id, quote, userId: auth.userId, tenantId: auth.tenantId, remake });
       if (after) afterCommit.push(after);
     }
     return { group, afterCommit };

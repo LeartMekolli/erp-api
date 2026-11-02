@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
@@ -9,13 +9,18 @@ import { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import type { ShipOrder } from '../orders/orders.service';
+import { JobsService } from '../partners/jobs.service';
+import type { Accepted, HandOver } from '../partners/jobs.service';
 import { reduceOwed } from '../partners/owed-reduction';
 import { CreditNotesService } from '../payments/credit-notes.service';
 import { RefundsService } from '../payments/refunds.service';
 import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
+import { MovesService } from '../workflow/moves.service';
+import { WorkOrdersService } from '../workflow/work-orders.service';
 import { CLAIM_FAULTS, CLAIM_OUTCOMES, CLAIM_STATES } from './claim-response';
-import type { ClaimResponse, ClaimState, CustomerClaimResponse } from './claim-response';
+import type { ClaimDecisionResponse, ClaimResponse, ClaimState, CustomerClaimResponse } from './claim-response';
 import { claimSettings, reasonNamed } from './claim-settings';
 import type { ClaimSettings } from './claim-settings';
 
@@ -80,6 +85,9 @@ export type DecideLine = z.infer<typeof decideLineSchema>;
 /** How the customer is told of each outcome. */
 const OUTCOME_WORDS = { refund: 'refunded', refuse: 'refused', remake: 'made again' } as const;
 
+/** Shown in a notification for a courier or tracking number staff didn't give, as for an order. */
+const NOT_GIVEN = '—';
+
 const WITH = {
   order: { select: { id: true, number: true } },
   lines: {
@@ -104,7 +112,7 @@ interface Opener {
  * rows; the customer's view leaves out whose fault staff found and their note.
  */
 @Injectable()
-export class ClaimsService {
+export class ClaimsService implements OnModuleInit {
   private readonly logger = new Logger(ClaimsService.name);
 
   constructor(
@@ -115,7 +123,18 @@ export class ClaimsService {
     private readonly notifications: NotificationsService,
     private readonly refunds: RefundsService,
     private readonly creditNotes: CreditNotesService,
+    private readonly workOrders: WorkOrdersService,
+    private readonly jobs: JobsService,
+    private readonly moves: MovesService,
   ) {}
+
+  onModuleInit(): void {
+    // A remake's workshop at fault is never paid for it; another workshop's cost, or the workspace's own
+    // work, is taken off what the first is owed (Orders 3 spec, goal 4). Partners and Workflow never depend on Claims.
+    this.jobs.registerHandOverHook((tx, handOver) => this.refuseOwnRemakeAtCost(tx, handOver));
+    this.jobs.registerAcceptHook((tx, accepted) => this.remadeElsewhere(tx, accepted));
+    this.moves.registerPassHook((tx, passed) => this.remadeInHouse(tx, passed.groupIds));
+  }
 
   async staffOpen(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, orderId: string, input: OpenClaim): Promise<ClaimResponse> {
     const { claim, settings } = await this.open({ tenantId: auth.tenantId, userId: auth.userId, kind: 'staff' }, orderId, input);
@@ -170,13 +189,55 @@ export class ClaimsService {
   }
 
   /**
+   * Ships the claim's remakes as its own parcel, once every remake is finished (goal 3): a claim with no
+   * remake, one not finished, or shipped already, is a 409. The customer is told after commit.
+   */
+  async ship(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: ShipOrder): Promise<ClaimResponse> {
+    const shipped = await this.change(auth, id, async (claim, tx) => {
+      if (claim.shipment) throw new ConflictException('The remakes of this claim have shipped already');
+      const groupIds = claim.lines.flatMap((line) => (line.remakeGroupId ? [line.remakeGroupId] : []));
+      if (groupIds.length === 0) throw new ConflictException('Nothing of this claim is being made again');
+      if ((await tx.workOrder.count({ where: { groupId: { in: groupIds }, status: 'active' } })) > 0) {
+        throw new ConflictException('Every remake of the claim must be finished before it ships');
+      }
+      return { shipment: { create: { courier: body.courier ?? null, tracking: body.tracking ?? null } } };
+    });
+    try {
+      await this.notifications.raise(auth.tenantId, 'claim.remake_shipped', { type: 'order', id: shipped.order.id }, {
+        number: String(shipped.number),
+        order_number: String(shipped.order.number),
+        courier: shipped.shipment?.courier ?? NOT_GIVEN,
+        tracking: shipped.shipment?.tracking ?? NOT_GIVEN,
+      });
+    } catch (error) {
+      this.logger.error({ err: error, claimId: id }, 'telling the customer of a shipped remake failed');
+    }
+    return shipped;
+  }
+
+  /** The claim's parcel arrived: the claim is closed. Not shipped, or delivered already, is a 409. */
+  delivered(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string): Promise<ClaimResponse> {
+    return this.change(auth, id, (claim) => {
+      if (!claim.shipment) throw new ConflictException('The remakes of this claim have not shipped');
+      if (claim.shipment.deliveredAt) throw new ConflictException('The remakes of this claim were delivered already');
+      return { shipment: { update: { deliveredAt: new Date() } } };
+    });
+  }
+
+  /**
    * Decides one claimed line, once (goal 3). The order, the claim and the line are locked in that order,
    * so two decisions at once take turns and the second finds the line decided (409). A refund needs
    * `payment.refund`, and is at most the claimed pieces' share of the line with tax; it gives back what was
    * paid and credits the rest on the open invoice, both asked for after the commit. A workshop at fault is owed its cost for those pieces less, or the
-   * line records the shortfall.
+   * line records the shortfall. A remake starts the claimed pieces again from the line's quote, never an
+   * assembly's line (400); the workshop at fault is offered it at cost 0 when it can take it (goal 4).
    */
-  async decide(auth: Pick<TenantAuth, 'tenantId' | 'userId' | 'permissions'>, claimId: string, lineId: string, input: DecideLine): Promise<ClaimResponse> {
+  async decide(
+    auth: Pick<TenantAuth, 'tenantId' | 'userId' | 'permissions'>,
+    claimId: string,
+    lineId: string,
+    input: DecideLine,
+  ): Promise<ClaimDecisionResponse> {
     if (input.outcome === 'refund' && !auth.permissions.has('payment.refund')) {
       throw new ForbiddenException('Refunding needs payment.refund');
     }
@@ -191,8 +252,12 @@ export class ClaimsService {
       const line = await tx.claimLine.findUniqueOrThrow({ where: { id: lineId }, include: { orderLine: true } });
       if (line.outcome !== null) throw new ConflictException('This line is decided already');
       if (claim.returnRequestedAt && !claim.returnedAt) throw new ConflictException('The claim waits for the pieces asked back');
-      if (input.outcome === 'remake') {
-        throw new BadRequestException({ message: 'Remakes are not available yet', errors: [{ path: 'outcome', message: 'not available yet' }] });
+      // A remade assembly would need its parts restarted too (plan, decisions).
+      if (input.outcome === 'remake' && (await tx.orderLinePart.count({ where: { lineId: line.orderLineId } })) > 0) {
+        throw new BadRequestException({
+          message: "An assembly's line is refunded or refused, not made again",
+          errors: [{ path: 'outcome', message: 'not for an assembly' }],
+        });
       }
 
       const workshop = input.fault === 'workshop' ? await this.workshopOf(tx, line.orderLine.groupId) : null;
@@ -239,6 +304,19 @@ export class ClaimsService {
 
       const settings = await claimSettings(tx, this.settings);
       const before = staffView(await tx.claim.findUniqueOrThrow({ where: { id: claimId }, include: WITH }), settings);
+
+      // The claimed pieces start again from the line's quote, free for the customer: nothing is billed for them.
+      let remakeGroupId: string | null = null;
+      if (input.outcome === 'remake') {
+        const quote = await tx.quote.findUniqueOrThrow({ where: { id: line.orderLine.quoteId } });
+        const started = await this.workOrders.startQuoted(tx, auth, quote, { type: 'claim_line', id: lineId }, {
+          quantity: line.pieces,
+          remake: { claimLineId: lineId },
+        });
+        remakeGroupId = started.group.id;
+        steps.push(...started.afterCommit);
+      }
+
       await tx.claimLine.update({
         where: { id: lineId },
         data: {
@@ -248,12 +326,28 @@ export class ClaimsService {
           customerReason: input.customer_reason ?? null,
           refundAmount,
           partnerId: workshop?.partnerId ?? null,
+          remakeGroupId,
           owedReduction: owed?.reduced ?? null,
           shortfall: owed && owed.shortfall.gt(0) ? owed.shortfall : null,
           decidedByUserId: auth.userId,
           decidedAt: new Date(),
         },
       });
+
+      // Back to the workshop at fault at cost 0, by a date counted from the decision just stored; if it
+      // can't take it, staff hand the remake on (goal 4).
+      let remake: ClaimDecisionResponse['remake'] = null;
+      if (remakeGroupId) {
+        remake = { group_id: remakeGroupId, unassigned_reasons: [] };
+        if (workshop) {
+          const offered = await this.jobs.offerRemake(tx, remakeGroupId, workshop.partnerId, auth.userId);
+          if (offered.ok) {
+            steps.push(() => offered.notify(auth.tenantId));
+          } else {
+            remake.unassigned_reasons = offered.reasons;
+          }
+        }
+      }
       const after = staffView(await tx.claim.findUniqueOrThrow({ where: { id: claimId }, include: WITH }), settings);
       await this.audit.record(tx, { actor: { type: 'user', id: auth.userId }, action: 'claim.changed', subject: { type: 'claim', id: claimId }, before, after });
       const notificationId = await this.notifications.store(
@@ -263,7 +357,7 @@ export class ClaimsService {
         { number: String(claim.number), order_number: String(claim.order.number), outcome: OUTCOME_WORDS[input.outcome], reason: input.customer_reason ?? '' },
       );
       steps.push(() => this.notifications.queue(auth.tenantId, notificationId));
-      return { view: after, afterCommit: steps };
+      return { view: { ...after, remake }, afterCommit: steps };
     });
     for (const step of afterCommit) {
       try {
@@ -295,6 +389,67 @@ export class ClaimsService {
       throw new BadRequestException({ message: 'No workshop made this line', errors: [{ path: 'fault', message: 'the line was made in-house' }] });
     }
     return { assignmentId: job.id, partnerId: job.partnerId, cost: job.cost, quantity: job.group.quantity };
+  }
+
+  /** A remake is never offered or moved to its workshop at fault at a cost (Global Constraints, anti-goals): a 409 on `partner_id`. */
+  private async refuseOwnRemakeAtCost(tx: Tx, handOver: HandOver): Promise<void> {
+    if (handOver.cost.lte(0)) return;
+    const line = await tx.claimLine.findFirst({ where: { remakeGroupId: handOver.groupId }, select: { partnerId: true } });
+    if (line?.partnerId === handOver.partnerId) {
+      throw new ConflictException({
+        message: 'The workshop at fault makes its remake at no cost',
+        errors: [{ path: 'partner_id', message: 'the workshop at fault is never paid for its own remake' }],
+      });
+    }
+  }
+
+  /** Another workshop took the remake at a cost: the workshop at fault is owed that much less for the original job (O3-3). */
+  private async remadeElsewhere(tx: Tx, accepted: Accepted): Promise<void> {
+    if (accepted.cost.lte(0)) return;
+    await this.reduceForRemake(tx, accepted.groupId, () => accepted.cost, (number) => `Claim ${number}: made again by another workshop`);
+  }
+
+  /**
+   * The workspace makes a remake the workshop at fault didn't take: at the first pass while no workshop has
+   * accepted the job, the workshop at fault is owed the claimed pieces' share of its cost less, as for a refund.
+   */
+  private async remadeInHouse(tx: Tx, groupIds: string[]): Promise<void> {
+    const lines = await tx.claimLine.findMany({
+      where: { remakeGroupId: { in: groupIds }, fault: 'workshop', owedReduction: null },
+      select: { remakeGroupId: true },
+    });
+    for (const { remakeGroupId } of lines) {
+      if (await tx.jobAssignment.findFirst({ where: { groupId: remakeGroupId!, status: 'accepted' }, select: { id: true } })) continue;
+      await this.reduceForRemake(
+        tx,
+        remakeGroupId!,
+        (workshop, pieces) => workshop.cost.mul(pieces).div(workshop.quantity).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+        (number) => `Claim ${number}: made again in-house`,
+      );
+    }
+  }
+
+  /** Lowers what the workshop at fault is owed for the original job of a remake's line, once a line, under the line's lock. */
+  private async reduceForRemake(
+    tx: Tx,
+    groupId: string,
+    amountOf: (workshop: { cost: Prisma.Decimal; quantity: number }, pieces: number) => Prisma.Decimal,
+    reasonOf: (claimNumber: number) => string,
+  ): Promise<void> {
+    const found = await tx.claimLine.findFirst({ where: { remakeGroupId: groupId }, select: { id: true } });
+    if (!found) return;
+    await tx.$queryRaw`SELECT id FROM claim_line WHERE id = ${found.id}::uuid FOR UPDATE`;
+    const line = await tx.claimLine.findUniqueOrThrow({
+      where: { id: found.id },
+      include: { orderLine: { select: { groupId: true } }, claim: { select: { number: true } } },
+    });
+    if (line.fault !== 'workshop' || line.owedReduction !== null) return;
+    const workshop = await this.workshopOf(tx, line.orderLine.groupId);
+    const owed = await reduceOwed(tx, workshop.assignmentId, amountOf(workshop, line.pieces), reasonOf(line.claim.number));
+    await tx.claimLine.update({
+      where: { id: line.id },
+      data: { owedReduction: owed.reduced, shortfall: owed.shortfall.gt(0) ? owed.shortfall : null },
+    });
   }
 
   /**
@@ -413,14 +568,14 @@ export class ClaimsService {
   private async change(
     auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
     id: string,
-    apply: (claim: Claim) => Prisma.ClaimUpdateInput,
+    apply: (claim: Claim, tx: Tx) => Prisma.ClaimUpdateInput | Promise<Prisma.ClaimUpdateInput>,
   ): Promise<ClaimResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM claim WHERE id = ${id}::uuid FOR UPDATE`;
       if (locked.length === 0) throw new NotFoundException('Claim not found');
       const settings = await claimSettings(tx, this.settings);
       const before = await tx.claim.findUniqueOrThrow({ where: { id }, include: WITH });
-      const updated = await tx.claim.update({ where: { id }, data: apply(before), include: WITH });
+      const updated = await tx.claim.update({ where: { id }, data: await apply(before, tx), include: WITH });
       const after = staffView(updated, settings);
       await this.audit.record(tx, {
         actor: { type: 'user', id: auth.userId },

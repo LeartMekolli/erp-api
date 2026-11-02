@@ -90,14 +90,15 @@ export class PartnerQuotesService implements OnModuleInit {
   /**
    * When a quote with a picked workshop starts: the workshop is judged again under its row lock, and
    * the job is its own at once at the quoted cost; if it can no longer take it, nothing starts and the
-   * customer picks again (Review Focus 5).
+   * customer picks again (Review Focus 5). A remake is never the picked workshop's at the quoted cost:
+   * Claims hands it on (Orders 3 spec, goal 4).
    */
   private async startDirect(
     tx: Tx,
-    started: { groupId: string; quote: Quote; userId: string; tenantId: string },
+    started: { groupId: string; quote: Quote; userId: string; tenantId: string; remake: boolean },
   ): Promise<(() => Promise<void>) | undefined> {
     const { quote, groupId } = started;
-    if (!quote.partnerId || !quote.partnerCost) return undefined;
+    if (started.remake || !quote.partnerId || !quote.partnerCost) return undefined;
     await lockPartner(tx, quote.partnerId);
     const partner = await tx.partner.findUniqueOrThrow({ where: { id: quote.partnerId }, select: { acceptsDirectOrders: true } });
     const job = await this.eligibility.job(tx, groupId);

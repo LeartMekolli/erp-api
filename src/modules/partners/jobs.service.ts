@@ -109,9 +109,33 @@ function refused(name: string, verdict: Extract<Verdict, { ok: false }>): Confli
   });
 }
 
+/** A job about to be offered or moved to a partner, at the cost it would have. */
+export interface HandOver {
+  groupId: string;
+  partnerId: string;
+  cost: Prisma.Decimal;
+}
+
+/** A job a partner now has: an offer it accepted, or a job moved to it. */
+export interface Accepted extends HandOver {
+  assignmentId: string;
+  userId: string;
+}
+
+/**
+ * Run in the transaction that hands a job over, under the job's group lock, so another module can follow
+ * without Partners depending on it: a hand-over hook may refuse by throwing; an accept hook follows the
+ * job now held. Claims uses them for remakes (Orders 3 spec, goal 4).
+ */
+export type HandOverHook = (tx: Tx, handOver: HandOver) => Promise<void>;
+export type AcceptHook = (tx: Tx, accepted: Accepted) => Promise<void>;
+
 /** Jobs offered to partners, answered by them, and moved between them (Partners spec, goals 10 and P16). */
 @Injectable()
 export class JobsService implements OnModuleInit {
+  private readonly handOverHooks: HandOverHook[] = [];
+  private readonly acceptHooks: AcceptHook[] = [];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly eligibility: EligibilityService,
@@ -125,6 +149,60 @@ export class JobsService implements OnModuleInit {
   onModuleInit(): void {
     // A job whose order line is cancelled lets go of its partner (Orders spec, goal 12).
     this.workOrders.registerCancelHook((tx, cancelled) => this.cancelForLine(tx, cancelled));
+  }
+
+  registerHandOverHook(hook: HandOverHook): void {
+    this.handOverHooks.push(hook);
+  }
+
+  registerAcceptHook(hook: AcceptHook): void {
+    this.acceptHooks.push(hook);
+  }
+
+  /**
+   * Offers a remake to the workshop at fault at cost 0, open for the usual window and due by the remake's
+   * date (Orders 3 spec, goal 4), in the caller's transaction. A workshop that can't take it is not offered
+   * it, and the reasons are answered for staff to hand it on. `notify` tells the workshop, after commit.
+   */
+  async offerRemake(
+    tx: Tx,
+    groupId: string,
+    partnerId: string,
+    userId: string,
+  ): Promise<{ ok: true; notify: (tenantId: string) => Promise<void> } | { ok: false; reasons: string[] }> {
+    await lockGroup(tx, groupId);
+    await lockPartner(tx, partnerId);
+    const job = await this.eligibility.job(tx, groupId);
+    const verdict = (await this.eligibility.judge(tx, job, [partnerId])).get(partnerId)!;
+    if (!verdict.ok) return { ok: false, reasons: verdict.reasons };
+    const settings = await this.settings.list(tx);
+    const routing = settings['partners.routing'] as Routing | undefined;
+    const due = await defaultDueOn(tx, groupId, settings, await workspaceToday(tx, job.group.tenantId));
+    const row = await tx.jobAssignment.create({
+      data: {
+        groupId,
+        partnerId,
+        kind: 'offer',
+        status: 'offered',
+        cost: 0,
+        expiresAt: new Date(Date.now() + (routing?.offerHours ?? DEFAULT_OFFER_HOURS) * HOUR_MS),
+        dueOn: due ? asDate(due) : null,
+        createdByUserId: userId,
+      },
+      include,
+    });
+    await this.record(tx, userId, row);
+    const label = await jobLabel(tx, groupId);
+    return {
+      ok: true,
+      notify: async (tenantId) => {
+        await this.notifications.raise(tenantId, 'partner.job.offered', { type: 'job_assignment', id: row.id }, {
+          product_name: label.productName,
+          quantity: String(label.quantity),
+          expires_at: row.expiresAt!.toISOString(),
+        });
+      },
+    };
   }
 
   /**
@@ -218,6 +296,7 @@ export class JobsService implements OnModuleInit {
       // The partner's room and open jobs are judged once at a time (Review Focus 1 of the fixes).
       await lockPartner(tx, partnerId);
       const { job, cost } = await this.able(tx, groupId, partnerId);
+      for (const hook of this.handOverHooks) await hook(tx, { groupId, partnerId, cost });
       const today = await workspaceToday(tx, auth.tenantId);
       if (dueOn !== undefined && dueOn < today) {
         throw new BadRequestException({ message: 'The due date is before today', errors: [{ path: 'due_on', message: `must be ${today} or later` }] });
@@ -287,6 +366,7 @@ export class JobsService implements OnModuleInit {
       await this.keepWithOrder(tx, await this.routing(tx), groupId, input.partner_id);
       await lockPartner(tx, input.partner_id);
       const { job, cost } = await this.able(tx, groupId, input.partner_id);
+      for (const hook of this.handOverHooks) await hook(tx, { groupId, partnerId: input.partner_id, cost });
       const replaced = await tx.jobAssignment.update({
         where: { id: current.id },
         data: {
@@ -310,6 +390,7 @@ export class JobsService implements OnModuleInit {
         include,
       });
       await this.record(tx, auth.userId, row);
+      await this.accepted(tx, row, auth.userId);
       return { row, job };
     });
     // After commit: the partner the job moved to has it at once, so it hears of it.
@@ -466,8 +547,15 @@ export class JobsService implements OnModuleInit {
         include,
       });
       await this.record(tx, auth.userId, row);
+      if (status === 'accepted') await this.accepted(tx, row, auth.userId);
       return { row, job: await jobLabel(tx, groupId) };
     });
+  }
+
+  private async accepted(tx: Tx, row: Row, userId: string): Promise<void> {
+    for (const hook of this.acceptHooks) {
+      await hook(tx, { groupId: row.groupId, partnerId: row.partnerId, cost: row.cost, assignmentId: row.id, userId });
+    }
   }
 
   /** The job can be handed to the partner: no other open offer or assignment, and the partner can take it. */

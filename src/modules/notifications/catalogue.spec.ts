@@ -12,6 +12,7 @@ describe('notification catalogue', () => {
       'campaign.budget_used',
       'claim.decided',
       'claim.opened',
+      'claim.remake_shipped',
       'credits.added',
       'customer.invited',
       'file.measured',
@@ -87,6 +88,9 @@ describe('notification catalogue', () => {
     // The customer hears of each decision: the outcome and the reason it may see, never the fault or staff's note.
     expect([EVENTS['claim.decided'].audience, EVENTS['claim.decided'].subjectType]).toEqual([{ kind: 'customer' }, 'order']);
     expect(Object.keys(variablesOf('claim.decided')).sort()).toEqual(['number', 'order_number', 'outcome', 'reason']);
+    // And when a remake ships, as its own parcel.
+    expect([EVENTS['claim.remake_shipped'].audience, EVENTS['claim.remake_shipped'].subjectType]).toEqual([{ kind: 'customer' }, 'order']);
+    expect(Object.keys(variablesOf('claim.remake_shipped')).sort()).toEqual(['courier', 'number', 'order_number', 'tracking']);
   });
 
   it("tells the customer's people when a subscription starts, about the customer itself", () => {

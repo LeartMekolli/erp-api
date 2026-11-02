@@ -7,8 +7,10 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentCustomer, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { CustomerAccess, RequirePermission } from '../identity/route-markers';
-import { claimResponseSchema, customerClaimResponseSchema } from './claim-response';
-import type { ClaimResponse, CustomerClaimResponse } from './claim-response';
+import { shipOrderSchema } from '../orders/orders.service';
+import type { ShipOrder } from '../orders/orders.service';
+import { claimDecisionResponseSchema, claimResponseSchema, customerClaimResponseSchema } from './claim-response';
+import type { ClaimDecisionResponse, ClaimResponse, CustomerClaimResponse } from './claim-response';
 import { ClaimsService, claimListQuerySchema, decideLineSchema, openClaimSchema } from './claims.service';
 import type { ClaimListQuery, DecideLine, OpenClaim } from './claims.service';
 
@@ -95,16 +97,20 @@ export class ClaimsController {
   }
 
   @ApiDoc({
-    summary: 'Decide one claimed line, once: whose fault, and a refund or a refusal; the customer is told.',
+    summary: 'Decide one claimed line, once: whose fault, and a remake, a refund or a refusal; the customer is told.',
     description:
       'A line decided already, or a claim waiting for the pieces asked back, is a 409. A refusal gives the customer a ' +
       "reason. A refund needs `payment.refund` and is at most the claimed pieces' share of the line, tax included " +
       "(400). It gives back what was paid, and credits the rest on the order's open invoice at the payment provider, " +
       'so the customer never pays first to be paid back; more than both is a 409. The workshop at fault is the one ' +
       "that made the line (400 for a line made in-house): while its job is not paid out it is owed its cost for the " +
-      'claimed pieces less, else the line records the shortfall.',
+      'claimed pieces less, else the line records the shortfall. A remake starts the claimed pieces again from the ' +
+      "line's quote, free for the customer, never for an assembly's line (400). At the workshop's fault it is offered " +
+      'to that workshop at cost 0; when it cannot take it, `remake.unassigned_reasons` says why, and staff offer the ' +
+      "remake's group as any job: the workshop at fault is then owed the new job's cost less, or the claimed pieces' " +
+      'share once the workspace makes it.',
     body: decideLineSchema,
-    response: claimResponseSchema,
+    response: claimDecisionResponseSchema,
     errors: [400, 404, 409],
   })
   @RequirePermission('order.write')
@@ -115,8 +121,39 @@ export class ClaimsController {
     @Param('id', idParam) id: string,
     @Param('lineId', idParam) lineId: string,
     @Body(new ZodValidationPipe(decideLineSchema)) body: DecideLine,
-  ): Promise<ClaimResponse> {
+  ): Promise<ClaimDecisionResponse> {
     return this.claims.decide(auth, id, lineId, body);
+  }
+
+  @ApiDoc({
+    summary: "Ship the claim's remakes as its own parcel, with the courier and tracking number when given; the customer is told.",
+    description: 'Every remake of the claim must be finished. A claim with nothing made again, or shipped already, is a 409.',
+    body: shipOrderSchema,
+    response: claimResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('order.ship')
+  @Post('claims/:id/ship')
+  @HttpCode(200)
+  ship(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(shipOrderSchema)) body: ShipOrder,
+  ): Promise<ClaimResponse> {
+    return this.claims.ship(auth, id, body);
+  }
+
+  @ApiDoc({
+    summary: "Mark the claim's parcel delivered, which closes the claim.",
+    description: 'A claim not shipped, or delivered already, is a 409.',
+    response: claimResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('order.ship')
+  @Post('claims/:id/delivered')
+  @HttpCode(200)
+  delivered(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<ClaimResponse> {
+    return this.claims.delivered(auth, id);
   }
 }
 

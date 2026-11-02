@@ -1,6 +1,6 @@
 import { Prisma } from '../../generated/prisma/client';
 import type { SettingKey } from '../settings/setting-keys';
-import { localDate, workingDaysBefore } from './dates';
+import { localDate, promisedDate, workingDaysBefore } from './dates';
 import type { BusinessCalendar } from './dates';
 import { DEFAULT_CALENDAR } from './place-order';
 
@@ -19,7 +19,8 @@ export async function workspaceToday(tx: Tx, tenantId: string): Promise<string> 
  * The day a partner's job is due by default (Orders spec, B3): the order's promised date less the
  * buffer in working days, a part of an assembly one allowance more, and never before `today`. A job that
  * isn't an order line has no default. The job's source names its line, which is read whether or not the
- * line yet points back at the group, so a direct job can ask as it starts.
+ * line yet points back at the group, so a direct job can ask as it starts. A remake's promised date is
+ * counted from its decision with the order's speed, as a new order's would be (Orders 3 spec, "My calls").
  */
 export async function defaultDueOn(
   tx: Tx,
@@ -27,17 +28,32 @@ export async function defaultDueOn(
   settings: Partial<Record<SettingKey, unknown>>,
   today: string,
 ): Promise<string | null> {
-  const group = await tx.workOrderGroup.findUnique({ where: { id: groupId }, select: { sourceType: true, sourceId: true } });
-  if (group?.sourceType !== 'order_line') return null;
-  const line = await tx.orderLine.findUnique({ where: { id: group.sourceId }, select: { order: { select: { promisedOn: true } } } });
-  const part = line ? null : await tx.orderLinePart.findUnique({ where: { id: group.sourceId }, select: { line: { select: { order: { select: { promisedOn: true } } } } } });
-  const promisedOn = line?.order.promisedOn ?? part?.line.order.promisedOn;
-  if (!promisedOn) return null;
+  const group = await tx.workOrderGroup.findUnique({ where: { id: groupId }, select: { tenantId: true, sourceType: true, sourceId: true } });
+  const calendar = (settings['business.calendar'] as BusinessCalendar | undefined) ?? DEFAULT_CALENDAR;
+  let promised: string | null = null;
+  let part = false;
+  if (group?.sourceType === 'order_line') {
+    const line = await tx.orderLine.findUnique({ where: { id: group.sourceId }, select: { order: { select: { promisedOn: true } } } });
+    const ofPart = line ? null : await tx.orderLinePart.findUnique({ where: { id: group.sourceId }, select: { line: { select: { order: { select: { promisedOn: true } } } } } });
+    part = ofPart !== null;
+    promised = (line?.order.promisedOn ?? ofPart?.line.order.promisedOn)?.toISOString().slice(0, 10) ?? null;
+  } else if (group?.sourceType === 'claim_line') {
+    const line = await tx.claimLine.findUnique({
+      where: { id: group.sourceId },
+      select: { decidedAt: true, claim: { select: { order: { select: { deliverySpeedKey: true } } } } },
+    });
+    if (line) {
+      const speedKey = line.claim.order.deliverySpeedKey;
+      const speed = speedKey ? await tx.deliverySpeed.findFirst({ where: { key: speedKey }, select: { workingDays: true } }) : null;
+      const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: group.tenantId }, select: { timezone: true } });
+      promised = promisedDate(line.decidedAt ?? new Date(), speed?.workingDays ?? 0, calendar, timezone);
+    }
+  }
+  if (!promised) return null;
 
   const scheduling = (settings['orders.scheduling'] as typeof DEFAULT_SCHEDULING | undefined) ?? DEFAULT_SCHEDULING;
-  const calendar = (settings['business.calendar'] as BusinessCalendar | undefined) ?? DEFAULT_CALENDAR;
   const days = scheduling.bufferDays + (part ? scheduling.assemblyAllowanceDays : 0);
-  const due = workingDaysBefore(promisedOn.toISOString().slice(0, 10), days, calendar);
+  const due = workingDaysBefore(promised, days, calendar);
   return due < today ? today : due;
 }
 

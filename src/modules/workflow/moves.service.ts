@@ -108,15 +108,27 @@ interface ReplacementRow {
   currentStepId: string | null;
 }
 
+/**
+ * Runs inside the transaction of a pass, once its transitions are written, with the passed pieces' groups
+ * held FOR SHARE, so another module can follow without Workflow depending on it. Claims uses it for an
+ * in-house remake (Orders 3 spec, goal 4).
+ */
+export type PassHook = (tx: Prisma.TransactionClient, passed: { groupIds: string[]; userId: string }) => Promise<void>;
+
 /** The move command (Workflow/QC spec, goals 5 and 6): the only writer of transitions. */
 @Injectable()
 export class MovesService {
   private readonly logger = new Logger(MovesService.name);
+  private readonly passHooks: PassHook[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jobs: JobsService,
   ) {}
+
+  registerPassHook(hook: PassHook): void {
+    this.passHooks.push(hook);
+  }
 
   /**
    * With a `scope`, a partner's own people move: every piece must be of a job the partner has
@@ -290,6 +302,9 @@ export class MovesService {
         creditFor(piece.groupId, piece.currentStepId ?? (landings[index] as Landing).stepId),
       );
       const written = await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[], credited);
+      if (body.kind === 'pass') {
+        for (const hook of this.passHooks) await hook(tx, { groupIds, userId: auth.userId });
+      }
 
       // Any fail at a sampling step ends sampling there for the pieces' groups (goal 6), by the first such fail.
       if (body.kind === 'fail' && config?.sampling) {

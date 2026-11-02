@@ -6,7 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
-import { claimResponseSchema, customerClaimResponseSchema } from '../src/modules/claims/claim-response';
+import { claimDecisionResponseSchema, customerClaimResponseSchema } from '../src/modules/claims/claim-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -199,7 +199,7 @@ describe('claims: refusing and refunding claimed lines', () => {
     await decide(w, claim, { fault: 'customer', outcome: 'refuse' }).expect(400);
     // A member changes orders, so may refuse.
     const refused = await decide(w, claim, { fault: 'customer', outcome: 'refuse', note: 'Dropped, by the photos', customer_reason: 'The cracks come from a fall.' }, w.member).expect(200);
-    expectDocumented(claimResponseSchema, refused.body);
+    expectDocumented(claimDecisionResponseSchema, refused.body);
     expect(refused.body as Claim).toMatchObject({
       state: 'closed',
       lines: [{ decision: { fault: 'customer', outcome: 'refuse', note: 'Dropped, by the photos', customer_reason: 'The cracks come from a fall.', refund_amount: null } }],
@@ -232,7 +232,7 @@ describe('claims: refusing and refunding claimed lines', () => {
     await decide(w, claim, { fault: 'workshop', outcome: 'refund', refund_amount: share.toFixed(2) }, w.member).expect(403);
 
     const refunded = await decide(w, claim, { fault: 'workshop', outcome: 'refund', refund_amount: share.toFixed(2), note: 'Porous casting' }).expect(200);
-    expectDocumented(claimResponseSchema, refunded.body);
+    expectDocumented(claimDecisionResponseSchema, refunded.body);
     expect((refunded.body as Claim).lines[0].decision).toMatchObject({ fault: 'workshop', outcome: 'refund', refund_amount: share.toFixed(2) });
 
     // Paid by bank transfer, so given back outside the provider at once, and the customer told.
