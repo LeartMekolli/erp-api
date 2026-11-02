@@ -52,7 +52,8 @@ export class CustomersController {
   }
 
   @ApiDoc({
-    summary: 'Customer organisations, newest first, optionally of one customer group or of none.',
+    summary: 'Customer organisations, newest first, optionally of one customer group (or none) or one priority band.',
+    description: '`band` filters by the band in force: an override through its end date, else the computed band. An unknown group or band is a 400.',
     query: customerListQuerySchema,
     response: pageSchema(customerResponseSchema),
     errors: [400],

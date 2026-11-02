@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { z } from 'zod';
+import { keySchema } from '../pricing/decimals';
 
 /**
  * Every tenant setting the system knows, each with the schema its value must
@@ -67,6 +68,40 @@ export const SETTING_KEYS = {
     brand_content: z.number().int().min(1).max(1000),
     image: z.number().int().min(1).max(1000),
   }),
+  // Customers' priority score (Customers 2 spec, goals 11–17): how much each part counts, the band of a
+  // customer below every threshold, and the bands with the score each starts at and what they unlock.
+  // Unset: DEFAULT_PRIORITY_SETTINGS in src/modules/customers/priority/bands.ts.
+  'customers.priority': z
+    .object({
+      weights: z.object({
+        lifetime: z.number().int().min(0).max(10),
+        recent: z.number().int().min(0).max(10),
+        frequency: z.number().int().min(0).max(10),
+        payment: z.number().int().min(0).max(10),
+      }),
+      defaultBand: z.object({ key: keySchema, name: z.string().trim().min(1).max(100) }),
+      bands: z
+        .array(
+          z.object({
+            key: keySchema,
+            name: z.string().trim().min(1).max(100),
+            from: z.number().int().min(1).max(100),
+            firstInLine: z.boolean(),
+            mayPickPartner: z.boolean(),
+          }),
+        )
+        .max(10),
+    })
+    .superRefine((value, ctx) => {
+      const keys = new Set<string>([value.defaultBand.key]);
+      const starts = new Set<number>();
+      value.bands.forEach((band, index) => {
+        if (keys.has(band.key)) ctx.addIssue({ code: 'custom', message: 'band keys must be unique and differ from the default band', path: ['bands', index, 'key'] });
+        if (starts.has(band.from)) ctx.addIssue({ code: 'custom', message: 'two bands cannot start at the same score', path: ['bands', index, 'from'] });
+        keys.add(band.key);
+        starts.add(band.from);
+      });
+    }),
   // The workspace's own Google OAuth client ids; Sign in with Google is off without it.
   'auth.google': z.object({
     clientIds: z.array(z.string().min(1).max(200)).min(1).max(5),

@@ -90,4 +90,18 @@ describe('setting keys', () => {
       expect(() => parseSetting('auth.google', { clientIds })).toThrow(ZodError);
     }
   });
+
+  it('accepts priority bands with unique keys and starts, none named like the default band', () => {
+    const gold = { key: 'gold', name: 'Gold', from: 80, firstInLine: true, mayPickPartner: true };
+    const priority = {
+      weights: { lifetime: 1, recent: 1, frequency: 1, payment: 1 },
+      defaultBand: { key: 'standard', name: 'Standard' },
+      bands: [gold, { key: 'silver', name: 'Silver', from: 50, firstInLine: false, mayPickPartner: false }],
+    };
+    expect(parseSetting('customers.priority', priority)).toEqual(priority);
+    for (const bands of [[gold, { ...gold, from: 60 }], [gold, { ...gold, key: 'platinum' }], [{ ...gold, key: 'standard' }], [{ ...gold, from: 0 }]]) {
+      expect(() => parseSetting('customers.priority', { ...priority, bands })).toThrow(ZodError);
+    }
+    expect(() => parseSetting('customers.priority', { ...priority, weights: { ...priority.weights, payment: 11 } })).toThrow(ZodError);
+  });
 });

@@ -5,13 +5,17 @@ import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { Customer, CustomerGroup, CustomerPaymentTerms, Prisma } from '../../generated/prisma/client';
+import type { Customer, CustomerGroup, CustomerPaymentTerms, CustomerPriority, Prisma } from '../../generated/prisma/client';
 import { paymentTermsResponse } from '../payments/payment-response';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { planOf } from '../payments/plans/plan-of';
+import { keySchema } from '../pricing/decimals';
+import { SettingsService } from '../settings/settings.service';
 import type { CustomerMemberResponse, CustomerResponse } from './customer-response';
 import { CUSTOMER_ROLES } from './customer-roles';
+import { bandInForce, bandWhere, isBandKey, prioritySettings, workspaceToday } from './priority/bands';
+import type { PrioritySettings } from './priority/bands';
 
 const nameSchema = z.string().trim().min(1).max(200);
 
@@ -33,6 +37,8 @@ export const updateCustomerSchema = z.object({
 export const customerListQuerySchema = paginationQuerySchema.extend({
   /** A customer group's id, or `none` for customers in no group. */
   customer_group: z.union([z.uuid(), z.literal('none')]).optional(),
+  /** A priority band's key, the default band's included: customers whose band in force it is (Customers 2 spec, goal 16). */
+  band: keySchema.optional(),
 });
 export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
 
@@ -43,9 +49,19 @@ export const updateMemberSchema = z.object({
   status: z.enum(['active', 'deactivated']).optional(),
 });
 
-type CustomerRow = Customer & { customerGroup: CustomerGroup | null; paymentTerms: CustomerPaymentTerms | null };
+type CustomerRow = Customer & {
+  customerGroup: CustomerGroup | null;
+  paymentTerms: CustomerPaymentTerms | null;
+  priority: CustomerPriority | null;
+};
 
-const include = { customerGroup: true, paymentTerms: true } as const;
+const include = { customerGroup: true, paymentTerms: true, priority: true } as const;
+
+/** What a customer's band in force is read against, once per request. */
+interface BandContext {
+  settings: PrioritySettings;
+  today: string;
+}
 
 export const memberInclude = { user: { select: { id: true, name: true, email: true, status: true } } } as const;
 
@@ -86,6 +102,7 @@ export class CustomersService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   async create(auth: TenantAuth, input: z.infer<typeof createCustomerSchema>): Promise<CustomerResponse> {
@@ -111,10 +128,18 @@ export class CustomersService {
           errors: [{ path: 'customer_group', message: 'not a customer group of this workspace' }],
         });
       }
+      const bands = await this.bandContext(tx);
+      if (query.band && !isBandKey(query.band, bands.settings)) {
+        throw new BadRequestException({
+          message: 'Filter by a band of the workspace',
+          errors: [{ path: 'band', message: 'not a band of customers.priority' }],
+        });
+      }
       const rows = await tx.customer.findMany({
         where: {
           ...(after ? { id: { lt: after.id } } : {}),
           ...(query.customer_group ? { customerGroupId: query.customer_group === 'none' ? null : query.customer_group } : {}),
+          ...(query.band ? bandWhere(query.band, bands.today, bands.settings) : {}),
         },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
@@ -123,7 +148,7 @@ export class CustomersService {
       const page = toPage(rows, query.limit, secret);
       const data: CustomerResponse[] = [];
       for (const row of page.data) {
-        data.push(await this.toResponse(tx, row));
+        data.push(await this.toResponse(tx, row, bands));
       }
       return { data, next_cursor: page.next_cursor };
     });
@@ -256,7 +281,13 @@ export class CustomersService {
     }
   }
 
-  private async toResponse(tx: Prisma.TransactionClient, row: CustomerRow): Promise<CustomerResponse> {
+  private async bandContext(tx: Prisma.TransactionClient): Promise<BandContext> {
+    return { settings: await prioritySettings(tx, this.settings), today: (await workspaceToday(tx, new Date())).today };
+  }
+
+  private async toResponse(tx: Prisma.TransactionClient, row: CustomerRow, bands?: BandContext): Promise<CustomerResponse> {
+    const { settings, today } = bands ?? (await this.bandContext(tx));
+    const band = bandInForce(row.priority, today, settings);
     const memberCount = await tx.organisationMembership.count({
       where: { organisationType: 'customer', organisationId: row.id },
     });
@@ -272,6 +303,7 @@ export class CustomersService {
       may_pick_partner: row.mayPickPartner,
       payment_terms: paymentTermsResponse(row.paymentTerms),
       plan: { key: plan.key, name: plan.name },
+      band: { key: band.key, name: band.name },
       created_at: row.createdAt.toISOString(),
     };
   }

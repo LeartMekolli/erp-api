@@ -201,6 +201,10 @@ export const SCHEDULED_JOBS = {
   // Removes the file of each export 30 days after it was ready; the export's row stays as the log
   // (Reporting 2 spec). Whether a file may be downloaded is decided by its expiry, never by this having run.
   'reports.exports.expire': { queue: 'maintenance', schedule: { every: 3_600_000 }, lockTtlMs: 600_000 },
+  // Computes customers' priority scores for each workspace not yet computed on its local today, so once a
+  // day just after its midnight (Customers 2 spec). Which band is in force is decided when read, never by
+  // this having run.
+  'customers.priority.refresh': { queue: 'maintenance', schedule: { every: 3_600_000 }, lockTtlMs: 600_000 },
   // Queues the morning briefing of each workspace where it is 07:00 or later and none ran today (AI 1 spec, goal 7).
   'ai.briefing': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
   // Gives back a failed customer run's credits whose give-back job was never queued or gave up (AI 2

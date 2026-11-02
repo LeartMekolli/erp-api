@@ -3,6 +3,7 @@ import { PRODUCT_KINDS } from '../catalog/product-response';
 import { sizingSchema } from '../catalog/scaling';
 import { paymentTermsResponseSchema } from '../payments/payment-response';
 import { CUSTOMER_ROLES } from './customer-roles';
+import { bandSchema } from './priority/priority-response';
 
 // What staff receive for customer organisations; checked against real responses in the e2e tests.
 
@@ -20,6 +21,8 @@ export const customerResponseSchema = z.strictObject({
   payment_terms: paymentTermsResponseSchema,
   /** The plan the customer is on (Payments 2): its subscription's, else the workspace's free default. */
   plan: z.strictObject({ key: z.string(), name: z.string() }),
+  /** The priority band in force (Customers 2): staff only; the score is at GET /customers/:id/priority. */
+  band: bandSchema,
   created_at: z.string(),
 });
 export type CustomerResponse = z.infer<typeof customerResponseSchema>;
