@@ -9,8 +9,8 @@ import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { CustomerAccess, RequirePermission } from '../identity/route-markers';
 import { claimResponseSchema, customerClaimResponseSchema } from './claim-response';
 import type { ClaimResponse, CustomerClaimResponse } from './claim-response';
-import { ClaimsService, claimListQuerySchema, openClaimSchema } from './claims.service';
-import type { ClaimListQuery, OpenClaim } from './claims.service';
+import { ClaimsService, claimListQuerySchema, decideLineSchema, openClaimSchema } from './claims.service';
+import type { ClaimListQuery, DecideLine, OpenClaim } from './claims.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -92,6 +92,30 @@ export class ClaimsController {
   @HttpCode(200)
   markReturned(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<ClaimResponse> {
     return this.claims.markReturned(auth, id);
+  }
+
+  @ApiDoc({
+    summary: 'Decide one claimed line, once: whose fault, and a refund or a refusal; the customer is told.',
+    description:
+      'A line decided already, or a claim waiting for the pieces asked back, is a 409. A refusal gives the customer a ' +
+      "reason. A refund needs `payment.refund` and is at most the claimed pieces' share of the line, tax included " +
+      '(400); it gives back what was paid, and more than is left to refund is a 409. The workshop at fault is the one ' +
+      "that made the line (400 for a line made in-house): while its job is not paid out it is owed its cost for the " +
+      'claimed pieces less, else the line records the shortfall.',
+    body: decideLineSchema,
+    response: claimResponseSchema,
+    errors: [400, 404, 409],
+  })
+  @RequirePermission('order.write')
+  @Post('claims/:id/lines/:lineId/decision')
+  @HttpCode(200)
+  decide(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Param('lineId', idParam) lineId: string,
+    @Body(new ZodValidationPipe(decideLineSchema)) body: DecideLine,
+  ): Promise<ClaimResponse> {
+    return this.claims.decide(auth, id, lineId, body);
   }
 }
 

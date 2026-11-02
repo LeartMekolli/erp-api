@@ -428,6 +428,24 @@ export const EVENTS = {
       },
     },
   },
+  // The customer hears of each decided line: the outcome and the reason it may see (Orders 3 spec, goal 7).
+  'claim.decided': {
+    audience: { kind: 'customer' },
+    channels: ['email', 'feed'],
+    subjectType: 'order',
+    variables: {
+      number: { sample: '12' },
+      order_number: { sample: '1001' },
+      outcome: { sample: 'refunded' },
+      reason: { sample: 'The cracks come from a fall.' },
+    },
+    defaults: {
+      en: {
+        subject: 'Your claim {{ number }} on order {{ order_number }}',
+        body: 'We have decided on your claim {{ number }} on order {{ order_number }}.\n\nDecision: {{ outcome }}\n\n{{ reason }}',
+      },
+    },
+  },
   // A pay-first order waits for its payment (Payments spec, goal 13).
   'payment.requested': {
     audience: { kind: 'customer' },

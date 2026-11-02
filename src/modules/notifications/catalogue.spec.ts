@@ -10,6 +10,7 @@ describe('notification catalogue', () => {
       'ai.limit_used',
       'auth.password_reset_requested',
       'campaign.budget_used',
+      'claim.decided',
       'claim.opened',
       'credits.added',
       'customer.invited',
@@ -83,6 +84,9 @@ describe('notification catalogue', () => {
     expect(EVENTS['claim.opened'].audience).toEqual({ kind: 'permission', permission: 'order.read' });
     expect(EVENTS['claim.opened'].subjectType).toBe('order');
     expect(Object.keys(variablesOf('claim.opened')).sort()).toEqual(['customer_name', 'number', 'order_number']);
+    // The customer hears of each decision: the outcome and the reason it may see, never the fault or staff's note.
+    expect([EVENTS['claim.decided'].audience, EVENTS['claim.decided'].subjectType]).toEqual([{ kind: 'customer' }, 'order']);
+    expect(Object.keys(variablesOf('claim.decided')).sort()).toEqual(['number', 'order_number', 'outcome', 'reason']);
   });
 
   it("tells the customer's people when a subscription starts, about the customer itself", () => {

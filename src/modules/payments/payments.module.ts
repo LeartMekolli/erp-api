@@ -119,6 +119,7 @@ import { WebhooksController } from './webhooks.controller';
         config.get('PAYMENT_PROVIDER') === 'stripe' ? new StripePaymentProvider() : new FakePaymentProvider(),
     },
   ],
-  exports: [PaymentAccountService, LedgerService, PaymentEventsService, PAYMENT_PROVIDER, CreditsService],
+  // RefundsService is also how a claim refunds its pieces (ClaimsModule), so Payments never depends on Claims.
+  exports: [PaymentAccountService, LedgerService, PaymentEventsService, PAYMENT_PROVIDER, CreditsService, RefundsService],
 })
 export class PaymentsModule {}

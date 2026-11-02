@@ -1,17 +1,19 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page, PaginationQuery } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { Prisma } from '../../generated/prisma/client';
+import { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { reduceOwed } from '../partners/owed-reduction';
+import { RefundsService } from '../payments/refunds.service';
 import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
-import { CLAIM_FAULTS, CLAIM_STATES } from './claim-response';
+import { CLAIM_FAULTS, CLAIM_OUTCOMES, CLAIM_STATES } from './claim-response';
 import type { ClaimResponse, ClaimState, CustomerClaimResponse } from './claim-response';
 import { claimSettings, reasonNamed } from './claim-settings';
 import type { ClaimSettings } from './claim-settings';
@@ -46,6 +48,37 @@ export const claimListQuerySchema = paginationQuerySchema.extend({
 });
 export type ClaimListQuery = z.infer<typeof claimListQuerySchema>;
 
+const MONEY = /^\d{1,12}(\.\d{1,2})?$/;
+
+/** One claimed line decided: whose fault, and a remake, a refund or a refusal (goal 3). */
+export const decideLineSchema = z
+  .strictObject({
+    fault: z.enum(CLAIM_FAULTS),
+    outcome: z.enum(CLAIM_OUTCOMES),
+    /** Staff's own; never shown to the customer. */
+    note: z.string().trim().min(1).max(5000).optional(),
+    /** Shown to the customer; required for a refusal. */
+    customer_reason: z.string().trim().min(1).max(2000).optional(),
+    /** Required for a refund, tax included: at most the claimed pieces' share of the line. */
+    refund_amount: z
+      .string()
+      .regex(MONEY, 'must be an amount with at most 2 places, such as 12.50')
+      .refine((value) => !MONEY.test(value) || new Prisma.Decimal(value).greaterThan(0), 'must be greater than 0')
+      .optional(),
+  })
+  .superRefine((decision, ctx) => {
+    if ((decision.outcome === 'refund') !== (decision.refund_amount !== undefined)) {
+      ctx.addIssue({ code: 'custom', message: 'a refund, and only a refund, names its amount', path: ['refund_amount'] });
+    }
+    if (decision.outcome === 'refuse' && decision.customer_reason === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'a refusal tells the customer why', path: ['customer_reason'] });
+    }
+  });
+export type DecideLine = z.infer<typeof decideLineSchema>;
+
+/** How the customer is told of each outcome. */
+const OUTCOME_WORDS = { refund: 'refunded', refuse: 'refused', remake: 'made again' } as const;
+
 const WITH = {
   order: { select: { id: true, number: true } },
   lines: {
@@ -71,12 +104,15 @@ interface Opener {
  */
 @Injectable()
 export class ClaimsService {
+  private readonly logger = new Logger(ClaimsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly settings: SettingsService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
+    private readonly refunds: RefundsService,
   ) {}
 
   async staffOpen(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, orderId: string, input: OpenClaim): Promise<ClaimResponse> {
@@ -129,6 +165,120 @@ export class ClaimsService {
       if (claim.returnedAt) throw new ConflictException('The pieces were received already');
       return { returnedAt: new Date() };
     });
+  }
+
+  /**
+   * Decides one claimed line, once (goal 3). The order, the claim and the line are locked in that order,
+   * so two decisions at once take turns and the second finds the line decided (409). A refund needs
+   * `payment.refund`, and is at most the claimed pieces' share of the line with tax; it gives back what was
+   * paid, and is made after the commit. A workshop at fault is owed its cost for those pieces less, or the
+   * line records the shortfall.
+   */
+  async decide(auth: Pick<TenantAuth, 'tenantId' | 'userId' | 'permissions'>, claimId: string, lineId: string, input: DecideLine): Promise<ClaimResponse> {
+    if (input.outcome === 'refund' && !auth.permissions.has('payment.refund')) {
+      throw new ForbiddenException('Refunding needs payment.refund');
+    }
+    const { view, afterCommit } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const found = await tx.claimLine.findFirst({ where: { id: lineId, claimId }, select: { claim: { select: { orderId: true } } } });
+      if (!found) throw new NotFoundException('Claim line not found');
+      await tx.$queryRaw`SELECT id FROM "order" WHERE id = ${found.claim.orderId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM claim WHERE id = ${claimId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM claim_line WHERE id = ${lineId}::uuid FOR UPDATE`;
+
+      const claim = await tx.claim.findUniqueOrThrow({ where: { id: claimId }, include: { order: true } });
+      const line = await tx.claimLine.findUniqueOrThrow({ where: { id: lineId }, include: { orderLine: true } });
+      if (line.outcome !== null) throw new ConflictException('This line is decided already');
+      if (claim.returnRequestedAt && !claim.returnedAt) throw new ConflictException('The claim waits for the pieces asked back');
+      if (input.outcome === 'remake') {
+        throw new BadRequestException({ message: 'Remakes are not available yet', errors: [{ path: 'outcome', message: 'not available yet' }] });
+      }
+
+      const workshop = input.fault === 'workshop' ? await this.workshopOf(tx, line.orderLine.groupId) : null;
+      const steps: (() => Promise<void>)[] = [];
+      let refundAmount: Prisma.Decimal | null = null;
+      // The schema holds an amount exactly for a refund.
+      if (input.outcome === 'refund' && input.refund_amount) {
+        refundAmount = new Prisma.Decimal(input.refund_amount);
+        const most = line.orderLine.total
+          .mul(line.pieces)
+          .div(line.orderLine.quantity)
+          .mul(claim.order.taxPercent.div(100).add(1))
+          .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+        if (refundAmount.gt(most)) {
+          throw new BadRequestException({
+            message: `At most ${most.toFixed(2)} can be refunded for these pieces`,
+            errors: [{ path: 'refund_amount', message: `at most ${most.toFixed(2)}` }],
+          });
+        }
+        const refundId = await this.refunds.create(tx, { orderId: claim.orderId, amount: refundAmount, reason: `Claim ${claim.number}`, userId: auth.userId });
+        steps.push(() => this.refunds.afterCreate(auth.tenantId, refundId));
+      }
+
+      // The workshop at fault is owed its cost for the claimed pieces less (goal 5).
+      let owed: { reduced: Prisma.Decimal; shortfall: Prisma.Decimal } | null = null;
+      if (workshop && input.outcome === 'refund') {
+        const share = workshop.cost.mul(line.pieces).div(workshop.quantity).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+        owed = await reduceOwed(tx, workshop.assignmentId, share, `Claim ${claim.number}: ${line.pieces} pieces refunded at the workshop's fault`);
+      }
+
+      const settings = await claimSettings(tx, this.settings);
+      const before = staffView(await tx.claim.findUniqueOrThrow({ where: { id: claimId }, include: WITH }), settings);
+      await tx.claimLine.update({
+        where: { id: lineId },
+        data: {
+          fault: input.fault,
+          outcome: input.outcome,
+          note: input.note ?? null,
+          customerReason: input.customer_reason ?? null,
+          refundAmount,
+          partnerId: workshop?.partnerId ?? null,
+          owedReduction: owed?.reduced ?? null,
+          shortfall: owed && owed.shortfall.gt(0) ? owed.shortfall : null,
+          decidedByUserId: auth.userId,
+          decidedAt: new Date(),
+        },
+      });
+      const after = staffView(await tx.claim.findUniqueOrThrow({ where: { id: claimId }, include: WITH }), settings);
+      await this.audit.record(tx, { actor: { type: 'user', id: auth.userId }, action: 'claim.changed', subject: { type: 'claim', id: claimId }, before, after });
+      const notificationId = await this.notifications.store(
+        tx,
+        'claim.decided',
+        { type: 'order', id: claim.orderId },
+        { number: String(claim.number), order_number: String(claim.order.number), outcome: OUTCOME_WORDS[input.outcome], reason: input.customer_reason ?? '' },
+      );
+      steps.push(() => this.notifications.queue(auth.tenantId, notificationId));
+      return { view: after, afterCommit: steps };
+    });
+    for (const step of afterCommit) {
+      try {
+        await step();
+      } catch (error) {
+        this.logger.error({ err: error, claimId, lineId }, 'a step after deciding a claim line failed');
+      }
+    }
+    return view;
+  }
+
+  /**
+   * The workshop that made a line: its group's accepted job, else the one it replaced last. A line made
+   * in-house has none, and can't be at a workshop's fault (400).
+   */
+  private async workshopOf(
+    tx: Tx,
+    groupId: string | null,
+  ): Promise<{ assignmentId: string; partnerId: string; cost: Prisma.Decimal; quantity: number }> {
+    const jobs = groupId
+      ? await tx.jobAssignment.findMany({
+          where: { groupId, status: { in: ['accepted', 'replaced'] } },
+          include: { group: { select: { quantity: true } } },
+          orderBy: { createdAt: 'desc' },
+        })
+      : [];
+    const job = jobs.find((one) => one.status === 'accepted') ?? jobs[0];
+    if (!job) {
+      throw new BadRequestException({ message: 'No workshop made this line', errors: [{ path: 'fault', message: 'the line was made in-house' }] });
+    }
+    return { assignmentId: job.id, partnerId: job.partnerId, cost: job.cost, quantity: job.group.quantity };
   }
 
   /**
