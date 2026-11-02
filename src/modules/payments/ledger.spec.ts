@@ -1,5 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
-import { buildJournal, creditAppliedJournal, planCreditedJournal } from './ledger';
+import { buildJournal, creditAppliedJournal, creditNoteJournal, planCreditedJournal } from './ledger';
 import type { JournalDraft } from './ledger';
 
 const d = (value: string) => new Prisma.Decimal(value);
@@ -27,6 +27,27 @@ describe('plan journals', () => {
       ['customer_receivable', '-99.00', 'c'],
     ]);
     expect(sum(draft)).toBe('0.00');
+  });
+});
+
+describe('credit note journal (Orders 3 spec, goal 3)', () => {
+  it('takes back the credited share of sales and tax from what the customer owes', () => {
+    const draft = creditNoteJournal('c', d('30.00'), d('4.79'));
+
+    expect(draft.kind).toBe('credit_note');
+    expect(lines(draft)).toEqual([
+      ['sales', '25.21', 'c'],
+      ['tax_payable', '4.79', 'c'],
+      ['customer_receivable', '-30.00', 'c'],
+    ]);
+    expect(sum(draft)).toBe('0.00');
+  });
+
+  it('has no tax line without tax', () => {
+    expect(lines(creditNoteJournal('c', d('30.00'), d('0')))).toEqual([
+      ['sales', '30.00', 'c'],
+      ['customer_receivable', '-30.00', 'c'],
+    ]);
   });
 });
 

@@ -28,6 +28,8 @@ export const JOURNAL_KINDS = [
   'pack_billed',
   'plan_credited',
   'credit_applied',
+  // A credit note lowers an open invoice (Orders 3 spec, goal 3).
+  'credit_note',
 ] as const;
 export type JournalKind = (typeof JOURNAL_KINDS)[number];
 
@@ -135,6 +137,18 @@ export function refundJournals(
       { account: cash, amount: amount.neg() },
     ]),
   ];
+}
+
+/**
+ * A credit note of `amount` on an open invoice: sales and tax payable give back their share of it, and
+ * the customer owes that much less. No cash moves.
+ */
+export function creditNoteJournal(customerId: string, amount: Prisma.Decimal, tax: Prisma.Decimal): JournalDraft {
+  return buildJournal('credit_note', [
+    { account: 'sales', amount: amount.sub(tax), customerId },
+    ...(tax.isZero() ? [] : [{ account: 'tax_payable' as const, amount: tax, customerId }]),
+    { account: 'customer_receivable', amount: amount.neg(), customerId },
+  ]);
 }
 
 /** The provider kept `fee` of a payment. */

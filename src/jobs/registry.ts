@@ -94,6 +94,12 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), refundId: z.uuid() }),
     jobId: (p) => [p.refundId],
   }),
+  // Asks the provider for one pending credit note on an open invoice, and journals it (Orders 3 spec, goal 3).
+  'payments.credit_note': defineJob({
+    queue: 'payments',
+    payload: z.object({ tenantId: z.uuid(), creditNoteId: z.uuid() }),
+    jobId: (p) => [p.creditNoteId],
+  }),
   // Transfers one pending payout to its partner and settles it (Payments spec).
   'payments.payout.transfer': defineJob({
     queue: 'payments',

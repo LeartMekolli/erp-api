@@ -33,6 +33,11 @@ export function stripeCustomerUpdate(input: ProviderCustomerDetails) {
   };
 }
 
+/** A credit note lowering an open invoice by `amount`, in minor units, with the reason as its memo. */
+export function stripeCreditNote(input: { invoiceId: string; amount: Prisma.Decimal; currency: string; reason: string }) {
+  return { invoice: input.invoiceId, amount: toMinorUnits(input.amount, input.currency), memo: input.reason };
+}
+
 function fractionDigits(currency: string): number {
   return new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2;
 }
@@ -362,6 +367,11 @@ export class StripePaymentProvider implements PaymentProvider {
 
   async markInvoicePaidOutside(keys: ProviderKeys, id: string): Promise<void> {
     await this.client(keys).invoices.pay(id, { paid_out_of_band: true });
+  }
+
+  async createCreditNote(keys: ProviderKeys, input: Parameters<PaymentProvider['createCreditNote']>[1]): Promise<{ id: string }> {
+    const note = await this.client(keys).creditNotes.create(stripeCreditNote(input), { idempotencyKey: input.idempotencyKey });
+    return { id: note.id };
   }
 
   async refund(

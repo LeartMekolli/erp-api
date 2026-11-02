@@ -55,6 +55,8 @@ const invoiceSchema = z.strictObject({
   url: z.string(),
   due_on: z.iso.date(),
   status: z.enum(INVOICE_STATUSES),
+  /** What credit notes took off it, so far less is due (Orders 3 spec, goal 3). */
+  credited: money,
 });
 
 /** How the order is paid, as staff see it (Payments spec). */

@@ -912,6 +912,8 @@ export class OrdersService {
       where: { orderId: { in: ids }, status: { in: [...INVOICE_STATUSES] } },
       select: { orderId: true, url: true, dueOn: true, status: true },
     });
+    // What credit notes took off each invoice, once issued (Orders 3 spec, goal 3).
+    const credits = await tx.creditNote.groupBy({ by: ['orderId'], where: { orderId: { in: ids }, status: 'issued' }, _sum: { amount: true } });
 
     return orders.map((order) => {
       const method = methods.find((one) => one.id === order.shippingMethodId)!;
@@ -945,7 +947,12 @@ export class OrdersService {
       const terms = order.paymentTerms as PaymentTerms;
       const found = invoices.find((row) => row.orderId === order.id);
       const invoice = found?.url
-        ? { url: found.url, due_on: found.dueOn.toISOString().slice(0, 10), status: found.status as (typeof INVOICE_STATUSES)[number] }
+        ? {
+            url: found.url,
+            due_on: found.dueOn.toISOString().slice(0, 10),
+            status: found.status as (typeof INVOICE_STATUSES)[number],
+            credited: (credits.find((row) => row.orderId === order.id)?._sum.amount ?? new Prisma.Decimal(0)).toFixed(2),
+          }
         : null;
       return {
         id: order.id,

@@ -5,6 +5,7 @@ import { JobsService } from '../../jobs/jobs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { localDate } from '../orders/dates';
 import { OrdersService } from '../orders/orders.service';
+import { openOnInvoice } from './credit-notes.service';
 import { billedJournal, feeJournal, receivedJournal } from './ledger';
 import { LedgerService } from './ledger.service';
 import { PaymentAccountService } from './payment-account.service';
@@ -226,16 +227,19 @@ export class InvoicesService implements OnModuleInit {
         data: { overdueNotifiedAt: new Date() },
       });
       if (updated.count === 0) return null;
-      return tx.invoice.findUniqueOrThrow({
+      const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: invoiceId },
         include: { order: { select: { id: true, number: true, customer: { select: { name: true } } } } },
       });
+      // What is still due, after part payments and credit notes (Orders 3 spec, goal 3); nothing due, nobody is told.
+      const open = await openOnInvoice(tx, invoice);
+      return open.gt(0) ? { ...invoice, open } : null;
     });
     if (!marked) return;
     const subject = { type: 'order', id: marked.order.id };
     const common = {
       number: String(marked.order.number),
-      total: money(marked.total, marked.currency),
+      total: money(marked.open, marked.currency),
       due_on: marked.dueOn.toISOString().slice(0, 10),
     };
     await this.tell(tenantId, marked.order.id, () =>

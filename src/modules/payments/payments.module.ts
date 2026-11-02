@@ -50,6 +50,8 @@ import { SubscriptionEvents } from './plans/subscription-events';
 import { SubscriptionsController } from './plans/subscriptions.controller';
 import { SubscriptionsService } from './plans/subscriptions.service';
 import { ProviderCustomers } from './provider-customers';
+import { CreditNoteHandler } from './credit-note.handler';
+import { CreditNotesService } from './credit-notes.service';
 import { RefundHandler } from './refund.handler';
 import { RefundsController } from './refunds.controller';
 import { RefundsService } from './refunds.service';
@@ -93,6 +95,8 @@ import { WebhooksController } from './webhooks.controller';
     PaidByHandService,
     RefundsService,
     RefundHandler,
+    CreditNotesService,
+    CreditNoteHandler,
     PayoutAccountsService,
     PayoutsService,
     PayoutHandler,
@@ -119,7 +123,7 @@ import { WebhooksController } from './webhooks.controller';
         config.get('PAYMENT_PROVIDER') === 'stripe' ? new StripePaymentProvider() : new FakePaymentProvider(),
     },
   ],
-  // RefundsService is also how a claim refunds its pieces (ClaimsModule), so Payments never depends on Claims.
-  exports: [PaymentAccountService, LedgerService, PaymentEventsService, PAYMENT_PROVIDER, CreditsService, RefundsService],
+  // RefundsService and CreditNotesService are also how a claim gives money back (ClaimsModule), so Payments never depends on Claims.
+  exports: [PaymentAccountService, LedgerService, PaymentEventsService, PAYMENT_PROVIDER, CreditsService, RefundsService, CreditNotesService],
 })
 export class PaymentsModule {}

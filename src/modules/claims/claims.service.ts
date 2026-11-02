@@ -10,6 +10,7 @@ import { AuditService } from '../audit/audit.service';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { reduceOwed } from '../partners/owed-reduction';
+import { CreditNotesService } from '../payments/credit-notes.service';
 import { RefundsService } from '../payments/refunds.service';
 import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
@@ -113,6 +114,7 @@ export class ClaimsService {
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
     private readonly refunds: RefundsService,
+    private readonly creditNotes: CreditNotesService,
   ) {}
 
   async staffOpen(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, orderId: string, input: OpenClaim): Promise<ClaimResponse> {
@@ -171,7 +173,7 @@ export class ClaimsService {
    * Decides one claimed line, once (goal 3). The order, the claim and the line are locked in that order,
    * so two decisions at once take turns and the second finds the line decided (409). A refund needs
    * `payment.refund`, and is at most the claimed pieces' share of the line with tax; it gives back what was
-   * paid, and is made after the commit. A workshop at fault is owed its cost for those pieces less, or the
+   * paid and credits the rest on the open invoice, both asked for after the commit. A workshop at fault is owed its cost for those pieces less, or the
    * line records the shortfall.
    */
   async decide(auth: Pick<TenantAuth, 'tenantId' | 'userId' | 'permissions'>, claimId: string, lineId: string, input: DecideLine): Promise<ClaimResponse> {
@@ -210,8 +212,22 @@ export class ClaimsService {
             errors: [{ path: 'refund_amount', message: `at most ${most.toFixed(2)}` }],
           });
         }
-        const refundId = await this.refunds.create(tx, { orderId: claim.orderId, amount: refundAmount, reason: `Claim ${claim.number}`, userId: auth.userId });
-        steps.push(() => this.refunds.afterCreate(auth.tenantId, refundId));
+        // What was paid is given back; the rest is credited on the open invoice (O3-11). Beyond both, a 409.
+        const paidLeft = Prisma.Decimal.max(0, await this.refunds.paidLeft(tx, claim.orderId));
+        const refundPart = Prisma.Decimal.min(refundAmount, paidLeft);
+        const creditPart = refundAmount.sub(refundPart);
+        if (creditPart.gt(await this.creditNotes.creditable(tx, claim.orderId))) {
+          throw new ConflictException(`Only ${paidLeft.toFixed(2)} paid can be refunded, and the rest only up to what is open on the invoice`);
+        }
+        if (refundPart.gt(0)) {
+          const refundId = await this.refunds.create(tx, { orderId: claim.orderId, amount: refundPart, reason: `Claim ${claim.number}`, userId: auth.userId });
+          steps.push(() => this.refunds.afterCreate(auth.tenantId, refundId));
+        }
+        if (creditPart.gt(0)) {
+          const creditNoteId = await this.creditNotes.create(tx, { orderId: claim.orderId, claimLineId: lineId, amount: creditPart });
+          if (!creditNoteId) throw new ConflictException('Nothing is open on the invoice to credit');
+          steps.push(() => this.creditNotes.afterCreate(auth.tenantId, creditNoteId));
+        }
       }
 
       // The workshop at fault is owed its cost for the claimed pieces less (goal 5).

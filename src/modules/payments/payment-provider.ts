@@ -150,6 +150,11 @@ export interface PaymentProvider {
     }
   >;
   markInvoicePaidOutside(keys: ProviderKeys, id: string): Promise<void>;
+  /** Lowers what is still open on an invoice by `amount` (Orders 3 spec, goal 3). */
+  createCreditNote(
+    keys: ProviderKeys,
+    input: { invoiceId: string; amount: Prisma.Decimal; currency: string; reason: string; idempotencyKey: string },
+  ): Promise<{ id: string }>;
   refund(
     keys: ProviderKeys,
     input: { paymentId: string; amount: Prisma.Decimal; idempotencyKey: string },

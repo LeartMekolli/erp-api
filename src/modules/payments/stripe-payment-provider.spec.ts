@@ -1,6 +1,7 @@
 import Stripe from 'stripe';
 import { InvalidSignatureError } from './payment-provider';
-import { StripePaymentProvider, stripeCustomerUpdate, toMinorUnits } from './stripe-payment-provider';
+import { Prisma } from '../../generated/prisma/client';
+import { StripePaymentProvider, stripeCreditNote, stripeCustomerUpdate, toMinorUnits } from './stripe-payment-provider';
 
 /** Offline only: nothing here talks to Stripe. */
 
@@ -24,6 +25,16 @@ describe('stripeCustomerUpdate', () => {
     ).toEqual({ line1: 'Hauptstraße 1', line2: '', city: 'Berlin', postal_code: '10115', state: '', country: 'DE' });
   });
 });
+describe('stripeCreditNote', () => {
+  it('credits the invoice in cents, with the reason as its memo', () => {
+    expect(stripeCreditNote({ invoiceId: 'in_123', amount: new Prisma.Decimal('30.5'), currency: 'EUR', reason: 'Claim 3' })).toEqual({
+      invoice: 'in_123',
+      amount: 3050,
+      memo: 'Claim 3',
+    });
+  });
+});
+
 describe('toMinorUnits', () => {
   it('rounds half up to cents', () => {
     expect(toMinorUnits('12.345', 'EUR')).toBe(1235);

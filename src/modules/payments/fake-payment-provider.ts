@@ -34,6 +34,8 @@ interface FakeInvoice {
   /** What its payment took when not all of a positive total, the rest coming from the customer's balance. */
   amountPaid: Prisma.Decimal | null;
   status: 'open' | 'paid' | 'void';
+  /** What credit notes took off what is still open. */
+  credited: Prisma.Decimal;
   paidOutside: boolean;
   paymentId: string | null;
   subscriptionId: string | null;
@@ -413,6 +415,7 @@ export class FakePaymentProvider implements PaymentProvider {
           amount,
           amountPaid: null,
           status: 'open',
+          credited: new Prisma.Decimal(0),
           paidOutside: false,
           paymentId: null,
           subscriptionId: null,
@@ -451,6 +454,22 @@ export class FakePaymentProvider implements PaymentProvider {
     invoice.status = 'paid';
     invoice.paidOutside = true;
     return Promise.resolve();
+  }
+
+  createCreditNote(_keys: ProviderKeys, input: Parameters<PaymentProvider['createCreditNote']>[1]): Promise<{ id: string }> {
+    return Promise.resolve(
+      this.once(input.idempotencyKey, () => {
+        const invoice = this.must(this.invoices, input.invoiceId);
+        if (invoice.status !== 'open') throw new Error(`${input.invoiceId} is ${invoice.status} and can't be credited`);
+        invoice.credited = invoice.credited.add(input.amount);
+        return { id: this.nextId('credit_note') };
+      }),
+    );
+  }
+
+  /** Test control: what credit notes took off an invoice. */
+  invoiceCredited(id: string): Prisma.Decimal {
+    return this.must(this.invoices, id).credited;
   }
 
   refund(
@@ -545,6 +564,7 @@ export class FakePaymentProvider implements PaymentProvider {
       amount,
       amountPaid,
       status: paid ? 'paid' : 'open',
+      credited: new Prisma.Decimal(0),
       paidOutside: false,
       paymentId: paid ? this.nextId('payment') : null,
       subscriptionId,

@@ -99,7 +99,8 @@ export class ClaimsController {
     description:
       'A line decided already, or a claim waiting for the pieces asked back, is a 409. A refusal gives the customer a ' +
       "reason. A refund needs `payment.refund` and is at most the claimed pieces' share of the line, tax included " +
-      '(400); it gives back what was paid, and more than is left to refund is a 409. The workshop at fault is the one ' +
+      "(400). It gives back what was paid, and credits the rest on the order's open invoice at the payment provider, " +
+      'so the customer never pays first to be paid back; more than both is a 409. The workshop at fault is the one ' +
       "that made the line (400 for a line made in-house): while its job is not paid out it is owed its cost for the " +
       'claimed pieces less, else the line records the shortfall.',
     body: decideLineSchema,
