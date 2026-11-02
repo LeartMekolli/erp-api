@@ -11,6 +11,16 @@ import { SETTING_KEYS, SettingKey, SettingValue, isSettingKey, parseSetting } fr
 @Injectable()
 export class SettingsService {
   private readonly logger = new Logger(SettingsService.name);
+  private readonly writeHooks: { key: SettingKey; hook: (tx: Prisma.TransactionClient) => Promise<void> }[] = [];
+
+  /**
+   * Runs inside the transaction that writes `key`, after the new value is stored, so another module can
+   * follow the change atomically (Customers 2: the work queue's order follows the priority bands). A hook
+   * throwing rolls the write back.
+   */
+  onWrite(key: SettingKey, hook: (tx: Prisma.TransactionClient) => Promise<void>): void {
+    this.writeHooks.push({ key, hook });
+  }
 
   /**
    * Every stored setting that is still a known key with a valid value. One
@@ -68,6 +78,9 @@ export class SettingsService {
       ON CONFLICT (tenant_id, key)
       DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
 
+    for (const { hook } of this.writeHooks.filter((one) => one.key === key)) {
+      await hook(tx);
+    }
     return parsed;
   }
 }

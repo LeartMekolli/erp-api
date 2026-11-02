@@ -4,9 +4,10 @@ import { z } from 'zod';
 
 /**
  * Lists sort by id descending: a v7 id orders by creation time, so the id
- * alone is the whole sort key (ADR 0004).
+ * alone is the whole sort key (ADR 0004). The work queue sorts by its group's
+ * queue rank first, so its cursor carries the rank as well (Customers 2).
  */
-const cursorPayloadSchema = z.object({ id: z.uuid() });
+const cursorPayloadSchema = z.object({ id: z.uuid(), rank: z.number().int().min(0).optional() });
 
 export type CursorPayload = z.infer<typeof cursorPayloadSchema>;
 

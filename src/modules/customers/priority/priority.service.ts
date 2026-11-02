@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../../database/prisma.service';
 import { Prisma } from '../../../generated/prisma/client';
@@ -8,7 +8,18 @@ import type { TenantAuth } from '../../identity/auth-context';
 import { localDate, startOfLocalDay } from '../../orders/dates';
 import { keySchema } from '../../pricing/decimals';
 import { SettingsService } from '../../settings/settings.service';
-import { bandInForce, bandNamed, isBandKey, overrideInForce, prioritySettings, workspaceToday } from './bands';
+import { WorkOrdersService } from '../../workflow/work-orders.service';
+import {
+  bandInForce,
+  bandNamed,
+  customerBand,
+  isBandKey,
+  overrideInForce,
+  prioritySettings,
+  privilegesOf,
+  queueRankOf,
+  workspaceToday,
+} from './bands';
 import type { PrioritySettings } from './bands';
 import type { CustomerPriorityResponse } from './priority-response';
 import { NO_PARTS, bandFor, percentileParts, scoreOf } from './score';
@@ -38,14 +49,68 @@ export type PriorityOverrideInput = z.infer<typeof priorityOverrideSchema>;
  * workspace's other customers, so it is always computed for the whole workspace at once.
  */
 @Injectable()
-export class PriorityService {
+export class PriorityService implements OnModuleInit {
   private readonly logger = new Logger(PriorityService.name);
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
     private readonly audit: AuditService,
+    private readonly workOrders: WorkOrdersService,
   ) {}
+
+  onModuleInit(): void {
+    // A new group sorts by its customer's band from the start; Workflow never depends on Customers.
+    this.workOrders.registerStartHook(async (tx, started) => {
+      if (started.quote.customerId) await this.rankGroup(tx, started.groupId, started.quote.customerId);
+      return undefined;
+    });
+    // Bands changing first-in-line, or their order, reorder the queue with the change.
+    this.settings.onWrite('customers.priority', async (tx) => this.rerank(tx, (await workspaceToday(tx, new Date())).today));
+  }
+
+  /**
+   * Sets every group's work queue rank from its customer's band in force on `today` (spec, goal 17):
+   * `queueRankOf` for a first-in-line band, else 0. Called after a run, an override set or removed and a
+   * change to the bands; an override that ends on its own is followed at the next nightly run. Only groups
+   * whose rank changes are written, locked in id order as moves lock groups, so the two never deadlock.
+   */
+  async rerank(tx: Tx, today: string): Promise<void> {
+    const settings = await prioritySettings(tx, this.settings);
+    const firstInLine = settings.bands.filter((band) => band.firstInLine).map((band) => band.key);
+    const rows =
+      firstInLine.length === 0
+        ? []
+        : await tx.customerPriority.findMany({
+            where: { OR: [{ bandKey: { in: firstInLine } }, { overrideBandKey: { in: firstInLine } }] },
+            select: { customerId: true, bandKey: true, overrideBandKey: true, overrideEndsOn: true },
+          });
+    const customerIds: string[] = [];
+    const ranks: number[] = [];
+    for (const row of rows) {
+      const rank = queueRankOf(bandInForce(row, today, settings).key, settings);
+      if (rank > 0) {
+        customerIds.push(row.customerId);
+        ranks.push(rank);
+      }
+    }
+    await tx.$executeRaw`
+      WITH target AS (SELECT * FROM unnest(${customerIds}::uuid[], ${ranks}::int[]) AS t(customer_id, rank)),
+      changed AS (
+        SELECT g.id, COALESCE(t.rank, 0) AS rank
+        FROM work_order_group g LEFT JOIN target t ON t.customer_id = g.customer_id
+        WHERE g.queue_rank <> COALESCE(t.rank, 0)
+        ORDER BY g.id
+        FOR NO KEY UPDATE OF g
+      )
+      UPDATE work_order_group g SET queue_rank = changed.rank FROM changed WHERE g.id = changed.id`;
+  }
+
+  private async rankGroup(tx: Tx, groupId: string, customerId: string): Promise<void> {
+    const settings = await prioritySettings(tx, this.settings);
+    const rank = queueRankOf((await customerBand(tx, customerId, settings)).key, settings);
+    if (rank > 0) await tx.workOrderGroup.update({ where: { id: groupId }, data: { queueRank: rank } });
+  }
 
   /** Computes every active workspace not yet computed on its local today; one failing doesn't stop the others. */
   async refreshEverywhere(at: Date): Promise<void> {
@@ -96,6 +161,7 @@ export class PriorityService {
           update: data,
         });
       }
+      await this.rerank(tx, (await workspaceToday(tx, at)).today);
     });
   }
 
@@ -140,6 +206,7 @@ export class PriorityService {
       });
       const after = await this.read(tx, customerId, settings, today);
       await this.record(tx, auth, customerId, before, after);
+      await this.rerank(tx, today);
       return after;
     });
   }
@@ -156,6 +223,7 @@ export class PriorityService {
         data: { overrideBandKey: null, overrideReason: null, overrideEndsOn: null, overrideByUserId: null },
       });
       await this.record(tx, auth, customerId, before, await this.read(tx, customerId));
+      await this.rerank(tx, (await workspaceToday(tx, new Date())).today);
     });
   }
 
@@ -245,6 +313,7 @@ export class PriorityService {
 /** A customer never computed reads score 0 and the default band. */
 export function priorityResponse(row: CustomerPriority | null, today: string, settings: PrioritySettings): CustomerPriorityResponse {
   const inForce = bandInForce(row, today, settings);
+  const privileges = privilegesOf(inForce.key, settings);
   return {
     score: row?.score ?? 0,
     parts: row ? (row.parts as unknown as Parts) : NO_PARTS,
@@ -254,6 +323,7 @@ export function priorityResponse(row: CustomerPriority | null, today: string, se
         ? { band: bandNamed(row.overrideBandKey, settings), reason: row.overrideReason!, ends_on: dayOf(row.overrideEndsOn!) }
         : null,
     band: { key: inForce.key, name: inForce.name },
+    privileges: { first_in_line: privileges.firstInLine, may_pick_partner: privileges.mayPickPartner },
     computed_at: row?.computedAt.toISOString() ?? null,
   };
 }

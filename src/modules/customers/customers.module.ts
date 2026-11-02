@@ -7,6 +7,7 @@ import { IdentityNotifierModule } from '../identity/identity-notifier';
 import { PartnersModule } from '../partners/partners.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { SettingsModule } from '../settings/settings.module';
+import { WorkflowModule } from '../workflow/workflow.module';
 import { CustomerAddressesService } from './addresses';
 import { CustomerInvitationsService } from './customer-invitations.service';
 import { CustomerSiteController } from './customer-site.controller';
@@ -25,7 +26,17 @@ import { PriorityService } from './priority/priority.service';
 
 /** Customer organisations, their people, the portal they act through, and their priority (Customers specs). */
 @Module({
-  imports: [AuditModule, IdentityNotifierModule, GoogleModule, CatalogModule, FilesModule, PricingModule, PartnersModule, SettingsModule],
+  imports: [
+    AuditModule,
+    IdentityNotifierModule,
+    GoogleModule,
+    CatalogModule,
+    FilesModule,
+    PricingModule,
+    PartnersModule,
+    SettingsModule,
+    WorkflowModule,
+  ],
   controllers: [
     CustomersController,
     PriorityController,

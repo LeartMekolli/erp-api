@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, OnModuleInit } from 
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { customerBand, prioritySettings, privilegesOf } from '../customers/priority/bands';
 import type { CustomerAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { defaultDueOn, workspaceToday } from '../orders/order-lines';
@@ -141,12 +142,15 @@ export class PartnerQuotesService implements OnModuleInit {
     return { customerId: auth.customerId, audience: 'customer' };
   }
 
-  /** Only customers the workspace lets pick. */
+  /** Only customers the workspace lets pick: by their own switch, or by their priority band (Customers 2 spec, goal 17). */
   private async mayPick(auth: CustomerAuth): Promise<void> {
-    const customer = await this.prisma.inTenant(auth.tenantId, (tx) =>
-      tx.customer.findUniqueOrThrow({ where: { id: auth.customerId }, select: { mayPickPartner: true } }),
-    );
-    if (!customer.mayPickPartner) {
+    const may = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const customer = await tx.customer.findUniqueOrThrow({ where: { id: auth.customerId }, select: { mayPickPartner: true } });
+      if (customer.mayPickPartner) return true;
+      const settings = await prioritySettings(tx, this.settings);
+      return privilegesOf((await customerBand(tx, auth.customerId, settings)).key, settings).mayPickPartner;
+    });
+    if (!may) {
       throw new ForbiddenException('The workspace has not let this customer pick a workshop');
     }
   }

@@ -58,6 +58,12 @@ export function bandInForce(row: PriorityRow | null, today: string, settings: Pr
   return { ...bandNamed(overridden ? row!.overrideBandKey : (row?.bandKey ?? null), settings), overridden };
 }
 
+/** One customer's band in force, now. */
+export async function customerBand(tx: Prisma.TransactionClient, customerId: string, settings: PrioritySettings): Promise<Band & { overridden: boolean }> {
+  const row = await tx.customerPriority.findFirst({ where: { customerId }, select: { bandKey: true, overrideBandKey: true, overrideEndsOn: true } });
+  return bandInForce(row, (await workspaceToday(tx, new Date())).today, settings);
+}
+
 /** The customers whose band in force is the configured band `key`. */
 function inBand(key: string, today: string): Prisma.CustomerWhereInput {
   return {
@@ -100,6 +106,22 @@ export function bandWhere(key: string, today: string, settings: PrioritySettings
       },
     ],
   };
+}
+
+/** What the band unlocks (spec, goal 17); the default band unlocks nothing. */
+export function privilegesOf(key: string, settings: PrioritySettings): { firstInLine: boolean; mayPickPartner: boolean } {
+  const band = settings.bands.find((one) => one.key === key);
+  return { firstInLine: band?.firstInLine ?? false, mayPickPartner: band?.mayPickPartner ?? false };
+}
+
+/**
+ * The work queue rank of a band: for a first-in-line band, its place counted from the bottom among all bands
+ * by start, so a higher band ranks higher; 0 for any other.
+ */
+export function queueRankOf(key: string, settings: PrioritySettings): number {
+  const byStart = [...settings.bands].sort((a, b) => b.from - a.from);
+  const index = byStart.findIndex((band) => band.key === key);
+  return index >= 0 && byStart[index].firstInLine ? byStart.length - index : 0;
 }
 
 export function isBandKey(key: string, settings: PrioritySettings): boolean {

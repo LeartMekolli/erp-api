@@ -363,19 +363,29 @@ export class WorkOrdersService {
         // Without the move permission, nothing is workable.
         workable = mayMove ? { status: 'active', currentStepId: { notIn: [...barred] } } : { id: { in: [] } };
       }
+      // First-in-line customers' groups first (Customers 2 spec, goal 17), then in id order. A cursor from
+      // before ranks existed carries none: the rank its piece's group has now is taken.
+      let page: Prisma.WorkOrderWhereInput = {};
+      if (after) {
+        const rank =
+          after.rank ??
+          (await tx.workOrder.findUnique({ where: { id: after.id }, select: { group: { select: { queueRank: true } } } }))?.group.queueRank ??
+          0;
+        page = { OR: [{ group: { queueRank: { lt: rank } } }, { group: { queueRank: rank }, id: { gt: after.id } }] };
+      }
       const rows = await tx.workOrder.findMany({
         where: {
           AND: [
             {
-              ...(after ? { id: { gt: after.id } } : {}),
               ...(query.group_id ? { groupId: query.group_id } : {}),
               ...(query.step_key ? { currentStep: { key: query.step_key } } : {}),
               ...(query.status ? { status: query.status } : {}),
             },
+            page,
             workable,
           ],
         },
-        orderBy: { id: 'asc' },
+        orderBy: [{ group: { queueRank: 'desc' } }, { id: 'asc' }],
         take: query.limit + 1,
         include: pieceInclude,
       });
@@ -388,7 +398,7 @@ export class WorkOrdersService {
           to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
         })),
-        next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
+        next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id, rank: last.group.queueRank }, secret) : null,
       };
     });
   }
@@ -516,7 +526,7 @@ export class WorkOrdersService {
 
 export const pieceInclude = {
   currentStep: { select: { id: true, key: true, name: true } },
-  group: { select: { quantity: true } },
+  group: { select: { quantity: true, queueRank: true } },
 } as const;
 
 const stepRef = { select: { id: true, key: true, name: true } } as const;

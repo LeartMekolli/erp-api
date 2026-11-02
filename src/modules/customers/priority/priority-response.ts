@@ -17,6 +17,8 @@ export const customerPriorityResponseSchema = z.strictObject({
   override: z.strictObject({ band: bandSchema, reason: z.string(), ends_on: z.iso.date() }).nullable(),
   /** The band in force: the override while it lasts, else the computed band. */
   band: bandSchema,
+  /** What the band in force unlocks. `may_pick_partner` is ORed with the customer's own switch. */
+  privileges: z.strictObject({ first_in_line: z.boolean(), may_pick_partner: z.boolean() }),
   computed_at: z.string().nullable(),
 });
 export type CustomerPriorityResponse = z.infer<typeof customerPriorityResponseSchema>;

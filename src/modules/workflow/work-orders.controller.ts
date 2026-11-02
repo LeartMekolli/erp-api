@@ -87,8 +87,9 @@ export class WorkOrdersController {
   }
 
   @ApiDoc({
-    summary: 'Pieces in the order they started, such as the work list of one step.',
+    summary: "Pieces in the order to work them, such as the work list of one step: first-in-line customers' first, then as they started.",
     description:
+      "A customer whose priority band is first in line has its pieces listed first, higher bands before lower ones. " +
       'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
       '`workable=true` keeps only those pieces.',
