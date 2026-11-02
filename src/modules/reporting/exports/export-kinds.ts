@@ -14,6 +14,7 @@ export const EXPORT_KINDS = [
   'accounting_refunds',
   'accounting_payouts',
   'dashboard_pdf',
+  'top_customers',
 ] as const;
 export type ExportKind = (typeof EXPORT_KINDS)[number];
 
@@ -27,6 +28,8 @@ export const EXPORT_PERMISSION: Record<ExportKind, TenantPermission> = {
   accounting_refunds: 'payment.read',
   accounting_payouts: 'payment.read',
   dashboard_pdf: 'report.read',
+  // Revenue is the list's point (Orders 3 spec, goal 9).
+  top_customers: 'payment.read',
 };
 
 /** The most rows one CSV export may hold (Reporting 2 spec, goal 9). */
@@ -61,6 +64,12 @@ export const dashboardPdfParamsSchema = z
   .refine(toNotBeforeFrom, { message: '`to` is before `from`', path: ['to'] })
   .refine(withinMaxRange, { message: `At most ${MAX_RANGE_DAYS} days`, path: ['to'] });
 
+/** The range ranked; the period before it, of the same length, is compared with it. */
+export const topCustomersParamsSchema = z
+  .strictObject(dateRange)
+  .refine(toNotBeforeFrom, { message: '`to` is before `from`', path: ['to'] })
+  .refine(withinMaxRange, { message: `At most ${MAX_RANGE_DAYS} days`, path: ['to'] });
+
 export const partnersParamsSchema =z.strictObject({ status: z.enum(PARTNER_STATUSES).optional() });
 
 /**
@@ -84,6 +93,7 @@ export const exportRequestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('accounting_refunds'), params: accountingParamsSchema }),
   z.strictObject({ kind: z.literal('accounting_payouts'), params: accountingParamsSchema }),
   z.strictObject({ kind: z.literal('dashboard_pdf'), params: dashboardPdfParamsSchema }),
+  z.strictObject({ kind: z.literal('top_customers'), params: topCustomersParamsSchema }),
 ]);
 export type ExportRequest = z.infer<typeof exportRequestSchema>;
 

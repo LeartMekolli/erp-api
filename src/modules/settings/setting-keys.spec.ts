@@ -105,6 +105,17 @@ describe('setting keys', () => {
     expect(() => parseSetting('customers.priority', { ...priority, weights: { ...priority.weights, payment: 11 } })).toThrow(ZodError);
   });
 
+  it('accepts the two monthly schedules, each on or off with up to 20 recipients', () => {
+    const recipient = '01900000-0000-7000-8000-000000000001';
+    const schedules = { accounting: { enabled: true, recipientUserIds: [recipient] }, top_customers: { enabled: false, recipientUserIds: [] } };
+    expect(parseSetting('reports.schedules', schedules)).toEqual(schedules);
+    const many = Array.from({ length: 21 }, (_, index) => `01900000-0000-7000-8000-${String(index).padStart(12, '0')}`);
+    for (const accounting of [{ enabled: true, recipientUserIds: many }, { enabled: true, recipientUserIds: ['not-a-user'] }, { enabled: 'yes', recipientUserIds: [] }]) {
+      expect(() => parseSetting('reports.schedules', { ...schedules, accounting })).toThrow(ZodError);
+    }
+    expect(() => parseSetting('reports.schedules', { accounting: schedules.accounting })).toThrow(ZodError);
+  });
+
   it('accepts a claim window of 1 to 365 days and up to 20 reasons with unique keys', () => {
     const reasons = [
       { key: 'defect', name: 'Defect' },

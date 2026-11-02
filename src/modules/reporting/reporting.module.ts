@@ -7,11 +7,13 @@ import { AttentionService } from './attention.service';
 import { AccountingExports } from './exports/accounting.export';
 import { CustomersExport } from './exports/customers.export';
 import { DashboardPdfExport } from './exports/dashboard-pdf.export';
-import { ExpireExportsHandler, ExportHandler } from './exports/export.handler';
+import { ExpireExportsHandler, ExportHandler, ScheduledExportsHandler } from './exports/export.handler';
 import { ExportsController } from './exports/exports.controller';
 import { ExportsService } from './exports/exports.service';
 import { OrdersExport } from './exports/orders.export';
 import { PartnersExport } from './exports/partners.export';
+import { ScheduledExportsService } from './exports/scheduled-exports.service';
+import { TopCustomersExport } from './exports/top-customers.export';
 import { ReportsHandler } from './reports.handler';
 import { ReportsService } from './reports.service';
 
@@ -33,10 +35,13 @@ import { ReportsService } from './reports.service';
     PartnersExport,
     AccountingExports,
     DashboardPdfExport,
+    TopCustomersExport,
+    ScheduledExportsService,
     ExportHandler,
     ExpireExportsHandler,
+    ScheduledExportsHandler,
   ],
-  exports: [ReportsService, AttentionService, ExportsService],
+  exports: [ReportsService, AttentionService, ExportsService, ScheduledExportsService],
 })
 // Not `ReportingModule`: that name is the error reporting in src/common/reporting.
 export class ReportsModule {}

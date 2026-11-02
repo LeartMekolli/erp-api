@@ -2,6 +2,9 @@ import { BadRequestException } from '@nestjs/common';
 import { z } from 'zod';
 import { keySchema } from '../pricing/decimals';
 
+/** One monthly export schedule: on or off, and the staff told when its files are ready. */
+const reportSchedule = z.object({ enabled: z.boolean(), recipientUserIds: z.array(z.uuid()).max(20) });
+
 /**
  * Every tenant setting the system knows, each with the schema its value must
  * satisfy. A key that is not listed here cannot be stored, so settings never
@@ -64,6 +67,12 @@ export const SETTING_KEYS = {
       .min(1)
       .max(20)
       .refine((reasons) => new Set(reasons.map((reason) => reason.key)).size === reasons.length, { message: 'reason keys must be unique' }),
+  }),
+  // Exports made on the workspace's 1st for last month, and who is told (Orders 3 spec, goal 10): the
+  // accountant's files and top customers. Unset: both off.
+  'reports.schedules': z.object({
+    accounting: reportSchedule,
+    top_customers: reportSchedule,
   }),
   // How a pay-first order is paid (Payments spec): within how many hours, and where the checkout
   // returns to. Unset: 24 hours, and the customer site's order page.

@@ -7,6 +7,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import type { Prisma } from '../../../generated/prisma/client';
 import { JobsService } from '../../../jobs/jobs.service';
 import { FilesService } from '../../files/files.service';
+import type { FileOwner } from '../../files/files.service';
 import type { TenantAuth } from '../../identity/auth-context';
 import { isTenantPermission } from '../../identity/permissions';
 import type { TenantPermission } from '../../identity/permissions';
@@ -34,6 +35,25 @@ class TooManyRows extends Error {
 }
 
 /**
+ * The exports a caller may read: its own, and the scheduled ones of a kind whose permission it holds,
+ * with `report.export` (Orders 3 spec, goal 10). The routes require `report.export` already.
+ */
+export function readableBy(auth: Pick<TenantAuth, 'userId' | 'permissions'>): Prisma.ReportExportWhereInput {
+  const kinds = (Object.keys(EXPORT_PERMISSION) as ExportKind[]).filter((kind) => auth.permissions.has(EXPORT_PERMISSION[kind]));
+  return {
+    OR: [
+      { requestedByUserId: auth.userId },
+      ...(auth.permissions.has('report.export') ? [{ requestedByUserId: null, scheduleKey: { not: null }, kind: { in: kinds } }] : []),
+    ],
+  };
+}
+
+/** Whose an export's file is: its asker's, or a scheduled export's own. */
+function fileOwnerOf(row: { id: string; requestedByUserId: string | null }): FileOwner {
+  return row.requestedByUserId ? { type: 'user', id: row.requestedByUserId } : { type: 'report', id: row.id };
+}
+
+/**
  * Exports (Reporting 2 spec): asked for here, built by the `reports.export` job from the permissions the
  * asker held when asking, stored as a file of theirs, downloaded only by them, removed after 30 days. The
  * row is the log, and stays.
@@ -42,6 +62,7 @@ class TooManyRows extends Error {
 export class ExportsService {
   private readonly logger = new Logger(ExportsService.name);
   private readonly builders = new Map<ExportKind, ExportBuilder>();
+  private scheduledReady?: (tenantId: string, exportId: string) => Promise<void>;
   /** The row limit; a test may lower it. */
   rowLimit = EXPORT_ROW_LIMIT;
   /** Rows per page; a test may lower it. */
@@ -92,18 +113,23 @@ export class ExportsService {
     return { id: row.id };
   }
 
-  /** One of the asker's exports; another's is a 404. */
-  async get(auth: TenantAuth, id: string): Promise<ExportResponse> {
-    return toExportResponse(await this.own(auth, id));
+  /** Runs once a scheduled export is ready; ScheduledExportsService tells its recipients. */
+  onScheduledReady(hook: (tenantId: string, exportId: string) => Promise<void>): void {
+    this.scheduledReady = hook;
   }
 
-  /** The asker's exports, newest first. */
+  /** One of the asker's exports, or a scheduled one they may read; another's is a 404. */
+  async get(auth: TenantAuth, id: string): Promise<ExportResponse> {
+    return toExportResponse(await this.readable(auth, id));
+  }
+
+  /** The asker's exports and the scheduled ones they may read, newest first. */
   async list(auth: TenantAuth, query: ExportListQuery): Promise<Page<ExportResponse>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     const rows = await this.prisma.inTenant(auth.tenantId, (tx) =>
       tx.reportExport.findMany({
-        where: { requestedByUserId: auth.userId, ...(after ? { id: { lt: after.id } } : {}) },
+        where: { ...readableBy(auth), ...(after ? { id: { lt: after.id } } : {}) },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
       }),
@@ -111,9 +137,9 @@ export class ExportsService {
     return toPage(rows.map(toExportResponse), query.limit, secret);
   }
 
-  /** A short-lived link to the asker's ready export; 409 until it is ready or once it has expired. */
+  /** A short-lived link to a ready export the caller may read; 409 until it is ready or once it has expired. */
   async downloadUrl(auth: TenantAuth, id: string): Promise<ExportDownload> {
-    const row = await this.own(auth, id);
+    const row = await this.readable(auth, id);
     if (row.status !== 'ready' || !row.fileId || !row.expiresAt || row.expiresAt <= new Date()) {
       throw new ConflictException(row.status === 'expired' || row.status === 'ready' ? 'Expired' : 'Not ready');
     }
@@ -121,7 +147,7 @@ export class ExportsService {
     const version = await this.prisma.inTenant(auth.tenantId, (tx) =>
       tx.fileVersion.findFirstOrThrow({ where: { fileId, number: 1 }, select: { id: true } }),
     );
-    const link = await this.files.downloadUrl(auth.tenantId, fileId, version.id, { type: 'user', id: auth.userId });
+    const link = await this.files.downloadUrl(auth.tenantId, fileId, version.id, fileOwnerOf(row));
     await this.prisma.inTenant(auth.tenantId, (tx) =>
       tx.reportExport.updateMany({ where: { id, downloadedAt: null }, data: { downloadedAt: new Date() } }),
     );
@@ -129,17 +155,32 @@ export class ExportsService {
   }
 
   /**
-   * The `reports.export` job: builds the file, stores it as the asker's, and tells them. An export no
-   * longer pending is left alone; one past the row limit fails at once.
+   * The `reports.export` job: builds the file, stores it as the asker's, and tells them. A scheduled
+   * export's file is the export's own, made in the name of the workspace's first owner, and its recipients
+   * are told once its month is ready. An export no longer pending is left alone; one past the row limit
+   * fails at once.
    */
   async run(tenantId: string, exportId: string): Promise<void> {
-    const { row, tenant } = await this.prisma.inTenant(tenantId, async (tx) => ({
-      row: await tx.reportExport.findUnique({ where: { id: exportId } }),
-      tenant: await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, defaultCurrency: true } }),
-    }));
+    const { row, tenant, maker } = await this.prisma.inTenant(tenantId, async (tx) => {
+      const row = await tx.reportExport.findUnique({ where: { id: exportId } });
+      return {
+        row,
+        tenant: await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, defaultCurrency: true } }),
+        // A file names who made it; a scheduled export has no asker, so the workspace's first owner.
+        maker:
+          row && !row.requestedByUserId
+            ? (
+                await tx.user.findFirstOrThrow({
+                  where: { roles: { some: { role: { name: 'owner', isSystem: true } } } },
+                  orderBy: { createdAt: 'asc' },
+                  select: { id: true },
+                })
+              ).id
+            : row?.requestedByUserId,
+      };
+    });
     if (!row || row.status !== 'pending') return;
     const asker = row.requestedByUserId;
-    if (!asker) throw new Error(`Export ${exportId} has no requester`);
     const builder = this.builderOf(row.kind as ExportKind);
     if (!builder) throw new Error(`No builder for exports of kind ${row.kind}`);
 
@@ -177,11 +218,12 @@ export class ExportsService {
     await this.files.storeGenerated(tenantId, {
       // The export's id: a retried job finds the file it wrote.
       fileId: exportId,
-      owner: { type: 'user', id: asker },
+      owner: fileOwnerOf(row),
       name: `${row.kind}-${localDate(row.createdAt, ctx.timeZone)}.${extension}`,
       bytes,
       contentType: builder.format === 'csv' ? 'text/csv; charset=utf-8' : 'application/pdf',
-      createdByUserId: asker,
+      // Set whenever the row exists.
+      createdByUserId: maker!,
       kind: 'document',
     });
     const finishedAt = new Date();
@@ -191,7 +233,16 @@ export class ExportsService {
         data: { status: 'ready', rows, fileId: exportId, finishedAt, expiresAt: new Date(finishedAt.getTime() + KEEP_MS) },
       }),
     );
-    if (updated.count === 1) await this.tell(tenantId, 'report.export_ready', asker, exportId, row.kind);
+    if (updated.count !== 1) return;
+    if (asker) {
+      await this.tell(tenantId, 'report.export_ready', asker, exportId, row.kind);
+    } else {
+      try {
+        await this.scheduledReady?.(tenantId, exportId);
+      } catch (error) {
+        this.logger.error({ err: error, tenantId, exportId }, "telling a scheduled export's recipients failed");
+      }
+    }
   }
 
   /** After the job's last attempt, or a build past the row limit: failed, with a plain message, and the asker told. */
@@ -231,7 +282,7 @@ export class ExportsService {
     for (const row of due) {
       if (row.fileId) {
         try {
-          await this.files.remove(tenantId, row.fileId, row.requestedByUserId ? { type: 'user', id: row.requestedByUserId } : undefined);
+          await this.files.remove(tenantId, row.fileId, fileOwnerOf(row));
         } catch (error) {
           // Already removed by an earlier run that stopped before marking it.
           if (!(error instanceof NotFoundException)) throw error;
@@ -242,10 +293,8 @@ export class ExportsService {
     return due.length;
   }
 
-  private async own(auth: TenantAuth, id: string) {
-    const row = await this.prisma.inTenant(auth.tenantId, (tx) =>
-      tx.reportExport.findFirst({ where: { id, requestedByUserId: auth.userId } }),
-    );
+  private async readable(auth: TenantAuth, id: string) {
+    const row = await this.prisma.inTenant(auth.tenantId, (tx) => tx.reportExport.findFirst({ where: { id, ...readableBy(auth) } }));
     if (!row) throw new NotFoundException('Export not found');
     return row;
   }

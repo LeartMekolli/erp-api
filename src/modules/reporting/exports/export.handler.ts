@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { HandlesJob } from '../../../jobs/handles-job';
 import type { JobHandler } from '../../../jobs/handles-job';
 import { ExportsService } from './exports.service';
+import { ScheduledExportsService } from './scheduled-exports.service';
 
 interface ExportPayload {
   tenantId: string;
@@ -20,6 +21,17 @@ export class ExportHandler implements JobHandler<ExportPayload> {
 
   onDeadLetter({ tenantId, exportId }: ExportPayload): Promise<void> {
     return this.exports.failedPlainly(tenantId, exportId);
+  }
+}
+
+/** Every hour (SCHEDULED_JOBS['reports.schedules']): makes last month's scheduled exports not made yet. */
+@Injectable()
+@HandlesJob('reports.schedules')
+export class ScheduledExportsHandler implements JobHandler<Record<string, never>> {
+  constructor(private readonly schedules: ScheduledExportsService) {}
+
+  handle(): Promise<void> {
+    return this.schedules.runEverywhere(new Date());
   }
 }
 

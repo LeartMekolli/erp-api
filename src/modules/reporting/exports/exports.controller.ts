@@ -38,8 +38,10 @@ export class ExportsController {
   }
 
   @ApiDoc({
-    summary: 'Your exports, newest first.',
-    description: 'Pass `next_cursor` back as `cursor` for the next page.',
+    summary: 'Your exports and the monthly scheduled ones you may read, newest first.',
+    description:
+      "A scheduled export (`reports.schedules`) has no asker; it is listed for whoever holds its kind's permission. " +
+      'Pass `next_cursor` back as `cursor` for the next page.',
     query: exportListQuerySchema,
     response: pageSchema(exportResponseSchema),
     errors: [400],
@@ -51,8 +53,8 @@ export class ExportsController {
   }
 
   @ApiDoc({
-    summary: 'One of your exports, with its status.',
-    description: "Another person's export is a 404.",
+    summary: 'One of your exports, or a scheduled one you may read, with its status.',
+    description: "Another person's export, or a scheduled one without its kind's permission, is a 404.",
     response: exportResponseSchema,
     errors: [400, 404],
   })
@@ -63,8 +65,9 @@ export class ExportsController {
   }
 
   @ApiDoc({
-    summary: 'A short-lived download link for one of your exports.',
-    description: "409 until it is ready, or once it has expired. Another person's export is a 404.",
+    summary: 'A short-lived download link for one of your exports, or a scheduled one you may read.',
+    description:
+      "409 until it is ready, or once it has expired. Another person's export, or a scheduled one without its kind's permission, is a 404.",
     response: exportDownloadSchema,
     errors: [400, 404, 409],
   })

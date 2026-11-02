@@ -15,6 +15,7 @@ describe('notification catalogue', () => {
       'claim.remake_shipped',
       'credits.added',
       'customer.invited',
+      'export.scheduled_ready',
       'file.measured',
       'invoice.overdue',
       'invoice.overdue.staff',
@@ -91,6 +92,11 @@ describe('notification catalogue', () => {
     // And when a remake ships, as its own parcel.
     expect([EVENTS['claim.remake_shipped'].audience, EVENTS['claim.remake_shipped'].subjectType]).toEqual([{ kind: 'customer' }, 'order']);
     expect(Object.keys(variablesOf('claim.remake_shipped')).sort()).toEqual(['courier', 'number', 'order_number', 'tracking']);
+  });
+
+  it('tells each recipient of a scheduled export, about the recipient, once a schedule is made for the month (Orders 3 spec, goal 10)', () => {
+    expect([EVENTS['export.scheduled_ready'].audience, EVENTS['export.scheduled_ready'].subjectType]).toEqual([{ kind: 'user' }, 'user']);
+    expect(Object.keys(variablesOf('export.scheduled_ready')).sort()).toEqual(['exports', 'month', 'schedule']);
   });
 
   it("tells the customer's people when a subscription starts, about the customer itself", () => {

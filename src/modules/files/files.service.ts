@@ -40,13 +40,18 @@ export interface NewUpload {
 /**
  * Who a file belongs to besides the workspace (Customers spec, goal 6). Every
  * method that takes one only sees files of that owner; without one (staff),
- * every file of the workspace except those of a user: a staff member's export
- * (Reporting 2 spec) is reached only by them, through the exports routes.
+ * every file of the workspace except those of a user or a report: a staff
+ * member's export (Reporting 2 spec), or a scheduled export (`report`, its
+ * export's id; Orders 3 spec, goal 10), is reached only through the exports
+ * routes, by those they are for.
  */
 export interface FileOwner {
-  type: 'customer' | 'user';
+  type: 'customer' | 'user' | 'report';
   id: string;
 }
+
+/** Owners whose files staff never reach through the files routes. */
+const PRIVATE_OWNERS = ['user', 'report'];
 
 /** The uploader: a staff user or a customer person. */
 type Uploader = Pick<TenantAuth, 'tenantId' | 'userId'>;
@@ -55,7 +60,7 @@ type Uploader = Pick<TenantAuth, 'tenantId' | 'userId'>;
 function ownedBy(owner: FileOwner | undefined): Prisma.FileWhereInput {
   return {
     status: { not: 'removed' },
-    ...(owner ? { ownerType: owner.type, ownerId: owner.id } : { OR: [{ ownerType: null }, { ownerType: { not: 'user' } }] }),
+    ...(owner ? { ownerType: owner.type, ownerId: owner.id } : { OR: [{ ownerType: null }, { ownerType: { notIn: PRIVATE_OWNERS } }] }),
   };
 }
 

@@ -153,6 +153,23 @@ export const EVENTS = {
       },
     },
   },
+  // A recipient of a monthly schedule hears once its month's files are all ready (Orders 3 spec, goal 10).
+  'export.scheduled_ready': {
+    audience: { kind: 'user' },
+    channels: ['email', 'feed'],
+    subjectType: 'user',
+    variables: {
+      schedule: { sample: 'accounting' },
+      month: { sample: '2026-10' },
+      exports: { sample: 'accounting_invoices: 01900000-0000-7000-8000-000000000001' },
+    },
+    defaults: {
+      en: {
+        subject: 'The {{ schedule }} exports for {{ month }} are ready',
+        body: 'The {{ schedule }} exports for {{ month }} are ready to download from your exports for the next 30 days:\n\n{{ exports }}',
+      },
+    },
+  },
   'report.export_failed': {
     audience: { kind: 'user' },
     channels: ['feed'],
