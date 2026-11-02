@@ -175,6 +175,7 @@ describe('users and roles administration', () => {
       const roles = (response.body as { data: { name: string; is_system: boolean; permissions: string[] }[] }).data;
 
       expect(roles.map((role) => [role.name, role.is_system])).toEqual([
+        ['accountant', true],
         ['member', true],
         ['owner', true],
       ]);

@@ -30,6 +30,10 @@ describe('permissions', () => {
     ]);
   });
 
+  it('lets the accountant read payments and reports and download exports, nothing more (Orders 3 spec, goal 8)', () => {
+    expect([...SYSTEM_ROLES.accountant].sort()).toEqual(['payment.read', 'report.export', 'report.read']);
+  });
+
   it('keeps tenant and platform permissions apart', () => {
     expect(TENANT_PERMISSIONS.some((permission) => permission.startsWith('platform.'))).toBe(false);
     expect(PLATFORM_PERMISSIONS.every((permission) => permission.startsWith('platform.'))).toBe(true);

@@ -112,6 +112,7 @@ describe('platform', () => {
       }));
 
       expect(state.roles.map((role) => [role.name, role.isSystem])).toEqual([
+        ['accountant', true],
         ['member', true],
         ['owner', true],
       ]);

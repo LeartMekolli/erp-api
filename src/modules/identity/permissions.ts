@@ -103,6 +103,8 @@ export const SYSTEM_ROLES = {
     'order.write',
     'payment.read',
   ],
+  // Only reads (Orders 3 spec, goal 8); existing workspaces got it from the orders_3a migration.
+  accountant: ['payment.read', 'report.read', 'report.export'],
 } as const satisfies Record<string, readonly TenantPermission[]>;
 
 export type SystemRoleName = keyof typeof SYSTEM_ROLES;
