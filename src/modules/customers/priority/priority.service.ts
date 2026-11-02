@@ -30,6 +30,11 @@ type Tx = Prisma.TransactionClient;
 const DAY_MS = 86_400_000;
 const RECENT_DAYS = 90;
 const YEAR_DAYS = 365;
+/**
+ * A run reads every customer's history and writes every row in one transaction, so a score is never half
+ * from one run and half from the next; a workspace of tens of thousands needs more than Prisma's 5 s.
+ */
+const REFRESH_TIMEOUT_MS = 60_000;
 
 const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 const dateOf = (day: string) => new Date(`${day}T00:00:00Z`);
@@ -146,23 +151,28 @@ export class PriorityService implements OnModuleInit {
       const settings = await prioritySettings(tx, this.settings);
       const histories = await this.histories(tx, at);
       const parts = percentileParts(histories);
+      const customerIds: string[] = [];
+      const scores: number[] = [];
+      const partsJson: string[] = [];
+      const bandKeys: (string | null)[] = [];
       for (const history of histories) {
         const own = parts.get(history.customerId);
         const score = own ? scoreOf(own, settings.weights) : 0;
-        const data = {
-          score,
-          parts: (own ?? NO_PARTS) as unknown as Prisma.InputJsonValue,
-          bandKey: own ? bandFor(score, settings.bands) : null,
-          computedAt: at,
-        };
-        await tx.customerPriority.upsert({
-          where: { tenantId_customerId: { tenantId, customerId: history.customerId } },
-          create: { customerId: history.customerId, ...data },
-          update: data,
-        });
+        customerIds.push(history.customerId);
+        scores.push(score);
+        partsJson.push(JSON.stringify(own ?? NO_PARTS));
+        bandKeys.push(own ? bandFor(score, settings.bands) : null);
       }
+      // One statement for every customer; overrides are left as they are.
+      await tx.$executeRaw`
+        INSERT INTO customer_priority (customer_id, score, parts, band_key, computed_at)
+        SELECT row.customer_id, row.score, row.parts::jsonb, row.band_key, ${at}
+        FROM unnest(${customerIds}::uuid[], ${scores}::int[], ${partsJson}::text[], ${bandKeys}::text[])
+          AS row(customer_id, score, parts, band_key)
+        ON CONFLICT (tenant_id, customer_id) DO UPDATE
+        SET score = EXCLUDED.score, parts = EXCLUDED.parts, band_key = EXCLUDED.band_key, computed_at = EXCLUDED.computed_at`;
       await this.rerank(tx, (await workspaceToday(tx, at)).today);
-    });
+    }, { timeoutMs: REFRESH_TIMEOUT_MS });
   }
 
   async get(tenantId: string, customerId: string): Promise<CustomerPriorityResponse> {

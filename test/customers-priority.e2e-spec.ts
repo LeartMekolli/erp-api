@@ -215,6 +215,45 @@ describe('customers: priority score', () => {
     expect((standard.body as { data: { id: string }[] }).data.map((row) => row.id).sort()).toEqual([w.mare, w.nova].sort());
   });
 
+  it('lists by the band in force: no row, an ended override, a removed band, no bands (final review)', async () => {
+    const w = await workspace();
+    await priority.refresh(w.id, new Date());
+    const ids = async (band: string) =>
+      ((await w.staff.get(`/customers?band=${band}&limit=100`).expect(200)).body as { data: { id: string }[] }).data.map((row) => row.id).sort();
+    // Vega joins after the run, so it has no row: the default band.
+    const vega = ((await w.staff.post('/customers', { name: 'Vega Studio' }).expect(201)).body as { id: string }).id;
+    expect(await ids('standard')).toEqual([w.mare, w.nova, vega].sort());
+
+    // An override in force counts; once ended, the computed band does.
+    await w.staff.put(`/customers/${w.mare}/priority/override`, { band_key: 'gold', reason: 'Trial', ends_on: w.today() }).expect(200);
+    expect(await ids('gold')).toEqual([w.sol, w.mare].sort());
+    await prisma.inTenant(w.id, (tx) => tx.customerPriority.update({ where: { tenantId_customerId: { tenantId: w.id, customerId: w.mare } }, data: { overrideEndsOn: yesterday(w) } }));
+    expect(await ids('gold')).toEqual([w.sol]);
+    expect(await ids('standard')).toEqual([w.mare, w.nova, vega].sort());
+
+    // Nova is put in Silver, then Silver is removed: Nova and Luna (computed Silver) read as the default.
+    await w.staff.put(`/customers/${w.nova}/priority/override`, { band_key: 'silver', reason: 'Trial', ends_on: w.today() }).expect(200);
+    expect(await ids('silver')).toEqual([w.luna, w.nova].sort());
+    await w.staff.put('/settings/customers.priority', { ...SETTINGS, bands: SETTINGS.bands.filter((band) => band.key !== 'silver') }).expect(200);
+    expect(await ids('standard')).toEqual([w.luna, w.mare, w.nova, vega].sort());
+    await w.staff.get('/customers?band=silver').expect(400);
+
+    // No bands at all: everyone is in the default band.
+    await w.staff.put('/settings/customers.priority', { ...SETTINGS, bands: [] }).expect(200);
+    expect(await ids('standard')).toEqual([w.sol, w.luna, w.mare, w.nova, vega].sort());
+  });
+
+  it('scores a workspace of thousands of customers in one run (final review)', async () => {
+    const w = await workspace();
+    // Customers that never ordered, written straight in: each still gets its row.
+    await prisma.inTenant(w.id, (tx) => tx.customer.createMany({ data: Array.from({ length: 20_000 }, (_, index) => ({ name: `Bulk customer ${index}` })) }));
+
+    await priority.refresh(w.id, new Date());
+
+    expect(await prisma.inTenant(w.id, (tx) => tx.customerPriority.count())).toBe(20_004);
+    expect(await priorityOf(w, w.sol)).toMatchObject({ score: 88, band: { key: 'gold' } });
+  });
+
   it('never shows the score or band to the customer', async () => {
     const w = await workspace();
     await priority.refresh(w.id, new Date());

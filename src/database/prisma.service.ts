@@ -40,13 +40,18 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * with a connection pool: the setting cannot leak to the next borrower.
    *
    * The transaction holds a pooled connection until `fn` settles, so keep
-   * network calls and other slow work outside it.
+   * network calls and other slow work outside it. It may run 5 s, Prisma's
+   * default; `options.timeoutMs` raises that for the rare job that works
+   * through a whole workspace at once (the nightly priority scores).
    */
-  async inTenant<T>(tenantId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-    return this.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_tenant_id', ${tenantId}, true)`;
-      return fn(tx);
-    });
+  async inTenant<T>(tenantId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>, options: { timeoutMs?: number } = {}): Promise<T> {
+    return this.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.current_tenant_id', ${tenantId}, true)`;
+        return fn(tx);
+      },
+      options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
+    );
   }
 
   async onModuleInit(): Promise<void> {
