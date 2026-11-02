@@ -394,7 +394,12 @@ describe('workflow: moving pieces through their steps', () => {
     );
     const stepId = (key: string) => steps.find((step) => step.key === key)!.id;
 
-    // A move whose transaction began before the pass but waited for the piece's lock: written later, stamped earlier.
+    // A move whose transaction began before the pass but waited for the piece's lock: written later, stamped
+    // earlier. Just before the pass, never before the piece existed: a move's transaction can only begin once
+    // the piece is there, and the dashboard's step hours would otherwise go negative for this workspace.
+    const passedAt = (
+      await prisma.inTenant(tenant.id, (tx) => tx.transition.findFirstOrThrow({ where: { workOrderId: piece.id, kind: 'pass' }, select: { createdAt: true } }))
+    ).createdAt;
     await prisma.inTenant(tenant.id, (tx) =>
       tx.transition.create({
         data: {
@@ -407,7 +412,7 @@ describe('workflow: moving pieces through their steps', () => {
           toStatus: 'active',
           comment: 'Waited for the lock',
           actorUserId: tenant.ownerId,
-          createdAt: new Date(Date.now() - 60 * 60_000),
+          createdAt: new Date(passedAt.getTime() - 1),
         },
       }),
     );
