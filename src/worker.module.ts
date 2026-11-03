@@ -7,6 +7,7 @@ import { JobsWorkerModule } from './jobs/jobs-worker.module';
 import { JobsModule } from './jobs/jobs.module';
 import { AiModule } from './modules/ai/ai.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { ClaimsModule } from './modules/claims/claims.module';
 import { CouriersModule } from './modules/couriers/couriers.module';
 import { FilesModule } from './modules/files/files.module';
 import { IdempotencyModule } from './modules/idempotency/idempotency.module';
@@ -40,9 +41,10 @@ import { StorageModule } from './storage/storage.module';
     PaymentsModule,
     AiModule,
     ReportsModule,
-    // Tracking events; Orders is told of deliveries through the hook it registers on Couriers.
+    // Tracking events; Orders and Claims are told of deliveries through the hooks they register on Couriers.
     CouriersModule,
     OrdersModule,
+    ClaimsModule,
   ],
 })
 export class WorkerModule {}
