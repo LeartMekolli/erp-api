@@ -28,8 +28,23 @@ export async function defaultDueOn(
   settings: Partial<Record<SettingKey, unknown>>,
   today: string,
 ): Promise<string | null> {
-  const group = await tx.workOrderGroup.findUnique({ where: { id: groupId }, select: { tenantId: true, sourceType: true, sourceId: true } });
   const calendar = (settings['business.calendar'] as BusinessCalendar | undefined) ?? DEFAULT_CALENDAR;
+  const { promised, part } = await groupPromise(tx, groupId, calendar);
+  if (!promised) return null;
+
+  const scheduling = (settings['orders.scheduling'] as typeof DEFAULT_SCHEDULING | undefined) ?? DEFAULT_SCHEDULING;
+  const days = scheduling.bufferDays + (part ? scheduling.assemblyAllowanceDays : 0);
+  const due = workingDaysBefore(promised, days, calendar);
+  return due < today ? today : due;
+}
+
+/**
+ * The day a group's pieces are promised for: its order's, for an order line or a part of one (`part`),
+ * or a remake's, counted from its decision with the order's speed. Null for a group that isn't an
+ * order's. Also read by production planning.
+ */
+export async function groupPromise(tx: Tx, groupId: string, calendar: BusinessCalendar): Promise<{ promised: string | null; part: boolean }> {
+  const group = await tx.workOrderGroup.findUnique({ where: { id: groupId }, select: { tenantId: true, sourceType: true, sourceId: true } });
   let promised: string | null = null;
   let part = false;
   if (group?.sourceType === 'order_line') {
@@ -49,12 +64,7 @@ export async function defaultDueOn(
       promised = promisedDate(line.decidedAt ?? new Date(), speed?.workingDays ?? 0, calendar, timezone);
     }
   }
-  if (!promised) return null;
-
-  const scheduling = (settings['orders.scheduling'] as typeof DEFAULT_SCHEDULING | undefined) ?? DEFAULT_SCHEDULING;
-  const days = scheduling.bufferDays + (part ? scheduling.assemblyAllowanceDays : 0);
-  const due = workingDaysBefore(promised, days, calendar);
-  return due < today ? today : due;
+  return { promised, part };
 }
 
 /** Why a line is refused a partner other than the one holding the rest of its order. */

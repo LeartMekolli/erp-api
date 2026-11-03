@@ -76,7 +76,7 @@ function previousDay(date: string): string {
 }
 
 /** Open: a working weekday that isn't a closed date. */
-function isOpen(date: string, calendar: BusinessCalendar): boolean {
+export function isOpen(date: string, calendar: BusinessCalendar): boolean {
   return calendar.workingDays.includes(weekday(date)) && !calendar.closedDates.includes(date);
 }
 

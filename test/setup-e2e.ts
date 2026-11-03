@@ -23,6 +23,9 @@ const defaults: Record<string, string> = {
   S3_FORCE_PATH_STYLE: 'true',
   // Specs queue briefings themselves (ai-briefing.e2e-spec.ts).
   AI_BRIEFINGS: 'false',
+  // No spec's worker runs the scheduled jobs over every spec's workspaces: specs call the per-workspace
+  // methods (runDue, queueDue, sweepTenant…). schedulers and worker-in-process turn it on.
+  JOB_SCHEDULES: 'false',
 };
 
 for (const [key, value] of Object.entries(defaults)) {

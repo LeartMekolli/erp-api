@@ -51,11 +51,16 @@ class SlowHandler implements JobHandler<Payload> {
 describe('worker in the API process', () => {
   beforeEach(() => {
     process.env.QUEUE_PREFIX = `t${randomBytes(6).toString('hex')}`;
+    // Off for every other spec (setup-e2e.ts); one test here checks the scheduled jobs are registered.
+    process.env.JOB_SCHEDULES = 'true';
     seen.length = 0;
     events.length = 0;
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    process.env.JOB_SCHEDULES = 'false';
+    jest.restoreAllMocks();
+  });
 
   async function boot(withWorker: boolean): Promise<INestApplication> {
     const moduleRef = await Test.createTestingModule({

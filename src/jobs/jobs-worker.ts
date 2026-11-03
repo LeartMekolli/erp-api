@@ -73,7 +73,8 @@ export class JobsWorker implements OnApplicationBootstrap, OnModuleDestroy {
     }
 
     await Promise.all(this.workers.map((worker) => worker.waitUntilReady()));
-    await upsertSchedulers(this.jobs, this.registry.scheduled);
+    // Off in end-to-end tests (JOB_SCHEDULES): the handlers are still there, run when a job is queued.
+    if (this.config.get('JOB_SCHEDULES')) await upsertSchedulers(this.jobs, this.registry.scheduled);
   }
 
   /**

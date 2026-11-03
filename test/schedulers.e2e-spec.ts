@@ -13,9 +13,12 @@ describe('scheduled jobs', () => {
   beforeEach(() => {
     prefix = `t${randomBytes(6).toString('hex')}`;
     process.env.QUEUE_PREFIX = prefix;
+    // Off for every other spec (setup-e2e.ts); these test the schedulers themselves.
+    process.env.JOB_SCHEDULES = 'true';
   });
 
   afterEach(async () => {
+    process.env.JOB_SCHEDULES = 'false';
     jest.restoreAllMocks();
     const first = workers[0];
     if (first) {

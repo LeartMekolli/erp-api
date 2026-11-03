@@ -121,6 +121,14 @@ const envSchema = z
       .refine((model) => Object.hasOwn(AI_MODELS, model), {
         message: `must be one of ${Object.keys(AI_MODELS).join(', ')}`,
       }),
+    // Whether a worker declares the scheduled jobs (J3). End-to-end tests turn it off: each spec's worker
+    // has a queue prefix of its own, so every scheduled job would start at once in every spec, over every
+    // spec's workspaces in the one shared database. Specs call the per-workspace methods instead; the
+    // two that test the schedulers turn it on.
+    JOB_SCHEDULES: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
     // The scheduled morning briefing. End-to-end tests turn it off: every spec's worker runs the
     // scheduled jobs against the one shared database, and would brief each other's workspaces.
     AI_BRIEFINGS: z
