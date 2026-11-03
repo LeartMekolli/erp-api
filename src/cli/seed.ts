@@ -7,6 +7,7 @@ import { BrandProfileService } from '../modules/ai/customer-tools/brand-profile.
 import { ArticlesService } from '../modules/ai/knowledge/articles.service';
 import { KnowledgeModule } from '../modules/ai/knowledge/knowledge.module';
 import { AuditModule } from '../modules/audit/audit.module';
+import { CourierAccountService } from '../modules/couriers/courier-account.service';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
 import { PaymentAccountService } from '../modules/payments/payment-account.service';
 import { PaymentsModule } from '../modules/payments/payments.module';
@@ -28,6 +29,7 @@ import { seedPartners } from './seed-partners';
 import { seedPayments } from './seed-payments';
 import { seedPlans } from './seed-plans';
 import { seedPricing } from './seed-pricing';
+import { seedProduction } from './seed-production';
 import { seedWorkflows } from './seed-workflows';
 
 const SEED_ADMIN = { email: 'admin@example.test', name: 'Platform Admin' };
@@ -56,11 +58,12 @@ const SEED_TENANTS: CreateTenantInput[] = [
  * The seed also stores the demo's payment account and creates payout accounts through the provider,
  * and writes the demo's knowledge articles, so it loads Payments, the knowledge base and the global
  * modules their imports rely on, as the worker does (without consuming jobs). The brand profile service
- * is provided on its own: the AI module would bring the AI and image providers the seed never calls.
+ * is provided on its own: the AI module would bring the AI and image providers the seed never calls. So
+ * is the courier account service, which only seals and stores the demo's key.
  */
 @Module({
   imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule, AuditModule],
-  providers: [BrandProfileService],
+  providers: [BrandProfileService, CourierAccountService],
 })
 class SeedModule {}
 
@@ -68,7 +71,8 @@ class SeedModule {}
  * Idempotent: existing records are skipped, any other failure stops the run.
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
- * (`seed-orders.ts`), its claim settings, an accountant and the accountant's monthly files (`seed-claims.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
+ * (`seed-orders.ts`), its claim settings, an accountant and the accountant's monthly files (`seed-claims.ts`), its fake
+ * courier account, a live-rate method, daily capacities and the job summary (`seed-production.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
  * and campaign (`seed-plans.ts`) and its AI limit, knowledge articles, AI plan switches and a brand
  * profile (`seed-ai.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
@@ -162,6 +166,14 @@ void runCli(async (app) => {
       `created ${claims.counts.accountants} accountants` +
       (claims.password ? ` with password ${claims.password} (accountant@demo.example.test)` : '') +
       (claims.counts.schedules ? ", turned on the accountant's monthly files" : '') +
+      '\n',
+  );
+
+  const production = await seedProduction({ prisma, accounts: app.get(CourierAccountService) }, demo.id);
+  process.stdout.write(
+    `production for demo: ${production.account ? 'set the fake courier account, ' : ''}` +
+      `created ${production.liveMethods} live-rate shipping methods, ${production.capacities} daily capacities` +
+      (production.jobSummary ? ', turned on the partner job summary' : '') +
       '\n',
   );
 

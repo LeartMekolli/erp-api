@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { labelResponseSchema, trackingStatusSchema } from '../orders/order-response';
 
 // What clients receive for claims (Orders 3 spec, goals 1–7); checked against real responses in the e2e tests.
 
@@ -27,6 +28,13 @@ const claimLineSchema = z.strictObject({
   decision: decisionSchema.nullable(),
 });
 
+const claimShipmentSchema = z.strictObject({
+  courier: z.string().nullable(),
+  tracking: z.string().nullable(),
+  shipped_at: z.iso.datetime(),
+  delivered_at: z.iso.datetime().nullable(),
+});
+
 export const claimResponseSchema = z.strictObject({
   id: z.uuid(),
   /** Readable, counted per workspace from 1. */
@@ -37,17 +45,17 @@ export const claimResponseSchema = z.strictObject({
   description: z.string(),
   photos: z.array(z.strictObject({ file_version_id: z.uuid() })),
   /** Set once staff ask for the pieces back. */
-  return: z.strictObject({ requested_at: z.iso.datetime(), returned_at: z.iso.datetime().nullable() }).nullable(),
-  lines: z.array(claimLineSchema),
-  /** The parcel carrying the claim's remakes, once shipped. */
-  shipment: z
+  return: z
     .strictObject({
-      courier: z.string().nullable(),
-      tracking: z.string().nullable(),
-      shipped_at: z.iso.datetime(),
-      delivered_at: z.iso.datetime().nullable(),
+      requested_at: z.iso.datetime(),
+      returned_at: z.iso.datetime().nullable(),
+      /** The return label bought for the customer to print, to the workspace's address; null when none was bought. */
+      label: z.strictObject({ url: z.string(), tracking: z.string(), tracking_status: trackingStatusSchema }).nullable(),
     })
     .nullable(),
+  lines: z.array(claimLineSchema),
+  /** The parcel carrying the claim's remakes, once shipped. */
+  shipment: claimShipmentSchema.extend({ label: labelResponseSchema.nullable() }).nullable(),
   created_at: z.iso.datetime(),
 });
 export type ClaimResponse = z.infer<typeof claimResponseSchema>;
@@ -58,8 +66,10 @@ export const claimDecisionResponseSchema = claimResponseSchema.extend({
 });
 export type ClaimDecisionResponse = z.infer<typeof claimDecisionResponseSchema>;
 
-/** A claim as its customer sees it: never whose fault staff found, nor their note. */
+/** A claim as its customer sees it: never whose fault staff found, nor their note, nor what a label cost. */
 export const customerClaimResponseSchema = claimResponseSchema.extend({
   lines: z.array(claimLineSchema.extend({ decision: decisionSchema.omit({ fault: true, note: true }).nullable() })),
+  /** How the remake's parcel is doing, from its label's tracking; null without a label or before the first update. */
+  shipment: claimShipmentSchema.extend({ tracking_status: trackingStatusSchema }).nullable(),
 });
 export type CustomerClaimResponse = z.infer<typeof customerClaimResponseSchema>;

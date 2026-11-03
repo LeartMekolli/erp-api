@@ -16,7 +16,7 @@ import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
-import type { Order, Quote } from '../../generated/prisma/client';
+import type { Order, Quote, Shipment, ShippingMethod } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { AuditInput } from '../audit/audit.service';
 import { CourierAccountService } from '../couriers/courier-account.service';
@@ -42,6 +42,7 @@ import type {
   CustomerOrderLineResponse,
   CustomerOrderResponse,
   LabelRequest,
+  LabelResponse,
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
@@ -124,6 +125,36 @@ function customerShipping(shipping: OrderResponse['shipping']): CustomerOrderRes
     shipped_at: shipping.shipped_at,
     delivered_at: shipping.delivered_at,
     tracking_status: shipping.label?.tracking_status ?? null,
+  };
+}
+
+/**
+ * The label to buy for an order's parcel: the parcel, carrier and service given, else the order's shipping
+ * method's. Missing any is a 400 naming it (Orders 3 spec, goals 23 and 25).
+ */
+export function labelToBuy(method: ShippingMethod, request: LabelRequest): { parcel: Parcel; carrier: string; service: string } {
+  const parcel = request.parcel ?? (method.defaultParcel as Parcel | null);
+  const carrier = request.carrier ?? method.liveCarrier;
+  const service = request.service ?? method.liveService;
+  const missing = [
+    ...(parcel ? [] : [{ path: 'label.parcel', message: `${method.name} has no default parcel; give one` }]),
+    ...(carrier ? [] : [{ path: 'label.carrier', message: `${method.name} names no carrier; give one` }]),
+    ...(service ? [] : [{ path: 'label.service', message: `${method.name} names no service; give one` }]),
+  ];
+  if (!parcel || !carrier || !service) throw new BadRequestException({ message: 'Say what label to buy', errors: missing });
+  return { parcel, carrier, service };
+}
+
+/** A bought label as staff see it. */
+export function labelResponse(row: Shipment): LabelResponse {
+  return {
+    url: row.labelUrl!,
+    carrier: row.carrier,
+    service: row.service,
+    tracking: row.tracking!,
+    tracking_status: row.trackingStatus as TrackingStatus | null,
+    cost: row.cost!.toFixed(2),
+    currency: row.currency!,
   };
 }
 
@@ -455,24 +486,9 @@ export class OrdersService {
         throw new ConflictException(`Only a ready order can be shipped; this one is ${before.state.replace('_', ' ')}`);
       }
       const method = await tx.shippingMethod.findUniqueOrThrow({ where: { id: order.shippingMethodId } });
-      const parcel = request.parcel ?? (method.defaultParcel as Parcel | null);
-      const carrier = request.carrier ?? method.liveCarrier;
-      const service = request.service ?? method.liveService;
-      const missing = [
-        ...(parcel ? [] : [{ path: 'label.parcel', message: `${method.name} has no default parcel; give one` }]),
-        ...(carrier ? [] : [{ path: 'label.carrier', message: `${method.name} names no carrier; give one` }]),
-        ...(service ? [] : [{ path: 'label.service', message: `${method.name} names no service; give one` }]),
-      ];
-      if (missing.length > 0) throw new BadRequestException({ message: 'Say what label to buy', errors: missing });
+      const label = labelToBuy(method, request);
       const account = await this.courierAccounts.keys(tx);
-      const shipmentId = await this.shipments.reserve(tx, {
-        purpose: 'order',
-        orderId: id,
-        carrier: carrier!,
-        service: service!,
-        parcel: parcel!,
-        userId: auth.userId,
-      });
+      const shipmentId = await this.shipments.reserve(tx, { purpose: 'order', orderId: id, ...label, userId: auth.userId });
       return { shipmentId, from: account.fromAddress, to: order.address as Address };
     });
     return this.shipments.purchase(auth.tenantId, reserved.shipmentId, reserved.from, reserved.to);
@@ -1110,17 +1126,7 @@ export class OrdersService {
           tracking: order.tracking,
           shipped_at: order.shippedAt?.toISOString() ?? null,
           delivered_at: order.deliveredAt?.toISOString() ?? null,
-          label: label
-            ? {
-                url: label.labelUrl!,
-                carrier: label.carrier,
-                service: label.service,
-                tracking: label.tracking!,
-                tracking_status: label.trackingStatus as TrackingStatus | null,
-                cost: label.cost!.toFixed(2),
-                currency: label.currency!,
-              }
-            : null,
+          label: label ? labelResponse(label) : null,
         },
         lines: orderLines,
         lines_total: order.linesTotal.toFixed(2),

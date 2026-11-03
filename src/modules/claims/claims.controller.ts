@@ -7,12 +7,12 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentCustomer, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { CustomerAccess, RequirePermission } from '../identity/route-markers';
-import { courierTrackingSchema } from '../orders/orders.service';
+import { shipOrderSchema } from '../orders/orders.service';
 import type { ShipOrder } from '../orders/orders.service';
 import { claimDecisionResponseSchema, claimResponseSchema, customerClaimResponseSchema } from './claim-response';
 import type { ClaimDecisionResponse, ClaimResponse, CustomerClaimResponse } from './claim-response';
-import { ClaimsService, claimListQuerySchema, decideLineSchema, openClaimSchema } from './claims.service';
-import type { ClaimListQuery, DecideLine, OpenClaim } from './claims.service';
+import { ClaimsService, claimListQuerySchema, decideLineSchema, openClaimSchema, requestReturnSchema } from './claims.service';
+import type { ClaimListQuery, DecideLine, OpenClaim, RequestReturn } from './claims.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -72,15 +72,24 @@ export class ClaimsController {
 
   @ApiDoc({
     summary: 'Ask for the claimed pieces back: the claim waits for them before its lines are decided.',
-    description: 'A 409 once asked, or when every line is decided.',
+    description:
+      "A 409 once asked, or when every line is decided. With `label`, a return label from the order's address to " +
+      "the courier account's is bought first, for the customer to print; the parcel, carrier and service default to " +
+      "the order's shipping method's (400 when it has none). No courier account is a 409; when the courier service " +
+      'refuses, a 503 with its reason, and nothing is asked back. Its tracking is shown, but staff still mark the pieces received.',
+    body: requestReturnSchema,
     response: claimResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, 409, 503],
   })
   @RequirePermission('order.write')
   @Post('claims/:id/return')
   @HttpCode(200)
-  requestReturn(@CurrentUser() auth: TenantAuth, @Param('id', idParam) id: string): Promise<ClaimResponse> {
-    return this.claims.requestReturn(auth, id);
+  requestReturn(
+    @CurrentUser() auth: TenantAuth,
+    @Param('id', idParam) id: string,
+    @Body(new ZodValidationPipe(requestReturnSchema)) body: RequestReturn,
+  ): Promise<ClaimResponse> {
+    return this.claims.requestReturn(auth, id, body);
   }
 
   @ApiDoc({
@@ -127,10 +136,15 @@ export class ClaimsController {
 
   @ApiDoc({
     summary: "Ship the claim's remakes as its own parcel, with the courier and tracking number when given; the customer is told.",
-    description: 'Every remake of the claim must be finished. A claim with nothing made again, or shipped already, is a 409.',
-    body: courierTrackingSchema,
+    description:
+      'Every remake of the claim must be finished. A claim with nothing made again, or shipped already, is a 409. ' +
+      "With `label`, the label is bought first, from the courier account's address to the order's, as when shipping " +
+      "an order (400, 409 and 503 alike), and its carrier and tracking are the parcel's. When every remade line is at " +
+      "the fault of one workshop, that workshop is owed the label's cost less for its original job; otherwise the " +
+      "workspace bears it. The courier's delivered tracking marks the parcel delivered.",
+    body: shipOrderSchema,
     response: claimResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, 409, 503],
   })
   @RequirePermission('order.ship')
   @Post('claims/:id/ship')
@@ -138,7 +152,7 @@ export class ClaimsController {
   ship(
     @CurrentUser() auth: TenantAuth,
     @Param('id', idParam) id: string,
-    @Body(new ZodValidationPipe(courierTrackingSchema)) body: ShipOrder,
+    @Body(new ZodValidationPipe(shipOrderSchema)) body: ShipOrder,
   ): Promise<ClaimResponse> {
     return this.claims.ship(auth, id, body);
   }
