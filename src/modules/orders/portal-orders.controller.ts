@@ -44,10 +44,11 @@ export class PortalOrdersController {
       "unchanged, the order uses the new quote; changed or refused, nothing is placed and the 409 has `code: 'price_changed'` " +
       "with each such line's new quote to order with, or why it can't be priced in plain words. A line at a workshop the " +
       'customer picked that can no longer take it refuses the whole order (409, naming the line); so do lines picked at ' +
-      'different workshops, unless the workspace allows it.',
+      'different workshops, unless the workspace allows it. A live-rate shipping method is priced now by the courier ' +
+      'service: no rate for it is a 400 on `shipping_method`, a service that fails a 503.',
     body: placeOrderSchema,
     response: customerOrderResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, 409, 503],
   })
   @CustomerAccess('buyer')
   @Post('orders')

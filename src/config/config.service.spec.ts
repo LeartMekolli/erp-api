@@ -1,4 +1,5 @@
 import { ConfigService, createConfigService } from './config.service';
+import { loadEnv } from './env';
 
 const valid = {
   DATABASE_URL: 'postgresql://erp_app:pw@localhost:5432/erp',
@@ -44,43 +45,8 @@ describe('ConfigService', () => {
   });
 
   it('can be constructed directly from an already-parsed environment', () => {
-    const config = new ConfigService({
-      NODE_ENV: 'test',
-      PORT: 3001,
-      TRUST_PROXY_HOPS: 0,
-      CORS_ORIGINS: [],
-      WORKER_IN_PROCESS: false,
-      API_DOCS: false,
-      DATABASE_URL: 'postgresql://a',
-      REDIS_URL: 'redis://c',
-      APP_SECRET: 'b'.repeat(32),
-      JWT_SECRET: 'c'.repeat(32),
-      APP_BASE_DOMAIN: 'localhost',
-      LOG_LEVEL: 'info',
-      QUEUE_PREFIX: 'erp',
-      SMTP_URL: 'smtp://localhost:1025',
-      MAIL_FROM: 'ERP <no-reply@example.test>',
-      WEB_URL_TEMPLATE: 'http://{tenant}.localhost:5173',
-      S3_ENDPOINT: 'http://localhost:9000',
-      S3_REGION: 'auto',
-      S3_BUCKET: 'erp-files',
-      S3_ACCESS_KEY_ID: 'minio',
-      S3_SECRET_ACCESS_KEY: 'minio-password',
-      S3_FORCE_PATH_STYLE: 'true',
-      FILE_MAX_BYTES: 104_857_600,
-      METAL_PRICE_PROVIDER: 'fake',
-      METAL_PRICE_MAX_CURRENCIES: 3,
-      METAL_PRICE_STALE_HOURS: 48,
-      PAYMENT_PROVIDER: 'fake',
-      AI_PROVIDER: 'fake',
-      AI_MODEL: 'claude-haiku-4-5',
-      AI_BRIEFINGS: true,
-      VECTOR_STORE: 'fake',
-      IMAGE_PROVIDER: 'fake',
-      IMAGE_MODEL: 'gpt-image-2.5-flare',
-      SENTRY_DSN: undefined,
-      SENTRY_ENVIRONMENT: undefined,
-    });
+    // Parsed by loadEnv rather than written out, so a new variable never needs adding here.
+    const config = new ConfigService(loadEnv({ ...valid, NODE_ENV: 'test', PORT: '3001' }));
 
     expect(config.get('NODE_ENV')).toBe('test');
     expect(config.get('PORT')).toBe(3001);

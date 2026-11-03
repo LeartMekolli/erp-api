@@ -105,6 +105,9 @@ const envSchema = z
     METAL_PRICE_STALE_HOURS: z.coerce.number().int().min(1).max(720).default(48),
     // Where money moves (Payments spec). `fake` is in memory, for local work and tests; no test calls Stripe.
     PAYMENT_PROVIDER: z.enum(['fake', 'stripe']).default('fake'),
+    // Where shipping rates and labels come from (Orders 3 spec, goal 21), with each workspace's own key.
+    // `fake` is in memory, for local work, tests and the demo; no test calls EasyPost.
+    COURIER_PROVIDER: z.enum(['fake', 'easypost']).default('fake'),
     // The demo workspace's Stripe test keys, for the seed only; without them the seed skips payments.
     DEMO_STRIPE_SECRET_KEY: z.string().startsWith('sk_test_').optional(),
     DEMO_STRIPE_PUBLISHABLE_KEY: z.string().startsWith('pk_test_').optional(),

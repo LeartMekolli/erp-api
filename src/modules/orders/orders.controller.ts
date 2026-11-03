@@ -30,10 +30,11 @@ export class OrdersController {
       "with no partner. Unless the workspace's `partners.routing.splitOrderLines` is on, lines picked at different " +
       'workshops are a 409 naming each line that differs from the first. A quote of another customer is not found; one already ordered is a 409. A quote past its ' +
       'hold is priced again: unchanged, the order uses the new quote; changed or refused, nothing is placed and the ' +
-      "409 has `code: 'price_changed'` with each such line's new quote to order with.",
+      "409 has `code: 'price_changed'` with each such line's new quote to order with. A live-rate shipping method is " +
+      'priced now by the courier service: no rate for it is a 400 on `shipping_method`, a service that fails a 503.',
     body: staffPlaceOrderSchema,
     response: orderResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, 409, 503],
   })
   @RequirePermission('order.write')
   @Post()

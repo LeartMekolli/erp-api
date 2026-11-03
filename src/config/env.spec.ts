@@ -134,6 +134,12 @@ describe('loadEnv', () => {
     expect(loadEnv({ ...valid, AI_MODEL: 'claude-sonnet-5-5' }).AI_MODEL).toBe('claude-sonnet-5-5');
   });
 
+  it('defaults COURIER_PROVIDER to fake and reads easypost', () => {
+    expect(loadEnv({ ...valid }).COURIER_PROVIDER).toBe('fake');
+    expect(loadEnv({ ...valid, COURIER_PROVIDER: 'easypost' }).COURIER_PROVIDER).toBe('easypost');
+    expect(() => loadEnv({ ...valid, COURIER_PROVIDER: 'other' })).toThrow(/COURIER_PROVIDER/);
+  });
+
   it('declares the scheduled jobs unless JOB_SCHEDULES is false', () => {
     expect(loadEnv({ ...valid }).JOB_SCHEDULES).toBe(true);
     expect(loadEnv({ ...valid, JOB_SCHEDULES: 'false' }).JOB_SCHEDULES).toBe(false);

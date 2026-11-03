@@ -36,6 +36,7 @@ const ERROR_DESCRIPTIONS: Record<number, string> = {
   404: 'Not found',
   409: 'Conflict with the current state',
   429: 'Too many attempts',
+  503: 'An outside service failed; try again',
 };
 
 /** A route as the docs see it: where it lives and what its decorators say. */

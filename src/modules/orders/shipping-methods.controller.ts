@@ -34,8 +34,10 @@ export class OrderSetupController {
   }
 
   @ApiDoc({
-    summary: 'Add a shipping method with its price per order.',
-    description: 'A key already in use is a 409.',
+    summary: 'Add a shipping method with its price per order, or priced live by the courier service.',
+    description:
+      "Give either `price`, or `live_rate` (the courier service's carrier and service) with `default_parcel`: a live " +
+      "method is priced for each order by the workspace's courier service. A key already in use is a 409.",
     body: createShippingMethodSchema,
     response: shippingMethodResponseSchema,
     errors: [400, 409],
@@ -51,10 +53,12 @@ export class OrderSetupController {
 
   @ApiDoc({
     summary: "Change a shipping method's name or price, or switch it off or on.",
-    description: 'A method is never deleted: switched off, it can no longer be chosen, and past orders keep it.',
+    description:
+      'A method is never deleted: switched off, it can no longer be chosen, and past orders keep it. A method keeps its ' +
+      'kind: a price on a live-rate method, or a live rate on a fixed-price one, is a 409.',
     body: updateShippingMethodSchema,
     response: shippingMethodResponseSchema,
-    errors: [400, 404],
+    errors: [400, 404, 409],
   })
   @RequirePermission('pricing.write')
   @Patch('shipping-methods/:id')

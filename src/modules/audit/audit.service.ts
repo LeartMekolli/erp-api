@@ -24,6 +24,7 @@ export type AuditAction =
   | 'customer.addresses_changed'
   | 'customer.priority_changed'
   | 'workspace.customer_site_changed'
+  | 'workspace.courier_account_changed'
   | 'workflow.changed'
   | 'partner.changed'
   | 'partner.member_changed'

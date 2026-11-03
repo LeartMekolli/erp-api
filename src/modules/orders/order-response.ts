@@ -21,12 +21,28 @@ export const addressSchema = z.strictObject({
 });
 export type Address = z.infer<typeof addressSchema>;
 
+/** A parcel as staff measure it: grams and centimetres (Orders 3 spec, "My calls"). */
+export const parcelSchema = z.strictObject({
+  weight_g: z.number().int().min(1).max(100_000),
+  length_cm: z.number().int().min(1).max(500),
+  width_cm: z.number().int().min(1).max(500),
+  height_cm: z.number().int().min(1).max(500),
+});
+
+const courierName = z.string().trim().min(1).max(100);
+/** The courier service's carrier and service a live-rate method is priced and labelled by. */
+export const liveRateSchema = z.strictObject({ carrier: courierName, service: courierName });
+
 export const shippingMethodResponseSchema = z.strictObject({
   id: z.uuid(),
   key: z.string(),
   name: z.string(),
-  /** Per order, in the workspace's currency. */
-  price: z.string(),
+  /** Per order, in the workspace's currency; null for a live-rate method, priced for each order. */
+  price: z.string().nullable(),
+  /** The courier service's carrier and service a live-rate method is priced by; null for a fixed price. */
+  live_rate: liveRateSchema.nullable(),
+  /** The parcel a live rate is asked for, and a label's default. */
+  default_parcel: parcelSchema.nullable(),
   /** Only active methods can be chosen for a new order. */
   active: z.boolean(),
 });

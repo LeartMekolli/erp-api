@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
@@ -18,6 +19,8 @@ import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { AuditInput } from '../audit/audit.service';
+import type { Parcel } from '../couriers/courier-provider';
+import { RatesService } from '../couriers/rates.service';
 import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -141,6 +144,7 @@ export class OrdersService {
     private readonly quotes: QuotesService,
     private readonly notifications: NotificationsService,
     @Inject(TAX_CALCULATOR) private readonly tax: TaxCalculator,
+    private readonly rates: RatesService,
   ) {}
 
   /** Each Payments service registers the hooks it answers for. */
@@ -155,6 +159,8 @@ export class OrdersService {
    */
   async place(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, customerId: string, body: PlaceOrder, channel: Channel): Promise<OrderResponse> {
     body = { ...body, lines: await this.refreshLapsed(auth, customerId, body.lines, channel) };
+    // Asked of the courier service before the transaction, never inside it (Orders 3 spec, Anti-goals).
+    const liveShipping = await this.liveShipping(auth.tenantId, customerId, body);
     let afterCommit: (() => Promise<void>)[] = [];
     let placed: OrderResponse;
     try {
@@ -193,6 +199,11 @@ export class OrdersService {
             errors: [{ path: 'shipping_method', message: `${body.shipping_method} is not an active shipping method` }],
           });
         }
+        // A fixed price, or the live rate fetched before the transaction.
+        const shippingPrice = method.price ?? liveShipping;
+        if (shippingPrice === null) {
+          throw new ConflictException('The shipping method changed while the order was being placed; place it again');
+        }
 
         const placedAt = new Date();
         const promisedOn = promisedDate(placedAt, await this.workingDays(tx, speed.speed), await this.calendar(tx), await this.timezone(tx, auth.tenantId));
@@ -202,9 +213,9 @@ export class OrdersService {
           customerId,
           address: { country: address.country, region: address.region ?? null },
           lines: linesOnly,
-          shipping: method.price,
+          shipping: shippingPrice,
         });
-        const { linesTotal, total } = orderTotals(lineTotals, method.price, tax.amount);
+        const { linesTotal, total } = orderTotals(lineTotals, shippingPrice, tax.amount);
         // The customer's terms as they are now; changing them later leaves this order as placed. A
         // pay-first order waits for its payment: its groups and a picked workshop's job are created
         // now, so the capacity is held, but nothing starts until it is paid (Payments spec, B1).
@@ -230,7 +241,7 @@ export class OrdersService {
             promisedOn: new Date(`${promisedOn}T00:00:00Z`),
             address,
             shippingMethodId: method.id,
-            shippingPrice: method.price,
+            shippingPrice,
             linesTotal,
             taxPercent: tax.percent,
             taxAmount: tax.amount,
@@ -787,6 +798,35 @@ export class OrdersService {
       }
       throw error;
     }
+  }
+
+  /**
+   * The live rate of the order's shipping method, when it is a live-rate one (Orders 3 spec, goal 22),
+   * asked outside any transaction; null for a fixed price, or when the placing transaction will refuse
+   * the method or address itself. A rate the method can't have is a 400 on `shipping_method`; a courier
+   * service that failed, a 503.
+   */
+  private async liveShipping(tenantId: string, customerId: string, body: PlaceOrder): Promise<Prisma.Decimal | null> {
+    const found = await this.prisma.inTenant(tenantId, async (tx) => {
+      const method = await tx.shippingMethod.findFirst({ where: { key: body.shipping_method, active: true } });
+      if (!method || method.price !== null || !method.liveCarrier || !method.liveService) return null;
+      const customer = await tx.customer.findUnique({ where: { id: customerId }, select: { shippingAddress: true } });
+      const address = body.address ?? (customer?.shippingAddress as Address | null | undefined) ?? null;
+      return address ? { method, address } : null;
+    });
+    if (!found) return null;
+    const { method, address } = found;
+    const rate = await this.rates.rate(
+      tenantId,
+      { key: method.key, liveCarrier: method.liveCarrier!, liveService: method.liveService!, defaultParcel: method.defaultParcel as unknown as Parcel },
+      address,
+    );
+    if (rate.ok) return rate.price;
+    if (rate.down) throw new ServiceUnavailableException(rate.reason);
+    throw new BadRequestException({
+      message: `${method.name} can't be used for this order`,
+      errors: [{ path: 'shipping_method', message: rate.reason }],
+    });
   }
 
   private async workingDays(tx: Tx, speedKey: string | null): Promise<number> {

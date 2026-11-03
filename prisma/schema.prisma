@@ -1824,7 +1824,13 @@ model ShippingMethod {
   tenantId  String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
   key       String
   name      String
-  price     Decimal  @db.Decimal(18, 2)
+  // Per order; null for a live-rate method, priced by the courier service for each order (Orders 3 spec, goal 22).
+  price     Decimal? @db.Decimal(18, 2)
+  // The courier service's carrier and service a live-rate method is priced and labelled by; both or neither.
+  liveCarrier   String? @map("live_carrier")
+  liveService   String? @map("live_service")
+  // The parcel a live rate is asked for, and a label's default: { weight_g, length_cm, width_cm, height_cm }.
+  defaultParcel Json?   @map("default_parcel")
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
 
