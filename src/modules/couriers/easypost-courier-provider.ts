@@ -51,6 +51,24 @@ interface EasyPostRate {
   currency: string;
 }
 
+/** The parts of an EasyPost shipment read here; the label fields are null until it is bought. */
+interface EasyPostShipment {
+  rates: EasyPostRate[];
+  tracking_code: string | null;
+  postage_label: { label_url: string } | null;
+  selected_rate: EasyPostRate | null;
+}
+
+function boughtLabel(shipment: EasyPostShipment): CourierLabel | null {
+  if (!shipment.tracking_code || !shipment.postage_label || !shipment.selected_rate) return null;
+  return {
+    tracking: shipment.tracking_code,
+    labelUrl: shipment.postage_label.label_url,
+    amount: new Prisma.Decimal(shipment.selected_rate.rate),
+    currency: shipment.selected_rate.currency,
+  };
+}
+
 /**
  * EasyPost over its REST API (Orders 3 spec, "My calls"), with each workspace's own key. Checked against
  * EasyPost's API reference (v2: shipments, buy, tracker events and `X-Hmac-Signature`) when written; a
@@ -68,21 +86,21 @@ export class EasyPostCourierProvider implements CourierProvider {
   }
 
   async buy(keys: CourierKeys, providerShipmentId: string, carrier: string, service: string): Promise<CourierLabel> {
-    const shipment = await this.call<{ rates: EasyPostRate[] }>(keys, 'GET', `/shipments/${encodeURIComponent(providerShipmentId)}`);
+    const shipment = await this.call<EasyPostShipment>(keys, 'GET', `/shipments/${encodeURIComponent(providerShipmentId)}`);
+    // EasyPost refuses to buy a shipment twice: one bought already answers its label.
+    const already = boughtLabel(shipment);
+    if (already) return already;
     const rate = shipment.rates.find((one) => one.carrier === carrier && one.service === service);
     if (!rate) throw new CourierError(`${carrier} offers no ${service} rate for this parcel`);
-    const bought = await this.call<{ tracking_code: string; postage_label: { label_url: string }; selected_rate: EasyPostRate }>(
-      keys,
-      'POST',
-      `/shipments/${encodeURIComponent(providerShipmentId)}/buy`,
-      { rate: { id: rate.id } },
+    const bought = boughtLabel(
+      await this.call<EasyPostShipment>(keys, 'POST', `/shipments/${encodeURIComponent(providerShipmentId)}/buy`, { rate: { id: rate.id } }),
     );
-    return {
-      tracking: bought.tracking_code,
-      labelUrl: bought.postage_label.label_url,
-      amount: new Prisma.Decimal(bought.selected_rate.rate),
-      currency: bought.selected_rate.currency,
-    };
+    if (!bought) throw new CourierError('The courier service answered the purchase without a label');
+    return bought;
+  }
+
+  async label(keys: CourierKeys, providerShipmentId: string): Promise<CourierLabel | null> {
+    return boughtLabel(await this.call<EasyPostShipment>(keys, 'GET', `/shipments/${encodeURIComponent(providerShipmentId)}`));
   }
 
   verifyEvent(rawBody: Buffer, signature: string | undefined, secret: string): CourierEvent | null {
