@@ -1,4 +1,4 @@
-import { isOpen, workingDaysBefore } from '../../orders/dates';
+import { isOpen, workingDaysAfter, workingDaysBefore } from '../../orders/dates';
 import type { BusinessCalendar } from '../../orders/dates';
 import type { DoneBy } from '../partner-steps';
 
@@ -43,10 +43,12 @@ export function byPriority(a: PlanGroup, b: PlanGroup): number {
  * - a run of partner steps takes no capacity: one open day each, the last on its job's due date when
  *   that is sooner;
  * - a step type without a capacity takes its latest day.
- * Work whose day has passed is on `today`, late. A guide only: nothing here moves or blocks work.
+ * Work whose day has passed is on `today`, late. A closed `asOf` plans from the next open day, so no work
+ * lands on a closed day. A guide only: nothing here moves or blocks work.
  * Answers each group's work from its last step to its first, a split step latest day first.
  */
-export function planWork(groups: PlanGroup[], capacities: Map<string, number>, calendar: BusinessCalendar, today: string): PlannedWork[] {
+export function planWork(groups: PlanGroup[], capacities: Map<string, number>, calendar: BusinessCalendar, asOf: string): PlannedWork[] {
+  const today = isOpen(asOf, calendar) ? asOf : workingDaysAfter(asOf, 1, calendar);
   const used = new Map<string, number>();
   const take = (stepTypeId: string, day: string, pieces: number) => used.set(`${stepTypeId}:${day}`, (used.get(`${stepTypeId}:${day}`) ?? 0) + pieces);
   const room = (stepTypeId: string, day: string, capacity: number) => capacity - (used.get(`${stepTypeId}:${day}`) ?? 0);

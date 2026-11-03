@@ -42,6 +42,14 @@ describe('planning work back from promised dates', () => {
     expect(plan.find((work) => work.groupId === later.groupId)!.day).toBe('2026-11-12');
   });
 
+  it('puts late work on the next open day when today is closed', () => {
+    // 2026-11-07 is a Saturday; the group was promised on the Friday.
+    const one = group({ promisedOn: '2026-11-06', steps: [step('qc', 40)] });
+    expect(planWork([one], new Map([['type_qc', 10]]), calendar, '2026-11-07')).toEqual([
+      { groupId: one.groupId, stepId: 'qc', stepTypeId: 'type_qc', day: '2026-11-09', pieces: 40, late: true },
+    ]);
+  });
+
   it("plans a workshop's steps as a block ending on its job's due date, and the step before it before the block", () => {
     const one = group({
       promisedOn: '2026-11-12',

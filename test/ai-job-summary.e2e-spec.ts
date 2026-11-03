@@ -12,6 +12,8 @@ import type { FakeAiProvider } from '../src/modules/ai/fake-ai-provider';
 import { JobSummaryService } from '../src/modules/ai/job-summary/job-summary.service';
 import { RunsService } from '../src/modules/ai/runs.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import type { TenantAuth } from '../src/modules/identity/auth-context';
+import { TENANT_PERMISSIONS } from '../src/modules/identity/permissions';
 import { jobSummaryResponseSchema } from '../src/modules/partners/job-summary-response';
 import { partnerJobDetailResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
@@ -278,6 +280,30 @@ describe('ai: the partner job summary', () => {
     await w.staff.post(`/partners/jobs/${group}/summary`).expect(409);
     expect(await w.rows()).toHaveLength(2);
     expect(await summaries.queueDue(w.id, new Date())).toBe(0);
+  });
+
+  it('writes again when a summary was never run', async () => {
+    const w = await workspace();
+    const group = await w.job(w.castco);
+    expect(await summaries.queueDue(w.id, new Date())).toBe(1);
+    // As when its run never reached the queue: past the hour a run may wait, it is never run, and reads failed.
+    // AI runs are insert-only, so the clock moves instead; the service is called as staff, since a token would expire.
+    const auth: TenantAuth = {
+      scope: 'tenant',
+      tenantId: w.id,
+      userId: w.owner.id,
+      jti: 'test',
+      expiresAt: new Date(Date.now() + 3 * 3_600_000),
+      permissions: new Set(TENANT_PERMISSIONS),
+    };
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 3_600_000);
+    try {
+      await expect(summaries.get(w.id, group)).resolves.toMatchObject({ status: 'failed' });
+      await summaries.rewrite(auth, group);
+    } finally {
+      jest.restoreAllMocks();
+    }
+    expect(await w.rows()).toHaveLength(2);
   });
 
   it('writes none when switched off or AI is not set up', async () => {

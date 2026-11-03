@@ -16,6 +16,7 @@ import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
+import { startTestWorker } from './worker-harness';
 
 interface Order {
   id: string;
@@ -199,8 +200,8 @@ describe('claims: labels', () => {
     return { id: tenant.id, staff, castco, metalworks, luna, buyer, delivered, claim, remakeAll, owedFor, labels };
   }
 
-  /** Sends a signed tracker update and applies the event it stored. */
-  async function track(tenantId: string, tracking: string, status: string) {
+  /** Sends a signed tracker update and applies the event it stored, in the app unless `by` is a worker's. */
+  async function track(tenantId: string, tracking: string, status: string, by: CourierEventsService = events) {
     const id = `evt_${randomUUID()}`;
     const body = JSON.stringify({ id, description: 'tracker.updated', result: { tracking_code: tracking, status } });
     await http()
@@ -210,7 +211,7 @@ describe('claims: labels', () => {
       .send(body)
       .expect(200);
     const stored = await prisma.inTenant(tenantId, (tx) => tx.courierEvent.findFirstOrThrow({ where: { providerEventId: id } }));
-    await events.apply(tenantId, stored.id);
+    await by.apply(tenantId, stored.id);
   }
 
   beforeAll(async () => {
@@ -300,6 +301,22 @@ describe('claims: labels', () => {
     expectDocumented(customerClaimResponseSchema, seen.body);
     expect(seen.body).toMatchObject({ shipment: { tracking: label.tracking, tracking_status: 'delivered' } });
     expect((seen.body as { shipment: object }).shipment).not.toHaveProperty('label');
+  });
+
+  it("marks a remake's parcel delivered when the worker applies the courier's event", async () => {
+    const w = await workspace();
+    const claimed = await w.claim(await w.delivered([w.castco]));
+    await w.remakeAll(claimed, [w.castco]);
+    const label = ((await w.staff.post(`/claims/${claimed.id}/ship`, { label: {} }).expect(200)).body as Claim).shipment!.label!;
+
+    // The API stores the event; the worker, wired as in production, applies it.
+    const worker = await startTestWorker();
+    try {
+      await track(w.id, label.tracking, 'delivered', worker.get(CourierEventsService));
+    } finally {
+      await worker.close();
+    }
+    expect(((await w.staff.get(`/claims/${claimed.id}`).expect(200)).body as Claim).state).toBe('closed');
   });
 
   it('leaves the label to the workspace when the remade lines name different workshops', async () => {

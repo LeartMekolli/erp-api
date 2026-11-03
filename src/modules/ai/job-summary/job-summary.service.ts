@@ -4,7 +4,7 @@ import type { AiRun, Prisma } from '../../../generated/prisma/client';
 import type { TenantAuth } from '../../identity/auth-context';
 import type { TenantPermission } from '../../identity/permissions';
 import { notWaitingForPayment } from '../../orders/payment-hold';
-import { jobSummaryOf } from '../../partners/job-summary-response';
+import { jobSummaryOf, summaryStatus } from '../../partners/job-summary-response';
 import type { JobSummaryResponse } from '../../partners/job-summary-response';
 import type { SettingValue } from '../../settings/setting-keys';
 import { SettingsService } from '../../settings/settings.service';
@@ -133,9 +133,10 @@ export class JobSummaryService implements OnModuleInit {
       const latest = await tx.jobSummary.findFirst({
         where: { assignmentId },
         orderBy: { createdAt: 'desc' },
-        include: { run: { select: { result: { select: { id: true } } } } },
+        include: { run: { select: { createdAt: true, result: { select: { id: true } } } } },
       });
-      if (latest && latest.description === null && !latest.run.result) throw new ConflictException('A summary of this job is being written');
+      // A run never run in time is dead, so its summary may be written again.
+      if (latest && summaryStatus(latest) === 'pending') throw new ConflictException('A summary of this job is being written');
       // Not the user's own run: a staff request for a workshop's brief stays out of their Cmd+K history.
       const id = await this.runs.queueIn(tx, tenantId, { userId: null, kind: 'job_summary', payload: { assignment_id: assignmentId } });
       await tx.jobSummary.create({ data: { assignmentId, runId: id, requestedByUserId: userId } });

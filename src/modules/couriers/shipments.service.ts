@@ -80,12 +80,9 @@ export class ShipmentsService {
     const again = open ?? rows[0];
     try {
       if (again) {
-        // A failed try's shipment at the service holds the address that was refused: ask for a new one.
-        // A dead request's may have been bought already: buy that one, never a second.
-        await tx.shipment.update({
-          where: { id: again.id },
-          data: { ...attempt, status: 'pending', ...(again.status === 'failed' ? { providerShipmentId: null } : {}) },
-        });
+        // The row keeps its shipment at the service: a failed or dead try may have been bought there with
+        // its answer lost, and `purchase` uses that label rather than buying a second.
+        await tx.shipment.update({ where: { id: again.id }, data: { ...attempt, status: 'pending' } });
         return again.id;
       }
       return (await tx.shipment.create({ data: { ...subject, ...attempt }, select: { id: true } })).id;
@@ -97,8 +94,9 @@ export class ShipmentsService {
   }
 
   /**
-   * Buys the reserved label, outside any transaction: the service's shipment is created once and its id
-   * stored before buying. A refusal marks the try `failed` with the service's reason and is a 503.
+   * Buys the reserved label, outside any transaction. The service's shipment id is stored before buying,
+   * and a later try asks the service for that shipment's label first, so a purchase whose answer was lost
+   * is never bought again. A refusal marks the try `failed` with the service's reason and is a 503.
    */
   async purchase(tenantId: string, shipmentId: string, from: Address, to: Address): Promise<Label> {
     const row = await this.prisma.inTenant(tenantId, (tx) => tx.shipment.findUniqueOrThrow({ where: { id: shipmentId } }));
@@ -109,18 +107,20 @@ export class ShipmentsService {
       throw new ConflictException('No courier service is set up for this workspace');
     }
     try {
-      let providerShipmentId = row.providerShipmentId;
-      if (!providerShipmentId) {
-        ({ providerShipmentId } = await this.provider.shipment(account.keys, {
+      // An earlier try may have been bought with its answer lost (a timeout): use that label, never buy a second.
+      let bought = row.providerShipmentId ? await this.provider.label(account.keys, row.providerShipmentId) : null;
+      if (!bought) {
+        // Not bought: a new shipment at the service, so a corrected address is the one used.
+        const { providerShipmentId } = await this.provider.shipment(account.keys, {
           from,
           to,
           parcel: row.parcel as unknown as Parcel,
           isReturn: row.purpose === 'return',
           reference: shipmentId,
-        }));
+        });
         await this.prisma.inTenant(tenantId, (tx) => tx.shipment.update({ where: { id: shipmentId }, data: { providerShipmentId } }));
+        bought = await this.provider.buy(account.keys, providerShipmentId, row.carrier, row.service);
       }
-      const bought = await this.provider.buy(account.keys, providerShipmentId, row.carrier, row.service);
       const updated = await this.prisma.inTenant(tenantId, (tx) =>
         tx.shipment.update({
           where: { id: shipmentId },
@@ -159,7 +159,12 @@ export class ShipmentsService {
       });
     });
     if (!shipment || status !== 'delivered') return;
-    await this.delivered.get(shipment.purpose as ShipmentPurpose)?.(tenantId, shipment);
+    const purpose = shipment.purpose as ShipmentPurpose;
+    const hook = this.delivered.get(purpose);
+    // A return only keeps its tracking: staff mark the pieces received. An order or a remake whose module
+    // isn't loaded in this process fails the event, to be tried again, rather than losing the delivery.
+    if (hook) await hook(tenantId, shipment);
+    else if (purpose !== 'return') throw new Error(`No delivery hook for ${purpose} shipments in this process`);
   }
 
   private async fail(tenantId: string, shipmentId: string, message: string): Promise<void> {

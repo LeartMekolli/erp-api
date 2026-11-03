@@ -24,8 +24,14 @@ export function signFakeCourierEvent(rawBody: Buffer, secret: string): string {
  */
 export class FakeCourierProvider implements CourierProvider {
   readonly bought: { providerShipmentId: string; carrier: string; service: string; tracking: string }[] = [];
-  private readonly shipments = new Map<string, { to: Address; rates: CourierRate[] }>();
+  private readonly shipments = new Map<string, { to: Address; rates: CourierRate[]; label?: CourierLabel }>();
   private labels = 0;
+  private loseAnswer = false;
+
+  /** The next purchase goes through at the service, but its answer never arrives, as on a timeout. */
+  loseNextAnswer(): void {
+    this.loseAnswer = true;
+  }
 
   shipment(
     _keys: CourierKeys,
@@ -47,13 +53,24 @@ export class FakeCourierProvider implements CourierProvider {
   buy(_keys: CourierKeys, providerShipmentId: string, carrier: string, service: string): Promise<CourierLabel> {
     const shipment = this.shipments.get(providerShipmentId);
     if (!shipment) return Promise.reject(new CourierError('No such shipment'));
+    // As EasyPost: a shipment is bought once.
+    if (shipment.label) return Promise.reject(new CourierError('The shipment is already bought'));
     if (shipment.to.line1 === 'FAIL') return Promise.reject(new CourierError('The address was refused'));
     const rate = shipment.rates.find((one) => one.carrier === carrier && one.service === service);
     if (!rate) return Promise.reject(new CourierError(`${carrier} offers no ${service} rate for this parcel`));
     this.labels += 1;
     const tracking = `FAKE${String(this.labels).padStart(6, '0')}`;
     this.bought.push({ providerShipmentId, carrier, service, tracking });
-    return Promise.resolve({ tracking, labelUrl: `https://labels.example.test/${providerShipmentId}.pdf`, amount: rate.amount, currency: rate.currency });
+    shipment.label = { tracking, labelUrl: `https://labels.example.test/${providerShipmentId}.pdf`, amount: rate.amount, currency: rate.currency };
+    if (this.loseAnswer) {
+      this.loseAnswer = false;
+      return Promise.reject(new CourierError('The courier service could not be reached'));
+    }
+    return Promise.resolve(shipment.label);
+  }
+
+  label(_keys: CourierKeys, providerShipmentId: string): Promise<CourierLabel | null> {
+    return Promise.resolve(this.shipments.get(providerShipmentId)?.label ?? null);
   }
 
   verifyEvent(rawBody: Buffer, signature: string | undefined, secret: string): CourierEvent | null {

@@ -51,6 +51,8 @@ export interface CourierProvider {
   ): Promise<{ providerShipmentId: string; rates: CourierRate[] }>;
   /** Buys the shipment's label at the named carrier and service. */
   buy(keys: CourierKeys, providerShipmentId: string, carrier: string, service: string): Promise<CourierLabel>;
+  /** The shipment's label if it was bought, else null: a purchase whose answer was lost is never bought twice. */
+  label(keys: CourierKeys, providerShipmentId: string): Promise<CourierLabel | null>;
   /**
    * Checks a webhook's signature with the account's secret (throws InvalidSignatureError) and reads it:
    * null for an event that isn't a tracking update, which is answered and left alone.

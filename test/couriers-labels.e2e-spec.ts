@@ -217,6 +217,22 @@ describe('couriers: labels and tracking', () => {
     expect(fake.bought.length - boughtBefore).toBe(1);
   });
 
+  it("buys once when the courier's answer to a purchase is lost, and ships with that label on a retry (Review Focus 1)", async () => {
+    const w = await workspace();
+    const placed = await w.ready();
+    const boughtBefore = fake.bought.length;
+
+    // Bought at the service, but the answer timed out: staff can't tell, and try again.
+    fake.loseNextAnswer();
+    await w.ship(placed.id).expect(503);
+    expect(fake.bought.length - boughtBefore).toBe(1);
+
+    const retried = (await w.ship(placed.id).expect(200)).body as Order;
+    expect(fake.bought.length - boughtBefore).toBe(1);
+    expect(retried.shipping.label!.tracking).toBe(fake.bought.at(-1)!.tracking);
+    expect(await w.shipments(placed.id)).toEqual([expect.objectContaining({ status: 'bought', error: null })]);
+  });
+
   it('keeps the order ready when the courier refuses, and buys once on a retry (Review Focus 2)', async () => {
     const w = await workspace();
     const placed = await w.ready('live', { ...ADDRESS, line1: 'FAIL' });
