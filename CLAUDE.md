@@ -16,6 +16,14 @@ First target industry: made-to-order 3D objects (printed and cast parts), decide
 - Agents change files only with the Edit and Write tools, so the user sees and approves every diff. Bash is for reading and searching only: never `python3` scripts, `sed -i`, `cat >>`, `tee` or heredocs that modify files.
 - Agents never install packages and never run project tooling. This covers, at minimum: `pnpm`, `npm`, `yarn`, `npx`, `node`, `docker`, `docker compose`, `prisma`, `psql`, `redis-cli`, `jest`, `tsc`, `eslint`, `nest`, and any other package manager, build, migration, database, container or test command — in any form, including through a script alias. Write out the exact command, hand it to the user, stop, wait for their output, then continue. This applies inside plans and specs too: a step whose body is one of these commands is a step the user executes.
 
+## Tests and CI
+
+- Never make a flaky e2e test pass by working around other suites. A spec touches only workspaces it created. Forbidden fixes: suspending or hiding data from other suites, deleting rows the test didn't create, retrying on deadlock (P2034), raising timeouts to cover contention. A raised timeout is fine only for genuinely large work, with a comment saying why.
+- Tests of scheduled jobs call the per-workspace method, never a handler that goes through every active workspace.
+- A failure that mentions another suite, or a deadlock in cleanup, means isolation is broken: report the root cause to the user instead of patching the test.
+- While developing, hand the user only the affected spec files to run; CI runs the full suite.
+- Every task goes through a pull request into `master`; merging requires a green `ci` check. Never build on a red `master`.
+
 ## Context
 
 Read before analysing, specifying or planning:
