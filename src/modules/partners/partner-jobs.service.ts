@@ -11,6 +11,7 @@ import type { PartnerAuth } from '../identity/auth-context';
 import { notWaitingForPayment } from '../orders/payment-hold';
 import { pathFor } from '../workflow/path';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
+import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
 import type { PartnerJobDetailResponse, PartnerJobResponse } from './partner-response';
 
@@ -87,6 +88,7 @@ export class PartnerJobsService {
           status: piece.status as PartnerJobDetailResponse['work_orders'][number]['status'],
           step_key: piece.currentStep?.key ?? null,
         })),
+        summary: await jobSummaryOf(tx, groupId),
       };
     });
   }
@@ -139,7 +141,7 @@ export class PartnerJobsService {
       where: { groupId: { in: groups.map((group) => group.id) } },
       _count: { _all: true },
     });
-    const options = await this.options(tx, groups);
+    const options = await chosenOptions(tx, groups);
 
     return rows.map((row) => {
       const group = groupById.get(row.groupId)!;
@@ -165,43 +167,44 @@ export class PartnerJobsService {
     });
   }
 
-  /**
-   * Each job's chosen options by name, from its quote's inputs (keys never change), in its product's
-   * option order: stored JSON keeps no key order.
-   */
-  private async options(
-    tx: Tx,
-    groups: { id: string; quoteId: string | null; productId: string | null }[],
-  ): Promise<Map<string, PartnerJobResponse['options']>> {
-    // Started from a quote or from an order line, a job knows the quote it was priced by.
-    const fromQuotes = groups.filter((group): group is typeof group & { quoteId: string } => group.quoteId !== null);
-    const quotes = await tx.quote.findMany({ where: { id: { in: fromQuotes.map((group) => group.quoteId) } }, select: { id: true, inputs: true } });
-    const chosenOf = new Map(
-      quotes.map((quote) => [quote.id, Object.entries((quote.inputs as { options: Record<string, string> }).options)]),
-    );
-    const pairs = [...chosenOf.values()].flat();
-    if (pairs.length === 0) return new Map();
-    const values = await tx.optionValue.findMany({
-      where: { OR: pairs.map(([groupKey, key]) => ({ key, group: { key: groupKey } })) },
-      include: { group: { select: { id: true, key: true, name: true } } },
-    });
-    const productIds = [...new Set(fromQuotes.flatMap((group) => (group.productId ? [group.productId] : [])))];
-    const positions = await tx.productOptionGroup.findMany({
-      where: { productId: { in: productIds } },
-      select: { productId: true, groupId: true, position: true },
-    });
+}
 
-    return new Map(
-      fromQuotes.map((group) => {
-        const positionOf = (groupId: string) =>
-          positions.find((one) => one.productId === group.productId && one.groupId === groupId)?.position ?? Number.MAX_SAFE_INTEGER;
-        const chosen = chosenOf.get(group.quoteId) ?? [];
-        const named = chosen
-          .flatMap(([groupKey, key]) => values.filter((one) => one.group.key === groupKey && one.key === key))
-          .sort((a, b) => positionOf(a.group.id) - positionOf(b.group.id) || a.group.key.localeCompare(b.group.key))
-          .map((value) => ({ group: value.group.name, value: value.name }));
-        return [group.id, named];
-      }),
-    );
-  }
+/**
+ * Each job's chosen options by name, from its quote's inputs (keys never change), in its product's
+ * option order: stored JSON keeps no key order. Also read by the job summary.
+ */
+export async function chosenOptions(
+  tx: Tx,
+  groups: { id: string; quoteId: string | null; productId: string | null }[],
+): Promise<Map<string, PartnerJobResponse['options']>> {
+  // Started from a quote or from an order line, a job knows the quote it was priced by.
+  const fromQuotes = groups.filter((group): group is typeof group & { quoteId: string } => group.quoteId !== null);
+  const quotes = await tx.quote.findMany({ where: { id: { in: fromQuotes.map((group) => group.quoteId) } }, select: { id: true, inputs: true } });
+  const chosenOf = new Map(
+    quotes.map((quote) => [quote.id, Object.entries((quote.inputs as { options: Record<string, string> }).options)]),
+  );
+  const pairs = [...chosenOf.values()].flat();
+  if (pairs.length === 0) return new Map();
+  const values = await tx.optionValue.findMany({
+    where: { OR: pairs.map(([groupKey, key]) => ({ key, group: { key: groupKey } })) },
+    include: { group: { select: { id: true, key: true, name: true } } },
+  });
+  const productIds = [...new Set(fromQuotes.flatMap((group) => (group.productId ? [group.productId] : [])))];
+  const positions = await tx.productOptionGroup.findMany({
+    where: { productId: { in: productIds } },
+    select: { productId: true, groupId: true, position: true },
+  });
+
+  return new Map(
+    fromQuotes.map((group) => {
+      const positionOf = (groupId: string) =>
+        positions.find((one) => one.productId === group.productId && one.groupId === groupId)?.position ?? Number.MAX_SAFE_INTEGER;
+      const chosen = chosenOf.get(group.quoteId) ?? [];
+      const named = chosen
+        .flatMap(([groupKey, key]) => values.filter((one) => one.group.key === groupKey && one.key === key))
+        .sort((a, b) => positionOf(a.group.id) - positionOf(b.group.id) || a.group.key.localeCompare(b.group.key))
+        .map((value) => ({ group: value.group.name, value: value.name }));
+      return [group.id, named];
+    }),
+  );
 }

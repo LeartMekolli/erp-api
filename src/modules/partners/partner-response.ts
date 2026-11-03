@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
+import { jobSummaryResponseSchema } from './job-summary-response';
 import { PARTNER_ROLES } from './partner-roles';
 
 // What clients receive for partners; checked against real responses in the e2e tests.
@@ -218,6 +219,8 @@ export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
       step_key: z.string().nullable(),
     }),
   ),
+  /** The AI's brief of the job (Orders 3 spec, goal 15); null when none was written. */
+  summary: jobSummaryResponseSchema,
 });
 export type PartnerJobDetailResponse = z.infer<typeof partnerJobDetailResponseSchema>;
 

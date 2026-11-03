@@ -4,8 +4,8 @@ import { CUSTOMER_TOOLS } from './customer-tools/customer-tools';
 import { SUGGESTION_KINDS } from './suggestions';
 import { RECORD_TYPES, recordRefSchema } from './tools/tool';
 
-/** Every run kind (`RunKind`): staff's, and one per customer tool. */
-const RUN_KINDS = ['ask', 'briefing', ...CUSTOMER_TOOLS] as const;
+/** Every run kind (`RunKind`): staff's, the workshops' job summaries, and one per customer tool. */
+const RUN_KINDS = ['ask', 'briefing', 'job_summary', ...CUSTOMER_TOOLS] as const;
 
 export const askSchema = z.strictObject({ question: z.string().trim().min(1).max(500) });
 export type AskBody = z.infer<typeof askSchema>;

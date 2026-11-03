@@ -89,6 +89,12 @@ export const SETTING_KEYS = {
     brand_content: z.number().int().min(1).max(1000),
     image: z.number().int().min(1).max(1000),
   }),
+  // The AI's brief of each job for the workshop holding it (Orders 3 spec, goals 12–15): on or off, and
+  // what the workspace adds to the industry-neutral prompt. Unset: on, with nothing added.
+  'ai.jobSummary': z.object({
+    enabled: z.boolean(),
+    instructions: z.string().trim().max(2_000).optional(),
+  }),
   // Customers' priority score (Customers 2 spec, goals 11–17): how much each part counts, the band of a
   // customer below every threshold, and the bands with the score each starts at and what they unlock.
   // Unset: DEFAULT_PRIORITY_SETTINGS in src/modules/customers/priority/bands.ts.

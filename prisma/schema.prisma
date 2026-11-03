@@ -131,6 +131,11 @@ model Tenant {
   customerPriorities    CustomerPriority[]
   claims                Claim[]
   creditNotes           CreditNote[]
+  jobSummaries          JobSummary[]
+  stepCapacities        StepCapacity[]
+  courierAccount        CourierAccount?
+  shipments             Shipment[]
+  courierEvents         CourierEvent[]
 
   @@map("tenant")
 }
@@ -929,6 +934,7 @@ model StepType {
   partnerCapabilities PartnerCapability[]
   partnerPrices PartnerStepPrice[]
   capacitySnapshots PartnerCapacitySnapshot[]
+  capacity      StepCapacity?
 
   @@unique([tenantId, key])
   @@unique([tenantId, id])
@@ -1741,6 +1747,9 @@ model JobAssignment {
   group   WorkOrderGroup @relation(fields: [tenantId, groupId], references: [tenantId, id], onDelete: Cascade)
   partner Partner        @relation(fields: [tenantId, partnerId], references: [tenantId, id], onDelete: NoAction)
   payoutJobs PayoutJob[]
+  summaries  JobSummary[]
+  // Remake labels charged to the workshop at fault for this job (Orders 3b plan, Task 5).
+  chargedLabels Shipment[]
 
   @@unique([tenantId, id])
   @@index([tenantId, groupId])
@@ -1909,6 +1918,7 @@ model Order {
   progressEmails OrderProgressEmail[]
   claims         Claim[]
   creditNotes    CreditNote[]
+  shipments      Shipment[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, channel, channelOrderId])
@@ -1957,6 +1967,8 @@ model Claim {
   lines    ClaimLine[]
   photos   ClaimPhoto[]
   shipment ClaimShipment?
+  // Labels bought for the claim: the return label, and the remake's (Orders 3 spec, goal 25).
+  labels   Shipment[]
 
   @@unique([tenantId, number])
   @@unique([tenantId, id])
@@ -2060,6 +2072,127 @@ model CreditNote {
   @@index([tenantId, invoiceId])
   @@index([tenantId, claimLineId])
   @@map("credit_note")
+}
+
+// A label bought from the workspace's courier service (Orders 3 spec, goals 23 and 25): for an order, a
+// claim's remake, or a claim's return. Reserved `pending` before anything is sent to the service, so a
+// second purchase is refused (trigger shipment_one_open, migration orders_3b); the service's shipment id
+// is kept before buying, so a retry buys the same shipment.
+model Shipment {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  tenantId            String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // order | remake | return
+  purpose             String
+  orderId             String?   @map("order_id") @db.Uuid
+  claimId             String?   @map("claim_id") @db.Uuid
+  // pending | bought | failed
+  status              String    @default("pending")
+  providerShipmentId  String?   @map("provider_shipment_id")
+  carrier             String
+  service             String
+  tracking            String?
+  labelUrl            String?   @map("label_url")
+  cost                Decimal?  @db.Decimal(18, 2)
+  currency            String?
+  // { weight_g, length_cm, width_cm, height_cm }
+  parcel              Json
+  // The courier's last tracking state: pre_transit | in_transit | out_for_delivery | delivered | returned | failure | unknown
+  trackingStatus      String?   @map("tracking_status")
+  // Why the last purchase failed, as the service said it.
+  error               String?
+  // A remake label charged to the workshop at fault: the job it is taken off, and how (Orders 3 spec, "My calls").
+  chargedAssignmentId String?   @map("charged_assignment_id") @db.Uuid
+  owedReduction       Decimal?  @map("owed_reduction") @db.Decimal(18, 2)
+  shortfall           Decimal?  @db.Decimal(18, 2)
+  createdByUserId     String    @map("created_by_user_id") @db.Uuid
+  createdAt           DateTime  @default(now()) @map("created_at")
+  deliveredAt         DateTime? @map("delivered_at")
+
+  tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order            Order?         @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Cascade)
+  claim            Claim?         @relation(fields: [tenantId, claimId], references: [tenantId, id], onDelete: Cascade)
+  chargedAssignment JobAssignment? @relation(fields: [tenantId, chargedAssignmentId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, orderId])
+  @@index([tenantId, claimId])
+  @@index([tenantId, tracking])
+  @@map("shipment")
+}
+
+// A tracking event from the courier service, stored once and applied by a job (Orders 3 spec, goal 24);
+// the payload itself is never kept.
+model CourierEvent {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  providerEventId String    @map("provider_event_id")
+  tracking        String
+  status          String
+  receivedAt      DateTime  @default(now()) @map("received_at")
+  appliedAt       DateTime? @map("applied_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, providerEventId])
+  @@unique([tenantId, id])
+  @@map("courier_event")
+}
+
+// The workspace's own courier service account (Orders 3 spec, goal 21), sealed at rest like the payment keys.
+model CourierAccount {
+  tenantId      String   @id @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  // easypost
+  provider      String   @default("easypost")
+  apiKey        Bytes    @map("api_key")
+  webhookSecret Bytes    @map("webhook_secret")
+  // Where labels ship from and returns go to; validated by addressSchema.
+  fromAddress   Json     @map("from_address")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("courier_account")
+}
+
+// How many pieces a day the workspace can put through an in-house step type, shared by every workflow
+// using it (Orders 3 spec, goal 16). A step type without a row is planned without a limit.
+model StepCapacity {
+  tenantId    String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  stepTypeId  String   @map("step_type_id") @db.Uuid
+  dailyPieces Int      @map("daily_pieces")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stepType StepType @relation(fields: [tenantId, stepTypeId], references: [tenantId, id], onDelete: Cascade)
+
+  @@id([tenantId, stepTypeId])
+  @@map("step_capacity")
+}
+
+// The AI's brief of a job for the workshop holding it (Orders 3 spec, goals 12–15). The sweep writes one
+// per job (`requested_by_user_id` null; trigger job_summary_one_swept, migration orders_3b); staff may ask for
+// more. The content is set once its run is done.
+model JobSummary {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  tenantId          String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
+  assignmentId      String   @map("assignment_id") @db.Uuid
+  runId             String   @unique @map("run_id") @db.Uuid
+  description       String?
+  watchOuts         Json?    @map("watch_outs")
+  recommendations   Json?
+  productionDays    Int?     @map("production_days")
+  usedHistory       Boolean? @map("used_history")
+  requestedByUserId String?  @map("requested_by_user_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignment JobAssignment @relation(fields: [tenantId, assignmentId], references: [tenantId, id], onDelete: Cascade)
+  run        AiRun         @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: NoAction)
+
+  @@unique([tenantId, runId])
+  @@unique([tenantId, id])
+  @@index([tenantId, assignmentId])
+  @@map("job_summary")
 }
 
 // A customer's priority (Customers 2 spec, goals 11–16): its score from its own history, computed each
@@ -2853,6 +2986,7 @@ model AiRun {
   result         AiRunResult?
   briefing       AiBriefing?
   customerResult AiCustomerResult?
+  jobSummary     JobSummary?
 
   @@unique([tenantId, id])
   @@index([tenantId, createdAt])

@@ -216,6 +216,9 @@ export const SCHEDULED_JOBS = {
   'customers.priority.refresh': { queue: 'maintenance', schedule: { every: 3_600_000 }, lockTtlMs: 600_000 },
   // Queues the morning briefing of each workspace where it is 07:00 or later and none ran today (AI 1 spec, goal 7).
   'ai.briefing': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
+  // Queues the AI's brief of each job a workshop newly holds, in workspaces with AI set up (Orders 3 spec,
+  // goal 12). Whether a job has its brief is decided by its summary row, never by this having run.
+  'ai.job_summaries': { queue: 'ai', schedule: { every: 60_000 }, lockTtlMs: 55_000 },
   // Gives back a failed customer run's credits whose give-back job was never queued or gave up (AI 2
   // spec, goal 5). Whether credits came back is decided by the give-back row, never by this having run.
   'ai.credits.sweep': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },

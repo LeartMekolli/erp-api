@@ -12,7 +12,7 @@ import type { CustomerTool } from './customer-tools/customer-tools';
 import { extraWorstCost } from './extra-costs';
 import type { RecordRef } from './tools/tool';
 
-export type RunKind = 'ask' | 'briefing' | CustomerTool;
+export type RunKind = 'ask' | 'briefing' | 'job_summary' | CustomerTool;
 
 export interface RunResult {
   status: 'done' | 'failed';

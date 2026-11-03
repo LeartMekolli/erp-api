@@ -28,6 +28,9 @@ import { RecommendationsService } from './customer-tools/recommendations';
 import { FakeAiProvider } from './fake-ai-provider';
 import { FakeImageProvider } from './fake-image-provider';
 import { GiveBackHandler, GiveBackSweepHandler } from './give-back.handler';
+import { JobSummaryController } from './job-summary/job-summary.controller';
+import { JobSummaryHandler } from './job-summary/job-summary.handler';
+import { JobSummaryService } from './job-summary/job-summary.service';
 import { IMAGE_PROVIDER } from './image-provider';
 import type { ImageProvider } from './image-provider';
 import { OpenAiImageProvider } from './openai-image-provider';
@@ -51,13 +54,15 @@ import type { AiTool } from './tools/tool';
 
 /**
  * The AI: one gateway to Claude, runs within a monthly limit, Cmd+K and the briefing for staff (AI 1 spec),
- * and the customer tools paid in credits (AI 2 spec).
+ * the customer tools paid in credits (AI 2 spec), and the workshops' job summaries (Orders 3 spec).
  */
 @Module({
   imports: [NotificationsModule, ReportsModule, KnowledgeModule, PaymentsModule, FilesModule, SettingsModule, AuditModule, CustomersModule],
   // The dashboard's controller lives here: it shows the briefing, and this module imports ReportsModule.
-  controllers: [RunsController, SearchController, DashboardController, CustomerToolsController, BrandProfileController],
+  controllers: [RunsController, SearchController, DashboardController, CustomerToolsController, BrandProfileController, JobSummaryController],
   providers: [
+    JobSummaryService,
+    JobSummaryHandler,
     CustomerToolsService,
     BrandProfileService,
     BrandContentService,

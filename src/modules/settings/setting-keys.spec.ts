@@ -132,4 +132,11 @@ describe('setting keys', () => {
       expect(() => parseSetting('orders.claims', { windowDays: 30, reasons: bad })).toThrow(ZodError);
     }
   });
+
+  it('accepts the job summary switched off, and instructions of at most 2 000 characters', () => {
+    expect(parseSetting('ai.jobSummary', { enabled: false })).toEqual({ enabled: false });
+    expect(parseSetting('ai.jobSummary', { enabled: true, instructions: 'Mention the alloy.' })).toEqual({ enabled: true, instructions: 'Mention the alloy.' });
+    expect(() => parseSetting('ai.jobSummary', { enabled: true, instructions: 'x'.repeat(2_001) })).toThrow(ZodError);
+    expect(() => parseSetting('ai.jobSummary', {})).toThrow(ZodError);
+  });
 });
