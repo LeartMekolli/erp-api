@@ -1,33 +1,11 @@
-/**
- * End-to-end specs boot the real application, so the real environment has to be
- * valid before `ConfigModule`'s factory runs. These defaults stand in for a
- * developer's `.env`; anything already set (CI, a local `.env`) wins.
- */
-const defaults: Record<string, string> = {
-  NODE_ENV: 'test',
-  DATABASE_URL: 'postgresql://erp_app:app_pw@localhost:5432/erp?schema=public',
-  DATABASE_MIGRATE_URL: 'postgresql://erp_owner:owner_pw@localhost:5432/erp?schema=public',
-  REDIS_URL: 'redis://localhost:6379',
-  APP_SECRET: 'test_secret_that_is_at_least_32_characters',
-  JWT_SECRET: 'test_jwt_secret_that_is_at_least_32_characters',
-  QUEUE_PREFIX: 'e2e',
-  // Request logs would drown test output; logging tests capture their own.
-  LOG_LEVEL: 'warn',
-  SMTP_URL: 'smtp://localhost:1025',
-  MAIL_FROM: 'ERP <no-reply@example.test>',
-  WEB_URL_TEMPLATE: 'http://{tenant}.localhost:5173',
-  S3_ENDPOINT: 'http://localhost:9000',
-  S3_BUCKET: 'erp-files',
-  S3_ACCESS_KEY_ID: 'minio',
-  S3_SECRET_ACCESS_KEY: 'minio-password',
-  S3_FORCE_PATH_STYLE: 'true',
-  // Specs queue briefings themselves (ai-briefing.e2e-spec.ts).
-  AI_BRIEFINGS: 'false',
-  // No spec's worker runs the scheduled jobs over every spec's workspaces: specs call the per-workspace
-  // methods (runDue, queueDue, sweepTenant…). schedulers and worker-in-process turn it on.
-  JOB_SCHEDULES: 'false',
-};
+import { applyE2eDefaults, withDatabase, workerDatabase } from './e2e-env';
 
-for (const [key, value] of Object.entries(defaults)) {
-  process.env[key] ??= value;
+applyE2eDefaults();
+
+// Each jest worker has a database of its own (global-setup-e2e.ts): host, port and credentials stay as set,
+// only the database changes.
+const database = workerDatabase(process.env.JEST_WORKER_ID ?? '1');
+for (const key of ['DATABASE_URL', 'DATABASE_MIGRATE_URL'] as const) {
+  const url = process.env[key];
+  if (url) process.env[key] = withDatabase(url, database);
 }
