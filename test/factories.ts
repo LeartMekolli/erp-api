@@ -60,19 +60,7 @@ export async function createTestUser(
   return { id: user.id, email, password };
 }
 
-/**
- * Tenants are cleaned up by cascade; audit entries deliberately survive. Every test worker runs the
- * scheduled jobs against every workspace, so a job writing in one of these workspaces can deadlock with
- * the cascade (P2034); Postgres then cancels one side, and the delete is tried again.
- */
+/** Tenants are cleaned up by cascade; audit entries deliberately survive. */
 export async function deleteTestTenants(prisma: PrismaService, ids: string[]): Promise<void> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await prisma.tenant.deleteMany({ where: { id: { in: ids } } });
-      return;
-    } catch (error) {
-      if (attempt >= 5 || (error as { code?: string }).code !== 'P2034') throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
-    }
-  }
+  await prisma.tenant.deleteMany({ where: { id: { in: ids } } });
 }
