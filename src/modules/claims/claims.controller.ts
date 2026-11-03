@@ -7,7 +7,7 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentCustomer, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { CustomerAccess, RequirePermission } from '../identity/route-markers';
-import { shipOrderSchema } from '../orders/orders.service';
+import { courierTrackingSchema } from '../orders/orders.service';
 import type { ShipOrder } from '../orders/orders.service';
 import { claimDecisionResponseSchema, claimResponseSchema, customerClaimResponseSchema } from './claim-response';
 import type { ClaimDecisionResponse, ClaimResponse, CustomerClaimResponse } from './claim-response';
@@ -128,7 +128,7 @@ export class ClaimsController {
   @ApiDoc({
     summary: "Ship the claim's remakes as its own parcel, with the courier and tracking number when given; the customer is told.",
     description: 'Every remake of the claim must be finished. A claim with nothing made again, or shipped already, is a 409.',
-    body: shipOrderSchema,
+    body: courierTrackingSchema,
     response: claimResponseSchema,
     errors: [400, 404, 409],
   })
@@ -138,7 +138,7 @@ export class ClaimsController {
   ship(
     @CurrentUser() auth: TenantAuth,
     @Param('id', idParam) id: string,
-    @Body(new ZodValidationPipe(shipOrderSchema)) body: ShipOrder,
+    @Body(new ZodValidationPipe(courierTrackingSchema)) body: ShipOrder,
   ): Promise<ClaimResponse> {
     return this.claims.ship(auth, id, body);
   }

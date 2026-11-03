@@ -92,10 +92,15 @@ export class OrdersController {
 
   @ApiDoc({
     summary: 'Ship a ready order, with its courier and tracking number when given, and tell the customer.',
-    description: 'Only once every line is ready or cancelled, with at least one ready; else, or once shipped, a 409.',
+    description:
+      'Only once every line is ready or cancelled, with at least one ready; else, or once shipped, a 409. With `label`, ' +
+      "the label is bought from the workspace's courier service first, while you wait: the parcel, carrier and service " +
+      "default to the shipping method's, and missing any is a 400. No courier account, or a label already being bought, " +
+      'is a 409. A refusal by the courier service is a 503 with its reason, and the order stays ready; trying again ' +
+      'never buys a second label.',
     body: shipOrderSchema,
     response: orderResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, 409, 503],
   })
   @RequirePermission('order.ship')
   @Post(':id/ship')

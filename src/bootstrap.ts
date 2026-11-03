@@ -46,6 +46,7 @@ export function configureApp(app: INestApplication): void {
   // Webhook signatures cover the exact bytes sent, so these routes get the raw body (a Buffer),
   // before Nest's JSON parser, which skips a request that is already parsed.
   app.use('/webhooks/payments', raw({ type: '*/*', limit: '1mb' }));
+  app.use('/webhooks/couriers', raw({ type: '*/*', limit: '1mb' }));
 
   // Order matters: the request logger reads the context the first one creates.
   app.use(requestIdMiddleware);

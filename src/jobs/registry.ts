@@ -82,6 +82,12 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), eventId: z.uuid() }),
     jobId: (p) => [p.eventId],
   }),
+  // Applies one stored courier tracking event to its shipment (Orders 3 spec, goal 24).
+  'couriers.event': defineJob({
+    queue: 'maintenance',
+    payload: z.object({ tenantId: z.uuid(), eventId: z.uuid() }),
+    jobId: (p) => [p.eventId],
+  }),
   // Invoices a shipped pay-later order not paid, once (Payments spec).
   'payments.invoice.create': defineJob({
     queue: 'payments',
