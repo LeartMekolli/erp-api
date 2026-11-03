@@ -33,7 +33,23 @@ Read before analysing, specifying or planning:
 
 These are reference material, not a plan. Specs and plans are produced per topic.
 
-Every plan gets a guide per task for implementing it by hand, kept in sync as tasks land: see `docs/superpowers/guides/README.md`.
+On hold: per-task implementation guides (`docs/superpowers/guides/`). Don't write or update guides until the user lifts the hold.
+
+## Ignored files
+
+`docs/`, `.superpowers/`, `resources/`, `.env` and `.env.staging` are gitignored, so they don't travel with commits. Whenever an agent changes any of them, it ends its reply with this command for the user to copy and paste, with the `cd` path set to the agent's own workspace (`-n` never overwrites a file that already exists in `~/Desktop/erp-api`):
+
+```sh
+cd <this workspace's absolute path>
+D=/Users/leartmekolli/Desktop/erp-api
+mkdir -p "$D/docs" "$D/.superpowers" "$D/resources"
+cp -Rn docs/. "$D/docs/"
+cp -Rn .superpowers/. "$D/.superpowers/"
+cp -Rn resources/. "$D/resources/"
+cp -n .env .env.staging "$D/"
+```
+
+Show the command only; never run it.
 
 ## Progress
 
