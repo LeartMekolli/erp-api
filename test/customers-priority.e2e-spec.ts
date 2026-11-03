@@ -129,10 +129,11 @@ describe('customers: priority score', () => {
     priority = app.get(PriorityService);
   });
 
+  // Deleting the bulk workspace cascades through its 20 000 customers and their rows.
   afterAll(async () => {
     await deleteTestTenants(prisma, createdTenants);
     await app.close();
-  });
+  }, 60_000);
 
   it('scores customers from their history and puts them in bands', async () => {
     const w = await workspace();
@@ -244,9 +245,13 @@ describe('customers: priority score', () => {
   });
 
   // 20 000 rows take more than the default 5 s transaction and 20 s test on CI's database: the insert gets
-  // the refresh's own 60 s, and the test two minutes.
+  // the refresh's own 60 s, and the test two minutes. The workspace is suspended first: other suites boot
+  // workers that run the hourly job over every active workspace, and 20 000 customers would hold up their
+  // shutdown and this suite's cleanup. A suspended workspace can't call the API, so the score is read
+  // from the service.
   it('scores a workspace of thousands of customers in one run (final review)', async () => {
     const w = await workspace();
+    await prisma.tenant.update({ where: { id: w.id }, data: { status: 'suspended' } });
     // Customers that never ordered, written straight in: each still gets its row.
     await prisma.inTenant(
       w.id,
@@ -257,7 +262,7 @@ describe('customers: priority score', () => {
     await priority.refresh(w.id, new Date());
 
     expect(await prisma.inTenant(w.id, (tx) => tx.customerPriority.count())).toBe(20_004);
-    expect(await priorityOf(w, w.sol)).toMatchObject({ score: 88, band: { key: 'gold' } });
+    expect(await priority.get(w.id, w.sol)).toMatchObject({ score: 88, band: { key: 'gold' } });
   }, 120_000);
 
   it('never shows the score or band to the customer', async () => {
