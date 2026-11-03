@@ -7,8 +7,15 @@ import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { CourierAccountService } from '../couriers/courier-account.service';
+import type { TrackingStatus } from '../couriers/courier-provider';
+import { ShipmentsService } from '../couriers/shipments.service';
+import type { Label } from '../couriers/shipments.service';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { labelRequestSchema } from '../orders/order-response';
+import type { Address, LabelRequest } from '../orders/order-response';
+import { labelResponse, labelToBuy } from '../orders/orders.service';
 import type { ShipOrder } from '../orders/orders.service';
 import { JobsService } from '../partners/jobs.service';
 import type { Accepted, HandOver } from '../partners/jobs.service';
@@ -54,6 +61,12 @@ export const claimListQuerySchema = paginationQuerySchema.extend({
 });
 export type ClaimListQuery = z.infer<typeof claimListQuerySchema>;
 
+export const requestReturnSchema = z.strictObject({
+  /** Buy the customer a return label to the workspace now; the pieces are asked back only once it is bought. */
+  label: labelRequestSchema.optional(),
+});
+export type RequestReturn = z.infer<typeof requestReturnSchema>;
+
 const MONEY = /^\d{1,12}(\.\d{1,2})?$/;
 
 /** One claimed line decided: whose fault, and a remake, a refund or a refusal (goal 3). */
@@ -92,10 +105,11 @@ const WITH = {
   order: { select: { id: true, number: true } },
   lines: {
     orderBy: { orderLine: { position: 'asc' } },
-    include: { orderLine: { select: { id: true, position: true, product: { select: { name: true } } } } },
+    include: { orderLine: { select: { id: true, position: true, groupId: true, product: { select: { name: true } } } } },
   },
   photos: { orderBy: { position: 'asc' }, select: { fileVersionId: true } },
   shipment: true,
+  labels: { where: { status: 'bought' } },
 } satisfies Prisma.ClaimInclude;
 type Claim = Prisma.ClaimGetPayload<{ include: typeof WITH }>;
 
@@ -126,9 +140,14 @@ export class ClaimsService implements OnModuleInit {
     private readonly workOrders: WorkOrdersService,
     private readonly jobs: JobsService,
     private readonly moves: MovesService,
+    private readonly shipments: ShipmentsService,
+    private readonly courierAccounts: CourierAccountService,
   ) {}
 
   onModuleInit(): void {
+    // The courier delivered a remake's label: the claim's parcel is delivered (goal 25). A delivered return
+    // label only updates its tracking: staff still mark the pieces received (goal 2).
+    this.shipments.onDelivered('remake', (tenantId, shipment) => this.deliveredByCourier(tenantId, shipment.claimId!));
     // A remake's workshop at fault is never paid for it; another workshop's cost, or the workspace's own
     // work, is taken off what the first is owed (Orders 3 spec, goal 4). Partners and Workflow never depend on Claims.
     this.jobs.registerHandOverHook((tx, handOver) => this.refuseOwnRemakeAtCost(tx, handOver));
@@ -170,11 +189,16 @@ export class ClaimsService implements OnModuleInit {
     return this.one(auth.tenantId, { id, order: { customerId: auth.customerId } }, customerView);
   }
 
-  /** Staff ask for the pieces back: the claim waits for them (goal 2). 409 once asked, or with every line decided. */
-  requestReturn(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string): Promise<ClaimResponse> {
-    return this.change(auth, id, (claim) => {
-      if (claim.returnRequestedAt) throw new ConflictException('The pieces were asked back already');
-      if (claim.lines.every((line) => line.outcome !== null)) throw new ConflictException('Every line of this claim is decided');
+  /**
+   * Staff ask for the pieces back: the claim waits for them (goal 2). 409 once asked, or with every line
+   * decided. With `label`, the customer's return label is bought first, outside any transaction (goal 25):
+   * a refusal by the courier service asks nothing back.
+   */
+  async requestReturn(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: RequestReturn): Promise<ClaimResponse> {
+    const label = body.label ? await this.buyLabel(auth, id, 'return', body.label, canAskBack) : null;
+    return this.change(auth, id, async (claim, tx) => {
+      canAskBack(claim);
+      if (label) await this.shipments.markBought(tx, label.shipmentId);
       return { returnRequestedAt: new Date() };
     });
   }
@@ -190,17 +214,19 @@ export class ClaimsService implements OnModuleInit {
 
   /**
    * Ships the claim's remakes as its own parcel, once every remake is finished (goal 3): a claim with no
-   * remake, one not finished, or shipped already, is a 409. The customer is told after commit.
+   * remake, one not finished, or shipped already, is a 409. With `label`, the label is bought first, outside
+   * any transaction (goal 25), and charged to the workshop at fault when every remade line names that one.
+   * The customer is told after commit.
    */
   async ship(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: ShipOrder): Promise<ClaimResponse> {
+    const label = body.label ? await this.buyLabel(auth, id, 'remake', body.label, canShip) : null;
     const shipped = await this.change(auth, id, async (claim, tx) => {
-      if (claim.shipment) throw new ConflictException('The remakes of this claim have shipped already');
-      const groupIds = claim.lines.flatMap((line) => (line.remakeGroupId ? [line.remakeGroupId] : []));
-      if (groupIds.length === 0) throw new ConflictException('Nothing of this claim is being made again');
-      if ((await tx.workOrder.count({ where: { groupId: { in: groupIds }, status: 'active' } })) > 0) {
-        throw new ConflictException('Every remake of the claim must be finished before it ships');
+      await canShip(claim, tx);
+      if (label) {
+        await this.shipments.markBought(tx, label.shipmentId);
+        await this.chargeRemakeLabel(tx, claim, label);
       }
-      return { shipment: { create: { courier: body.courier ?? null, tracking: body.tracking ?? null } } };
+      return { shipment: { create: { courier: label?.carrier ?? body.courier ?? null, tracking: label?.tracking ?? body.tracking ?? null } } };
     });
     try {
       await this.notifications.raise(auth.tenantId, 'claim.remake_shipped', { type: 'order', id: shipped.order.id }, {
@@ -221,6 +247,78 @@ export class ClaimsService implements OnModuleInit {
       if (!claim.shipment) throw new ConflictException('The remakes of this claim have not shipped');
       if (claim.shipment.deliveredAt) throw new ConflictException('The remakes of this claim were delivered already');
       return { shipment: { update: { deliveredAt: new Date() } } };
+    });
+  }
+
+  /**
+   * The courier delivered the remake's label: the claim's parcel is delivered, by the system, as by
+   * `delivered`. Delivered already, by staff or an earlier event, is left alone, so a repeat changes nothing.
+   */
+  async deliveredByCourier(tenantId: string, id: string): Promise<void> {
+    await this.prisma.inTenant(tenantId, async (tx) => {
+      await tx.$queryRaw`SELECT id FROM claim WHERE id = ${id}::uuid FOR UPDATE`;
+      const before = await tx.claim.findUnique({ where: { id }, include: WITH });
+      if (!before?.shipment || before.shipment.deliveredAt) return;
+      const settings = await claimSettings(tx, this.settings);
+      const updated = await tx.claim.update({ where: { id }, data: { shipment: { update: { deliveredAt: new Date() } } }, include: WITH });
+      await this.audit.record(tx, {
+        actor: { type: 'system' },
+        action: 'claim.changed',
+        subject: { type: 'claim', id },
+        before: staffView(before, settings),
+        after: staffView(updated, settings),
+      });
+    });
+  }
+
+  /**
+   * Reserves a claim's label under the claim's lock, after `check`, then buys it outside the transaction.
+   * The parcel, carrier and service default to the order's shipping method's (400 when missing); no courier
+   * account is a 409, a refusal by the courier service a 503. A return runs from the order's address to the
+   * workspace's, a remake the other way.
+   */
+  private async buyLabel(
+    auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
+    id: string,
+    purpose: 'return' | 'remake',
+    request: LabelRequest,
+    check: (claim: Claim, tx: Tx) => void | Promise<void>,
+  ): Promise<Label> {
+    const reserved = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM claim WHERE id = ${id}::uuid FOR UPDATE`;
+      if (locked.length === 0) throw new NotFoundException('Claim not found');
+      const claim = await tx.claim.findUniqueOrThrow({ where: { id }, include: WITH });
+      await check(claim, tx);
+      const order = await tx.order.findUniqueOrThrow({ where: { id: claim.orderId }, select: { address: true, shippingMethodId: true } });
+      const method = await tx.shippingMethod.findUniqueOrThrow({ where: { id: order.shippingMethodId } });
+      const label = labelToBuy(method, request);
+      const account = await this.courierAccounts.keys(tx);
+      const shipmentId = await this.shipments.reserve(tx, { purpose, claimId: id, ...label, userId: auth.userId });
+      const customer = order.address as Address;
+      return purpose === 'return'
+        ? { shipmentId, from: customer, to: account.fromAddress }
+        : { shipmentId, from: account.fromAddress, to: customer };
+    });
+    return this.shipments.purchase(auth.tenantId, reserved.shipmentId, reserved.from, reserved.to);
+  }
+
+  /**
+   * A remake's label is the workshop at fault's to bear when every remade line names that one workshop: it
+   * is owed the label's cost less for the first such line's original job, recorded on the label (plan,
+   * decisions). Remade lines of different workshops, or of no workshop, leave it to the workspace, as does a
+   * label in another currency than the workspace's.
+   */
+  private async chargeRemakeLabel(tx: Tx, claim: Claim, label: Label): Promise<void> {
+    const remade = claim.lines.filter((line) => line.outcome === 'remake');
+    const partners = new Set(remade.map((line) => (line.fault === 'workshop' ? line.partnerId : null)));
+    if (remade.length === 0 || partners.size !== 1 || partners.has(null)) return;
+    const { defaultCurrency } = await tx.tenant.findUniqueOrThrow({ where: { id: claim.tenantId }, select: { defaultCurrency: true } });
+    if (label.currency !== defaultCurrency) return;
+    const workshop = await this.workshopOf(tx, remade[0].orderLine.groupId);
+    const owed = await reduceOwed(tx, workshop.assignmentId, label.cost, `Claim ${claim.number}: the remake's label`);
+    await tx.shipment.update({
+      where: { id: label.shipmentId },
+      data: { chargedAssignmentId: workshop.assignmentId, owedReduction: owed.reduced, shortfall: owed.shortfall.gt(0) ? owed.shortfall : null },
     });
   }
 
@@ -619,6 +717,22 @@ export class ClaimsService implements OnModuleInit {
   }
 }
 
+/** The pieces may be asked back once, while a line is undecided; else a 409. */
+function canAskBack(claim: Claim): void {
+  if (claim.returnRequestedAt) throw new ConflictException('The pieces were asked back already');
+  if (claim.lines.every((line) => line.outcome !== null)) throw new ConflictException('Every line of this claim is decided');
+}
+
+/** The remakes ship once, when every one of them is finished; else a 409. */
+async function canShip(claim: Claim, tx: Tx): Promise<void> {
+  if (claim.shipment) throw new ConflictException('The remakes of this claim have shipped already');
+  const groupIds = claim.lines.flatMap((line) => (line.remakeGroupId ? [line.remakeGroupId] : []));
+  if (groupIds.length === 0) throw new ConflictException('Nothing of this claim is being made again');
+  if ((await tx.workOrder.count({ where: { groupId: { in: groupIds }, status: 'active' } })) > 0) {
+    throw new ConflictException('Every remake of the claim must be finished before it ships');
+  }
+}
+
 /** Waiting for the pieces asked back; else open while a line is undecided; else decided until every remake is delivered. */
 export function claimState(claim: Pick<Claim, 'returnRequestedAt' | 'returnedAt' | 'lines' | 'shipment'>): ClaimState {
   if (claim.returnRequestedAt && !claim.returnedAt) return 'awaiting_return';
@@ -645,7 +759,11 @@ function stateWhere(state: ClaimState): Prisma.ClaimWhereInput {
   }
 }
 
+/** The claim's bought label for `purpose`, if any. */
+const labelOf = (claim: Claim, purpose: 'return' | 'remake') => claim.labels.find((label) => label.purpose === purpose) ?? null;
+
 function common(claim: Claim, settings: ClaimSettings) {
+  const returnLabel = labelOf(claim, 'return');
   return {
     id: claim.id,
     number: claim.number,
@@ -655,17 +773,24 @@ function common(claim: Claim, settings: ClaimSettings) {
     description: claim.description,
     photos: claim.photos.map((photo) => ({ file_version_id: photo.fileVersionId })),
     return: claim.returnRequestedAt
-      ? { requested_at: claim.returnRequestedAt.toISOString(), returned_at: claim.returnedAt?.toISOString() ?? null }
-      : null,
-    shipment: claim.shipment
       ? {
-          courier: claim.shipment.courier,
-          tracking: claim.shipment.tracking,
-          shipped_at: claim.shipment.shippedAt.toISOString(),
-          delivered_at: claim.shipment.deliveredAt?.toISOString() ?? null,
+          requested_at: claim.returnRequestedAt.toISOString(),
+          returned_at: claim.returnedAt?.toISOString() ?? null,
+          label: returnLabel
+            ? { url: returnLabel.labelUrl!, tracking: returnLabel.tracking!, tracking_status: returnLabel.trackingStatus as TrackingStatus | null }
+            : null,
         }
       : null,
     created_at: claim.createdAt.toISOString(),
+  };
+}
+
+function shipmentOf(shipment: NonNullable<Claim['shipment']>) {
+  return {
+    courier: shipment.courier,
+    tracking: shipment.tracking,
+    shipped_at: shipment.shippedAt.toISOString(),
+    delivered_at: shipment.deliveredAt?.toISOString() ?? null,
   };
 }
 
@@ -687,8 +812,10 @@ function shownDecision(line: Claim['lines'][number]) {
 }
 
 export function staffView(claim: Claim, settings: ClaimSettings): ClaimResponse {
+  const remakeLabel = labelOf(claim, 'remake');
   return {
     ...common(claim, settings),
+    shipment: claim.shipment ? { ...shipmentOf(claim.shipment), label: remakeLabel ? labelResponse(remakeLabel) : null } : null,
     lines: claim.lines.map((line) => {
       const shown = shownDecision(line);
       return {
@@ -704,6 +831,9 @@ export function staffView(claim: Claim, settings: ClaimSettings): ClaimResponse 
 export function customerView(claim: Claim, settings: ClaimSettings): CustomerClaimResponse {
   return {
     ...common(claim, settings),
+    shipment: claim.shipment
+      ? { ...shipmentOf(claim.shipment), tracking_status: (labelOf(claim, 'remake')?.trackingStatus ?? null) as TrackingStatus | null }
+      : null,
     lines: claim.lines.map((line) => ({ id: line.id, order_line: orderLineOf(line), pieces: line.pieces, decision: shownDecision(line) })),
   };
 }

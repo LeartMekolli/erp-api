@@ -22,7 +22,7 @@ First target industry: made-to-order 3D objects (printed and cast parts), decide
 - Tests of scheduled jobs call the per-workspace method, never a handler that goes through every active workspace.
 - A failure that mentions another suite, or a deadlock in cleanup, means isolation is broken: report the root cause to the user instead of patching the test.
 - While developing, hand the user only the affected spec files to run; CI runs the full suite.
-- Every task goes through a pull request into `master`; merging requires a green `ci` check. Never build on a red `master`.
+- Every task is one commit; a plan's tasks go into `master` together through one pull request, opened once all of them are committed. Never a pull request per task. Merging requires a green `ci` check. Never build on a red `master`.
 - Branch names are `<what we're fixing>/<one or two words for what the change does>`, e.g. `test-isolation/drop-workarounds`. Never end a branch name with `/master`, and never use a bare task number as the second part.
 
 ## Context
