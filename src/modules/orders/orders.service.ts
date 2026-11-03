@@ -19,8 +19,10 @@ import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { AuditInput } from '../audit/audit.service';
-import type { Parcel } from '../couriers/courier-provider';
+import { CourierAccountService } from '../couriers/courier-account.service';
+import type { Parcel, TrackingStatus } from '../couriers/courier-provider';
 import { RatesService } from '../couriers/rates.service';
+import { ShipmentsService } from '../couriers/shipments.service';
 import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -34,10 +36,12 @@ import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
 import { localDate, promisedDate } from './dates';
 import type { BusinessCalendar } from './dates';
+import { labelRequestSchema } from './order-response';
 import type {
   Address,
   CustomerOrderLineResponse,
   CustomerOrderResponse,
+  LabelRequest,
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
@@ -90,14 +94,38 @@ export type CancelOrder = z.infer<typeof cancelOrderSchema>;
 export const customerCancelOrderSchema = z.strictObject({ reason: reasonSchema });
 export type CustomerCancelOrder = z.infer<typeof customerCancelOrderSchema>;
 
-export const shipOrderSchema = z.strictObject({
+/** A courier and tracking number staff give by hand. */
+export const courierTrackingSchema = z.strictObject({
   courier: z.string().trim().min(1).max(100).optional(),
   tracking: z.string().trim().min(1).max(200).optional(),
 });
+
+export const shipOrderSchema = courierTrackingSchema
+  .extend({
+    /** Buy the label from the workspace's courier service now; its carrier and tracking are the order's. */
+    label: labelRequestSchema.optional(),
+  })
+  .refine((body) => !body.label || (body.courier === undefined && body.tracking === undefined), {
+    message: 'a bought label names its own courier and tracking',
+    path: ['label'],
+  });
 export type ShipOrder = z.infer<typeof shipOrderSchema>;
 
 /** Shown in a notification for a courier or tracking number staff didn't give. */
 const NOT_GIVEN = '—';
+
+/** Shipping as the customer sees it, field by field: how the parcel is doing, never the label or its cost. */
+function customerShipping(shipping: OrderResponse['shipping']): CustomerOrderResponse['shipping'] {
+  return {
+    method: shipping.method,
+    price: shipping.price,
+    courier: shipping.courier,
+    tracking: shipping.tracking,
+    shipped_at: shipping.shipped_at,
+    delivered_at: shipping.delivered_at,
+    tracking_status: shipping.label?.tracking_status ?? null,
+  };
+}
 
 /** Jobs that hold a line: offered or accepted. */
 const HOLDING = ['offered', 'accepted'];
@@ -145,7 +173,14 @@ export class OrdersService {
     private readonly notifications: NotificationsService,
     @Inject(TAX_CALCULATOR) private readonly tax: TaxCalculator,
     private readonly rates: RatesService,
+    private readonly courierAccounts: CourierAccountService,
+    private readonly shipments: ShipmentsService,
   ) {}
+
+  onModuleInit(): void {
+    // The courier's tracking marks an order delivered (Orders 3 spec, goal 24).
+    this.shipments.onDelivered('order', (tenantId, shipment) => this.deliverFromCourier(tenantId, shipment.orderId!));
+  }
 
   /** Each Payments service registers the hooks it answers for. */
   registerPaymentHooks(hooks: Partial<OrderPaymentHooks>): void {
@@ -334,9 +369,12 @@ export class OrdersService {
 
   /**
    * Ships a ready order, with the courier and tracking number when given, and tells the customer
-   * (Orders spec, goals 9 and 16). An order not ready yet, or shipped already, is a 409.
+   * (Orders spec, goals 9 and 16). An order not ready yet, or shipped already, is a 409. With `label`, the
+   * label is bought first, while staff wait and outside any transaction (Orders 3 spec, goal 23); a
+   * refusal leaves the order ready.
    */
   async ship(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, body: ShipOrder): Promise<OrderResponse> {
+    const label = body.label ? await this.buyLabel(auth, id, body.label) : null;
     const shipped = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const order = await this.lockOrder(tx, id);
       const before = (await this.views(tx, [order]))[0];
@@ -345,8 +383,13 @@ export class OrdersService {
       }
       const updated = await tx.order.update({
         where: { id },
-        data: { shippedAt: new Date(), courier: body.courier ?? null, tracking: body.tracking ?? null },
+        data: {
+          shippedAt: new Date(),
+          courier: label?.carrier ?? body.courier ?? null,
+          tracking: label?.tracking ?? body.tracking ?? null,
+        },
       });
+      if (label) await this.shipments.markBought(tx, label.shipmentId);
       return this.recordChange(tx, auth, before, updated);
     });
     await this.afterCommit(id, async () => {
@@ -379,6 +422,60 @@ export class OrdersService {
       await this.notifications.raise(auth.tenantId, 'order.delivered', { type: 'order', id }, { number: String(delivered.number) });
     });
     return delivered;
+  }
+
+  /**
+   * The courier delivered the order's label (Orders 3 spec, goal 24): marked delivered as by staff, by the
+   * system. An order not shipped, or delivered already by staff, is left alone, so a repeat changes nothing.
+   */
+  async deliverFromCourier(tenantId: string, orderId: string): Promise<void> {
+    const delivered = await this.prisma.inTenant(tenantId, async (tx) => {
+      const order = await this.lockOrder(tx, orderId);
+      const before = (await this.views(tx, [order]))[0];
+      if (before.state !== 'shipped') return null;
+      const updated = await tx.order.update({ where: { id: orderId }, data: { deliveredAt: new Date() } });
+      return this.recordChange(tx, { userId: order.placedByUserId }, before, updated, { type: 'system' });
+    });
+    if (!delivered) return;
+    await this.afterCommit(orderId, async () => {
+      await this.notifications.raise(tenantId, 'order.delivered', { type: 'order', id: orderId }, { number: String(delivered.number) });
+    });
+  }
+
+  /**
+   * Reserves the order's label under its lock, then buys it outside the transaction. The parcel, carrier and
+   * service default to the shipping method's; missing any is a 400, no courier account a 409, and a refusal
+   * by the courier service a 503.
+   */
+  private async buyLabel(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string, request: LabelRequest) {
+    const reserved = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const order = await this.lockOrder(tx, id);
+      const before = (await this.views(tx, [order]))[0];
+      if (before.state !== 'ready') {
+        throw new ConflictException(`Only a ready order can be shipped; this one is ${before.state.replace('_', ' ')}`);
+      }
+      const method = await tx.shippingMethod.findUniqueOrThrow({ where: { id: order.shippingMethodId } });
+      const parcel = request.parcel ?? (method.defaultParcel as Parcel | null);
+      const carrier = request.carrier ?? method.liveCarrier;
+      const service = request.service ?? method.liveService;
+      const missing = [
+        ...(parcel ? [] : [{ path: 'label.parcel', message: `${method.name} has no default parcel; give one` }]),
+        ...(carrier ? [] : [{ path: 'label.carrier', message: `${method.name} names no carrier; give one` }]),
+        ...(service ? [] : [{ path: 'label.service', message: `${method.name} names no service; give one` }]),
+      ];
+      if (missing.length > 0) throw new BadRequestException({ message: 'Say what label to buy', errors: missing });
+      const account = await this.courierAccounts.keys(tx);
+      const shipmentId = await this.shipments.reserve(tx, {
+        purpose: 'order',
+        orderId: id,
+        carrier: carrier!,
+        service: service!,
+        parcel: parcel!,
+        userId: auth.userId,
+      });
+      return { shipmentId, from: account.fromAddress, to: order.address as Address };
+    });
+    return this.shipments.purchase(auth.tenantId, reserved.shipmentId, reserved.from, reserved.to);
   }
 
   /** Audits a change to an order and answers it as staff see it now. */
@@ -885,7 +982,7 @@ export class OrdersService {
         promised_on: view.promised_on,
         delivery_speed: view.delivery_speed,
         address: view.address,
-        shipping: view.shipping,
+        shipping: customerShipping(view.shipping),
         lines,
         lines_total: view.lines_total,
         tax: view.tax,
@@ -954,6 +1051,8 @@ export class OrdersService {
     });
     // What credit notes took off each invoice, once issued (Orders 3 spec, goal 3).
     const credits = await tx.creditNote.groupBy({ by: ['orderId'], where: { orderId: { in: ids }, status: 'issued' }, _sum: { amount: true } });
+    // The label each order shipped with (Orders 3 spec, goal 23).
+    const labels = await tx.shipment.findMany({ where: { orderId: { in: ids }, purpose: 'order', status: 'bought' } });
 
     return orders.map((order) => {
       const method = methods.find((one) => one.id === order.shippingMethodId)!;
@@ -986,6 +1085,7 @@ export class OrdersService {
       const releaser = releasers.find((user) => user.id === order.releasedByUserId);
       const terms = order.paymentTerms as PaymentTerms;
       const found = invoices.find((row) => row.orderId === order.id);
+      const label = labels.find((row) => row.orderId === order.id);
       const invoice = found?.url
         ? {
             url: found.url,
@@ -1010,6 +1110,17 @@ export class OrdersService {
           tracking: order.tracking,
           shipped_at: order.shippedAt?.toISOString() ?? null,
           delivered_at: order.deliveredAt?.toISOString() ?? null,
+          label: label
+            ? {
+                url: label.labelUrl!,
+                carrier: label.carrier,
+                service: label.service,
+                tracking: label.tracking!,
+                tracking_status: label.trackingStatus as TrackingStatus | null,
+                cost: label.cost!.toFixed(2),
+                currency: label.currency!,
+              }
+            : null,
         },
         lines: orderLines,
         lines_total: order.linesTotal.toFixed(2),

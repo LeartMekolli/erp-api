@@ -1,11 +1,15 @@
-import { Body, Controller, Get, HttpCode, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, Post, Put, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { PrismaService } from '../../database/prisma.service';
 import { ApiDoc } from '../../docs/api-doc';
 import { CurrentCustomer, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
-import { CustomerAccess, RequirePermission } from '../identity/route-markers';
+import { CustomerAccess, Public, RequirePermission } from '../identity/route-markers';
+import { webhookAckResponseSchema } from '../payments/payment-response';
+import type { WebhookAckResponse } from '../payments/payment-response';
 import { CourierAccountService } from './courier-account.service';
+import { CourierEventsService } from './courier-events.service';
 import {
   courierAccountResponseSchema,
   portalShippingRatesSchema,
@@ -51,6 +55,37 @@ export class CourierAccountController {
   @Put()
   set(@CurrentUser() auth: TenantAuth, @Body(new ZodValidationPipe(setCourierAccountSchema)) body: SetCourierAccount): Promise<CourierAccountResponse> {
     return this.prisma.inTenant(auth.tenantId, (tx) => this.account.set(tx, auth.tenantId, { type: 'user', id: auth.userId }, body));
+  }
+}
+
+/** `configureApp` gives this route the raw body, as a Buffer; the signature covers those bytes. */
+const rawBody = (req: Request): Buffer => (Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
+
+/** The courier service's tracking updates, one address per workspace (Orders 3 spec, goal 24). */
+@Controller('webhooks/couriers')
+export class CourierWebhooksController {
+  constructor(private readonly events: CourierEventsService) {}
+
+  @ApiDoc({
+    summary: "Receive a tracking update from the workspace's courier service.",
+    description:
+      "Called by the courier service, not by clients. The body is the service's event, checked against the " +
+      '`X-Hmac-Signature` header with the account\'s webhook secret. Each event is stored once and applied by a job; ' +
+      'a repeat, an unknown tracking number or an event that is not a tracking update answers 200 and changes ' +
+      'nothing. An unknown or suspended workspace answers 404; a workspace without a courier account, or a missing ' +
+      'or wrong signature, answers 400.',
+    response: webhookAckResponseSchema,
+    errors: [400, 404],
+  })
+  @Public()
+  @Post(':tenantId')
+  @HttpCode(200)
+  receive(
+    @Param('tenantId') tenantId: string,
+    @Req() req: Request,
+    @Headers('x-hmac-signature') signature: string | undefined,
+  ): Promise<WebhookAckResponse> {
+    return this.events.receive(tenantId, rawBody(req), signature);
   }
 }
 

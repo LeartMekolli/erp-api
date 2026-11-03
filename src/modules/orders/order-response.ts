@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TRACKING_STATUSES } from '../couriers/courier-provider';
 import { INVOICE_STATUSES, PAYMENT_STATES, PAYMENT_TERMS } from '../payments/payment-state';
 import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 import { customerViewResponseSchema } from '../workflow/work-order-response';
@@ -32,6 +33,33 @@ export const parcelSchema = z.strictObject({
 const courierName = z.string().trim().min(1).max(100);
 /** The courier service's carrier and service a live-rate method is priced and labelled by. */
 export const liveRateSchema = z.strictObject({ carrier: courierName, service: courierName });
+
+/** A label to buy (Orders 3 spec, goal 23); each left out comes from the order's shipping method. */
+export const labelRequestSchema = z.strictObject({
+  /** The method's default parcel when left out. */
+  parcel: parcelSchema.optional(),
+  /** The method's live-rate carrier and service when left out. */
+  carrier: courierName.optional(),
+  service: courierName.optional(),
+});
+export type LabelRequest = z.infer<typeof labelRequestSchema>;
+
+/** The courier's last tracking state of a label, null until the first update. */
+export const trackingStatusSchema = z.enum(TRACKING_STATUSES).nullable();
+
+/** A bought label as staff see it. */
+export const labelResponseSchema = z.strictObject({
+  /** The courier service's hosted label, to print. */
+  url: z.string(),
+  carrier: z.string(),
+  service: z.string(),
+  tracking: z.string(),
+  tracking_status: trackingStatusSchema,
+  /** What the label cost, in `currency`. */
+  cost: z.string(),
+  currency: z.string(),
+});
+export type LabelResponse = z.infer<typeof labelResponseSchema>;
 
 export const shippingMethodResponseSchema = z.strictObject({
   id: z.uuid(),
@@ -163,6 +191,8 @@ export const orderResponseSchema = z.strictObject({
     tracking: z.string().nullable(),
     shipped_at: z.iso.datetime().nullable(),
     delivered_at: z.iso.datetime().nullable(),
+    /** The label bought when it shipped; null when shipped without one, or not yet. */
+    label: labelResponseSchema.nullable(),
   }),
   lines: z.array(orderLineResponseSchema),
   /** The lines' prices, before shipping and tax. */
@@ -201,6 +231,8 @@ export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponse
 
 /** An order as its customer sees it (Global Constraints): never a partner, a partner's cost or a margin. */
 export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true }).extend({
+  /** Never the label or what it cost; how the parcel is doing instead. */
+  shipping: orderResponseSchema.shape.shipping.omit({ label: true }).extend({ tracking_status: trackingStatusSchema }),
   lines: z.array(customerOrderLineResponseSchema),
   payment: customerOrderPaymentResponseSchema,
 });
