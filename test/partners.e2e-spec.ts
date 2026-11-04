@@ -7,7 +7,7 @@ import { pageSchema } from '../src/common/pagination/page';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { partnerResponseSchema } from '../src/modules/partners/partner-response';
+import { partnerAgreementResponseSchema, partnerResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -128,6 +128,43 @@ describe('partners: workshops managed by staff', () => {
     expect((await tenant.owner.post(`/partners/${castco}/suspend`).expect(200)).body).toMatchObject({ status: 'suspended' });
     await tenant.owner.post(`/partners/${castco}/suspend`).expect(409);
     expect((await tenant.owner.post(`/partners/${castco}/approve`).expect(200)).body).toMatchObject({ status: 'approved' });
+  });
+
+  it("shows a partner's admins the agreement it signed, with a download link, and only its own", async () => {
+    const tenant = await freshTenant();
+    const partner = async (name: string) =>
+      ((await tenant.owner.post('/partners', { name, display_name: name }).expect(201)).body as Partner).id;
+    const castco = await partner('CastCo');
+    const metalworks = await partner('MetalWorks');
+    const person = async (partnerId: string, role: string) => {
+      const user = await createTestUser(prisma, tenant.id, { roles: [] });
+      await prisma.inTenant(tenant.id, async (tx) => {
+        await tx.user.update({ where: { id: user.id }, data: { kind: 'partner' } });
+        await tx.organisationMembership.create({ data: { userId: user.id, organisationType: 'partner', organisationId: partnerId, role } });
+      });
+      const token = (await tokens.issueForUser(tenant.id, user.id)).accessToken;
+      return { get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`) };
+    };
+    const castcoAdmin = await person(castco, 'admin');
+    const castcoMember = await person(castco, 'member');
+    const metalworksOwner = await person(metalworks, 'owner');
+    const path = (partnerId: string) => `/partner-portal/partners/${partnerId}/agreement`;
+
+    // Nothing on file yet.
+    await castcoAdmin.get(path(castco)).expect(404);
+
+    const signed = await agreement(tenant);
+    await tenant.owner.put(`/partners/${castco}/agreement`, { file_version_id: signed, signed_on: '2026-10-20' }).expect(200);
+    const response = await castcoAdmin.get(path(castco)).expect(200);
+    expectDocumented(partnerAgreementResponseSchema, response.body);
+    expect(response.body).toMatchObject({ file_version_id: signed, signed_on: '2026-10-20', name: 'part.stl', url: expect.stringMatching(/^https?:\/\//) });
+
+    // Members don't; MetalWorks can't read CastCo's, and has none of its own.
+    await castcoMember.get(path(castco)).expect(403);
+    await metalworksOwner.get(path(castco)).expect(404);
+    await metalworksOwner.get(path(metalworks)).expect(404);
+    // Staff read it on the partner itself.
+    await tenant.owner.get(path(castco)).expect(403);
   });
 
   it('keeps partner setup to staff who may change it, and to the workspace', async () => {

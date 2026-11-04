@@ -52,6 +52,8 @@ export const transitionResponseSchema = z.strictObject({
   /** As given; yes/no answers read "true" or "false". */
   answers: z.array(z.strictObject({ item: z.string(), value: z.string(), note: z.string().nullable(), passing: z.boolean() })),
   photo_file_version_ids: z.array(z.uuid()),
+  /** The same photos with their files, for `GET /files/{file_id}/versions/{file_version_id}/url`. */
+  photos: z.array(z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() })),
   actor: z.strictObject({ id: z.uuid(), name: z.string() }),
   /** The partner the move counts for: the job's partner, at one of its steps; null otherwise. */
   partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),

@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { downloadUrlResponseSchema } from '../src/modules/files/file-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
@@ -12,11 +13,12 @@ import {
   partnerJobResponseSchema,
   partnerJobsResponseSchema,
 } from '../src/modules/partners/partner-response';
-import { moveResponseSchema, workOrderDetailResponseSchema } from '../src/modules/workflow/work-order-response';
+import { moveResponseSchema, transitionListItemSchema, workOrderDetailResponseSchema } from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
+import { putToSignedUrl } from './storage';
 
 interface VersionStep {
   key: string;
@@ -41,7 +43,11 @@ interface Transition {
   kind: string;
   from_step: { key: string } | null;
   partner: { id: string; name: string } | null;
+  photos: { file_id: string; file_version_id: string }[];
 }
+
+/** Not a real image: storage checks only the declared size and type. */
+const PHOTO_BYTES = Buffer.from('a QC photo of the pieces');
 
 /**
  * Partners at work (Partners spec, goal 13; plan Review Focus 2): a partner sees the jobs it was
@@ -62,6 +68,7 @@ describe('partners: working their jobs', () => {
     put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
+  type Person = ReturnType<typeof as>;
 
   async function partnerPerson(tenantId: string, partnerId: string, role: string) {
     const user = await createTestUser(prisma, tenantId, { roles: [] });
@@ -174,7 +181,34 @@ describe('partners: working their jobs', () => {
   };
   const surfaceOk = [{ item: 'surface', value: 'ok' }];
 
+  /** A photo the partner uploads through its own file routes, completed. */
+  async function partnerPhoto(person: Person, partnerId: string): Promise<{ fileId: string; versionId: string }> {
+    const files = `/partner-portal/partners/${partnerId}/files`;
+    const started = await person.post(files, { name: 'qc.jpg', content_type: 'image/jpeg', size: PHOTO_BYTES.length }).expect(201);
+    const { file, version, upload } = started.body as {
+      file: { id: string };
+      version: { id: string };
+      upload: { url: string; headers: Record<string, string> };
+    };
+    const put = await putToSignedUrl(upload.url, PHOTO_BYTES, upload.headers);
+    await put.arrayBuffer();
+    expect(put.status).toBe(200);
+    await person.post(`${files}/${file.id}/versions/${version.id}/complete`).expect(200);
+    return { fileId: file.id, versionId: version.id };
+  }
+
+  /** Passes the pieces through every partner step before final QC. */
+  async function toFinalQc(tenant: Tenant, ids: string[]): Promise<void> {
+    const moves = `${portal(tenant)}/moves`;
+    for (const at_step of ['print_pattern', 'casting_tree', 'casting']) {
+      await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step }).expect(200);
+    }
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+  }
+
   beforeAll(async () => {
+    // Its own queues: no other suite's worker takes this one's measuring jobs.
+    process.env.QUEUE_PREFIX = `t${randomBytes(6).toString('hex')}`;
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app);
@@ -270,7 +304,7 @@ describe('partners: working their jobs', () => {
     // The same gate as staff: polishing needs its surface answer.
     await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing' }).expect(400);
     await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
-    const photo = (await measuredDesign(prisma, tenant.id, tenant.ownerId, { status: 'uploaded', measures: [] })).versionId;
+    const photo = (await partnerPhoto(tenant.castcoPerson, tenant.castco)).versionId;
     await tenant.castcoPerson
       .post(moves, {
         work_order_ids: ids,
@@ -308,6 +342,50 @@ describe('partners: working their jobs', () => {
     ]);
   });
 
+  it('passes a step that needs a photo with one the partner uploaded, which staff download from the transition', async () => {
+    const tenant = await freshTenant();
+    const moves = `${portal(tenant)}/moves`;
+    const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+    await toFinalQc(tenant, ids);
+    const finalQc = { work_order_ids: ids, kind: 'pass', at_step: 'final_qc', answers: [{ item: 'weight', value: '5.0' }] };
+
+    // Final QC needs a photo (min_photos: 1).
+    await tenant.castcoPerson.post(moves, finalQc).expect(400);
+    const photo = await partnerPhoto(tenant.castcoPerson, tenant.castco);
+    await tenant.castcoPerson.post(moves, { ...finalQc, photo_file_version_ids: [photo.versionId] }).expect(200);
+
+    // Staff find the photo on the piece's transition, and download it.
+    const detail = (await tenant.staff.get(`/workflow/work-orders/${ids[0]}`).expect(200)).body as { history: Transition[] };
+    const atFinalQc = detail.history.find((move) => move.from_step?.key === 'final_qc')!;
+    expect(atFinalQc.photos).toEqual([{ file_id: photo.fileId, file_version_id: photo.versionId }]);
+    const link = await tenant.staff.get(`/files/${photo.fileId}/versions/${photo.versionId}/url`).expect(200);
+    expectDocumented(downloadUrlResponseSchema, link.body);
+    const listed = await tenant.staff.get(`/workflow/transitions?work_order_id=${ids[0]}`).expect(200);
+    expectDocumented(pageSchema(transitionListItemSchema), listed.body);
+  });
+
+  it("refuses a photo the partner doesn't own on its move", async () => {
+    const tenant = await freshTenant();
+    const moves = `${portal(tenant)}/moves`;
+    const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+    await toFinalQc(tenant, ids);
+    const finalQc = { work_order_ids: ids, kind: 'pass', at_step: 'final_qc', answers: [{ item: 'weight', value: '5.0' }] };
+
+    const staffFile = (await measuredDesign(prisma, tenant.id, tenant.ownerId, { status: 'uploaded', measures: [] })).versionId;
+    const customerFile = (await measuredDesign(prisma, tenant.id, tenant.ownerId, { status: 'uploaded', measures: [], customerId: tenant.luna }))
+      .versionId;
+    const metalworksPhoto = (await partnerPhoto(tenant.metalworksPerson, tenant.metalworks)).versionId;
+    for (const photo of [staffFile, customerFile, metalworksPhoto]) {
+      const response = await tenant.castcoPerson.post(moves, { ...finalQc, photo_file_version_ids: [photo] });
+      expect({ photo, status: response.status }).toEqual({ photo, status: 404 });
+    }
+    // Nothing moved.
+    expect((await pieces(tenant, tenant.accepted.group)).every((piece) => piece.step_key === 'final_qc')).toBe(true);
+
+    // Staff may still attach a workspace file at a partner's step.
+    await tenant.staff.post('/workflow/moves', { ...finalQc, photo_file_version_ids: [staffFile] }).expect(200);
+  });
+
   it('lets a suspended partner finish the job it holds, and nothing else', async () => {
     const tenant = await freshTenant();
     const castcoAdmin = await partnerPerson(tenant.id, tenant.castco, 'admin');
@@ -321,6 +399,8 @@ describe('partners: working their jobs', () => {
     expectDocumented(moveResponseSchema, moved.body);
     const history = (await tenant.staff.get(`/workflow/work-orders/${ids[0]}`).expect(200)).body as { history: Transition[] };
     expect(history.history[0].partner).toEqual({ id: tenant.castco, name: 'CastCo' });
+    // It can still upload the QC photos those moves need.
+    await partnerPhoto(tenant.castcoPerson, tenant.castco);
 
     // No new job, and no change to its setup.
     await tenant.castcoPerson.post(`${portal(tenant)}/jobs/${tenant.offered.group}/accept`).expect(403);

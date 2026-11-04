@@ -59,6 +59,48 @@ export class PlatformTenantsController {
   }
 
   @ApiDoc({
+    summary: 'One tenant, as the list shows it.',
+    response: tenantResponseSchema,
+    errors: [400, 401, 403, 404],
+  })
+  @RequirePermission('platform.tenant.read')
+  @Get(':id')
+  get(@Param('id', new ZodValidationPipe(idSchema)) id: string): Promise<TenantResponse> {
+    return this.tenants.get(id);
+  }
+
+  @ApiDoc({
+    summary: "Send the tenant owner's invitation again, with a new link that replaces the old one.",
+    description:
+      'For an owner invitation that was lost. Only while the owner has not accepted it, and not for a suspended tenant (409).',
+    errors: [400, 401, 403, 404, 409],
+  })
+  @RequirePermission('platform.tenant.create')
+  @Post(':id/owner-invitation')
+  @HttpCode(204)
+  async resendOwnerInvitation(
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @CurrentPlatformAdmin() admin: PlatformAuth,
+  ): Promise<void> {
+    await this.tenants.resendOwnerInvitation(id, { type: 'platform_admin', id: admin.platformAdminId });
+  }
+
+  @ApiDoc({
+    summary: 'Reactivate a suspended tenant: its users get in again from their next request on.',
+    description: 'Reactivating an active tenant changes nothing.',
+    errors: [400, 401, 403, 404],
+  })
+  @RequirePermission('platform.tenant.suspend')
+  @Post(':id/reactivate')
+  @HttpCode(204)
+  async reactivate(
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @CurrentPlatformAdmin() admin: PlatformAuth,
+  ): Promise<void> {
+    await this.tenants.reactivate(id, { type: 'platform_admin', id: admin.platformAdminId });
+  }
+
+  @ApiDoc({
     summary: 'Suspend a tenant: its users are refused from their next request on.',
     description: 'Suspending a suspended tenant changes nothing.',
     errors: [400, 401, 403, 404],

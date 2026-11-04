@@ -103,6 +103,7 @@ describe('partners: capacity history', () => {
       newcomer,
       group,
       castcoPerson,
+      steps: { printPattern, casting },
     };
   }
   type Tenant = Awaited<ReturnType<typeof freshTenant>>;
@@ -133,7 +134,7 @@ describe('partners: capacity history', () => {
     const tenant = await freshTenant();
     expect(await history(tenant, tenant.castco)).toEqual([]);
 
-    await snapshot.handle();
+    await snapshot.snapshot(tenant.id, new Date());
     const first = await history(tenant, tenant.castco);
     // In step type order: the 10 rings are still ahead of every step.
     expect(first.map((row) => [row.date, row.step_type.key, row.load, row.capacity, row.capacity_period])).toEqual([
@@ -157,7 +158,7 @@ describe('partners: capacity history', () => {
     await tenant.castcoPerson
       .post(`/partner-portal/partners/${tenant.castco}/moves`, { work_order_ids: ids, kind: 'pass', at_step: 'print_pattern' })
       .expect(200);
-    await snapshot.handle();
+    await snapshot.snapshot(tenant.id, new Date());
     const second = await history(tenant, tenant.castco);
     expect(second.map((row) => [row.step_type.key, row.load])).toEqual([
       ['print_pattern', 0],
@@ -187,5 +188,41 @@ describe('partners: capacity history', () => {
     await tenant.castcoPerson.get(path).expect(403);
     // Staff members may read partners.
     await tenant.member.get(path).expect(200);
+  });
+
+  it("shows a partner's people its own history in the portal, the same as staff see it", async () => {
+    const tenant = await freshTenant();
+    const other = await freshTenant();
+    // Kept rows written straight for this workspace's partners, as the daily job would.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.partnerCapacitySnapshot.createMany({
+        data: [
+          { date: new Date(`${day(-1)}T00:00:00Z`), partnerId: tenant.castco, stepTypeId: tenant.steps.casting, load: 4, capacity: 40, capacityPeriod: 'day' },
+          { date: new Date(`${day()}T00:00:00Z`), partnerId: tenant.castco, stepTypeId: tenant.steps.casting, load: 10, capacity: 40, capacityPeriod: 'day' },
+          { date: new Date(`${day()}T00:00:00Z`), partnerId: tenant.newcomer, stepTypeId: tenant.steps.printPattern, load: 0, capacity: 50, capacityPeriod: 'week' },
+        ],
+      }),
+    );
+    const portal = `/partner-portal/partners/${tenant.castco}/capacity-history`;
+
+    const response = await tenant.castcoPerson.get(portal).expect(200);
+    expectDocumented(capacityHistoryResponseSchema, response.body);
+    const rows = (response.body as { data: Row[] }).data;
+    // Only CastCo's rows, never the newcomer's.
+    expect(rows.map((row) => [row.date, row.step_type.key, row.load, row.capacity, row.capacity_period])).toEqual([
+      [day(-1), 'casting', 4, 40, 'day'],
+      [day(), 'casting', 10, 40, 'day'],
+    ]);
+    expect(response.body).toEqual(await tenant.staff.get(`/partners/${tenant.castco}/capacity-history`).expect(200).then((staff) => staff.body));
+
+    expect(((await tenant.castcoPerson.get(`${portal}?from=${day()}&to=${day()}`).expect(200)).body as { data: Row[] }).data).toHaveLength(1);
+    await tenant.castcoPerson.get(`${portal}?from=${day()}&to=${day(-1)}`).expect(400);
+    await tenant.castcoPerson.get(`${portal}?from=2025-01-01&to=2026-06-01`).expect(400);
+
+    // Another partner's history, or another workspace's partner, is not found.
+    await tenant.castcoPerson.get(`/partner-portal/partners/${tenant.newcomer}/capacity-history`).expect(404);
+    await other.castcoPerson.get(portal).expect(404);
+    // Staff use their own route.
+    await tenant.staff.get(portal).expect(403);
   });
 });
