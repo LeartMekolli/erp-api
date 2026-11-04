@@ -547,7 +547,7 @@ export const transitionInclude = {
   actor: { select: { id: true, name: true } },
   partner: { select: { id: true, name: true } },
   answers: { orderBy: { id: 'asc' } },
-  photos: { orderBy: { id: 'asc' } },
+  photos: { orderBy: { id: 'asc' }, include: { fileVersion: { select: { fileId: true } } } },
 } as const satisfies Prisma.TransitionInclude;
 
 type TransitionRow = Prisma.TransitionGetPayload<{ include: typeof transitionInclude }>;
@@ -564,6 +564,7 @@ export function toTransition(row: TransitionRow): TransitionResponse {
     comment: row.comment,
     answers: row.answers.map((answer) => ({ item: answer.itemKey, value: answer.value, note: answer.note, passing: answer.passing })),
     photo_file_version_ids: row.photos.map((photo) => photo.fileVersionId),
+    photos: row.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
     actor: row.actor,
     partner: row.partner,
     inspected: row.inspected,

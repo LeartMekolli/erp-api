@@ -27,6 +27,12 @@ const contentTypeSchema = z
 
 const nameSchema = z.string().trim().min(1).max(255);
 
+/** What a photo may be: images every browser shows. */
+export const PHOTO_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const photoContentTypeSchema = contentTypeSchema.refine((type) => PHOTO_CONTENT_TYPES.includes(type), {
+  message: `must be one of ${PHOTO_CONTENT_TYPES.join(', ')}`,
+});
+
 const idSchema = z.uuid();
 
 /** The size limit is configuration (FILE_MAX_BYTES), so the body schemas are built per instance. */
@@ -49,7 +55,9 @@ export function uploadSchemas(maxBytes: number) {
   const file = fileFields.superRefine(requireDesignUnit);
   /** Staff may upload a file for a customer, which its people then see (Customers spec, goal 10). */
   const staffFile = fileFields.extend({ customer_id: z.uuid().optional() }).superRefine(requireDesignUnit);
-  return { file, staffFile, version };
+  /** A photo, such as a partner's QC photo: always an `image`, so it takes no kind or unit. */
+  const photo = version.extend({ content_type: photoContentTypeSchema });
+  return { file, staffFile, version, photo };
 }
 
 type UploadSchemas = ReturnType<typeof uploadSchemas>;

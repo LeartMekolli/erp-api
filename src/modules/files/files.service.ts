@@ -43,17 +43,18 @@ export interface NewUpload {
  * every file of the workspace except those of a user or a report: a staff
  * member's export (Reporting 2 spec), or a scheduled export (`report`, its
  * export's id; Orders 3 spec, goal 10), is reached only through the exports
- * routes, by those they are for.
+ * routes, by those they are for. A partner's files (its QC photos) are not private: staff see them on
+ * the transitions they were attached to.
  */
 export interface FileOwner {
-  type: 'customer' | 'user' | 'report';
+  type: 'customer' | 'partner' | 'user' | 'report';
   id: string;
 }
 
 /** Owners whose files staff never reach through the files routes. */
 const PRIVATE_OWNERS = ['user', 'report'];
 
-/** The uploader: a staff user or a customer person. */
+/** The uploader: a staff user, a customer person or a partner person. */
 type Uploader = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
 /** Files of the owner, if given, that haven't been removed: a removed file is not found, like another owner's. */
@@ -102,9 +103,12 @@ export class FilesService implements OnModuleInit {
     const storageKey = finalKeyFor(auth.tenantId, fileId, versionId);
 
     const { file, version } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      // Row-level security hides other workspaces' customers, so a foreign id is not found.
-      if (owner && !(await tx.customer.findUnique({ where: { id: owner.id }, select: { id: true } }))) {
+      // Row-level security hides other workspaces' customers and partners, so a foreign id is not found.
+      if (owner?.type === 'customer' && !(await tx.customer.findUnique({ where: { id: owner.id }, select: { id: true } }))) {
         throw new NotFoundException('Customer not found');
+      }
+      if (owner?.type === 'partner' && !(await tx.partner.findUnique({ where: { id: owner.id }, select: { id: true } }))) {
+        throw new NotFoundException('Partner not found');
       }
       const file = await tx.file.create({
         data: {

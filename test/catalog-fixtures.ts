@@ -10,7 +10,7 @@ export async function measuredDesign(
   prisma: PrismaService,
   tenantId: string,
   userId: string,
-  options: { status?: string; measures?: [string, string, string][]; customerId?: string } = {},
+  options: { status?: string; measures?: [string, string, string][]; customerId?: string; partnerId?: string } = {},
 ): Promise<{ fileId: string; versionId: string }> {
   const measures = options.measures ?? [
     ['volume', '1000', 'mm3'],
@@ -27,6 +27,8 @@ export async function measuredDesign(
         declaredUnit: 'mm',
         createdByUserId: userId,
         ...(options.customerId ? { ownerType: 'customer', ownerId: options.customerId } : {}),
+        // A partner's own file, such as the QC photo its moves attach.
+        ...(options.partnerId ? { ownerType: 'partner', ownerId: options.partnerId } : {}),
       },
     });
     const version = await tx.fileVersion.create({

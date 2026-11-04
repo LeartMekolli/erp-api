@@ -111,6 +111,17 @@ export const capacityHistoryResponseSchema = z.strictObject({
 });
 export type CapacityHistoryResponse = z.infer<typeof capacityHistoryResponseSchema>;
 
+/** The agreement a partner signed, as its own people see it, with a short-lived link to the file. */
+export const partnerAgreementResponseSchema = z.strictObject({
+  file_version_id: z.uuid(),
+  signed_on: z.iso.date(),
+  /** The file's name as uploaded. */
+  name: z.string(),
+  url: z.string(),
+  expires_at: z.iso.datetime(),
+});
+export type PartnerAgreementResponse = z.infer<typeof partnerAgreementResponseSchema>;
+
 /** A partner's price for a step, as staff see it. */
 export const partnerPriceResponseSchema = stepPriceResponseSchema.extend({
   /** Copied from the workspace's own price and not changed since; the partner doesn't see its numbers. */

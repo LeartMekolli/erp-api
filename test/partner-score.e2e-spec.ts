@@ -123,7 +123,8 @@ describe('partners: ratings and score', () => {
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     const sol = ((await staff.post('/customers', { name: 'Sol Studio' }).expect(201)).body as { id: string }).id;
     const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
-    const photo = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [] })).versionId;
+    // CastCo's own photo: a partner attaches only its own.
+    const photo = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [], partnerId: castco })).versionId;
     const castcoPerson = await person(tenant.id, 'partner', castco, 'member');
 
     const configuration = {

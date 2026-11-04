@@ -214,7 +214,8 @@ describe('orders: the walkthrough', () => {
 
     // 7. The first order's pieces are made and finished: the order is ready; staff ship it with a
     // tracking number, Luna is told and sees it, and staff mark it delivered.
-    const photo = (await measuredDesign(prisma, tenant.id, staffUser.id, { status: 'uploaded', measures: [] })).versionId;
+    // Northcast's own photo: Northcast attaches it too, and a partner attaches only its own.
+    const photo = (await measuredDesign(prisma, tenant.id, staffUser.id, { status: 'uploaded', measures: [], partnerId: ids.northcast })).versionId;
     const answers: Record<string, object> = {
       polishing: { answers: [{ item: 'surface', value: 'ok' }] },
       final_qc: { answers: [{ item: 'dimensions', value: true }], photo_file_version_ids: [photo] },

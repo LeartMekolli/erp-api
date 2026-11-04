@@ -16,6 +16,7 @@ import { JobsService } from './jobs.service';
 import { OfferExpiryHandler } from './offer-expiry.handler';
 import { PartnerJobsController } from './partner-jobs.controller';
 import { PartnerJobsService } from './partner-jobs.service';
+import { PartnerFilesController } from './partner-files.controller';
 import { PartnerInvitationsService } from './partner-invitations.service';
 import { PartnerMembersService } from './partner-members.service';
 import { PartnerPortalController } from './partner-portal.controller';
@@ -48,6 +49,7 @@ import { SetupService } from './setup.service';
     JobsController,
     PartnersController,
     PartnerPortalController,
+    PartnerFilesController,
     SetupController,
     PortalSetupController,
     PartnerPricesController,

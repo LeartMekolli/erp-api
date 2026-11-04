@@ -133,8 +133,9 @@ export class MovesService {
   /**
    * With a `scope`, a partner's own people move: every piece must be of a job the partner has
    * accepted (else not found), and every step the move touches must be a partner step (else 409,
-   * naming the piece). Each transition records the partner its job is with, when made at a partner
-   * step, whoever made it (Partners spec, goal 13 and B5).
+   * naming the piece), and every photo must be the partner's own (else not found). Each transition
+   * records the partner its job is with, when made at a partner step, whoever made it (Partners spec,
+   * goal 13 and B5).
    */
   async move(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, body: MoveBody, scope?: { partnerId: string }): Promise<MoveResponse> {
     const { response, groupIds } = await this.moveInTransaction(auth, body, scope);
@@ -271,9 +272,16 @@ export class MovesService {
         throw new BadRequestException({ message: 'The move does not pass the QC gate', errors: problems });
       }
 
+      // A partner attaches only photos it owns; another owner's look like no photo at all.
       const photoIds = body.photo_file_version_ids ?? [];
       if (photoIds.length > 0) {
-        const found = await tx.fileVersion.count({ where: { id: { in: photoIds }, status: { in: ATTACHABLE } } });
+        const found = await tx.fileVersion.count({
+          where: {
+            id: { in: photoIds },
+            status: { in: ATTACHABLE },
+            ...(scope ? { file: { ownerType: 'partner', ownerId: scope.partnerId, status: { not: 'removed' } } } : {}),
+          },
+        });
         if (found !== photoIds.length) {
           throw new NotFoundException('Photo not found');
         }

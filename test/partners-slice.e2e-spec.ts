@@ -210,7 +210,8 @@ describe('partners: the walkthrough', () => {
       ((await castco.person.get(`${castco.portal}/jobs/${rings.group}`).expect(200)).body as { work_orders: { id: string; status: string; step_key: string | null }[] })
         .work_orders;
     const moves = `${castco.portal}/moves`;
-    const photo = (await measuredDesign(prisma, tenant.id, staffUser.id, { status: 'uploaded', measures: [] })).versionId;
+    // CastCo's own photo: a partner attaches only its own.
+    const photo = (await measuredDesign(prisma, tenant.id, staffUser.id, { status: 'uploaded', measures: [], partnerId: castco.id })).versionId;
     const answers: Record<string, object> = {
       polishing: { answers: [{ item: 'surface', value: 'ok' }] },
       final_qc: { answers: [{ item: 'dimensions', value: true }], photo_file_version_ids: [photo] },

@@ -145,7 +145,10 @@ describe('partners: what they are owed', () => {
     };
     const first = await job();
     const second = await job();
-    const photo = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [] })).versionId;
+    // Each partner's own QC photo: a partner attaches only its own.
+    const photoOf = async (partnerId: string) =>
+      (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [], partnerId })).versionId;
+    const photos: Record<string, string> = { [castco]: await photoOf(castco), [metalworks]: await photoOf(metalworks) };
 
     return {
       id: tenant.id,
@@ -155,7 +158,7 @@ describe('partners: what they are owed', () => {
       metalworks,
       first,
       second,
-      photo,
+      photos,
       castcoAdmin,
       castcoMember: await partnerPerson(tenant.id, castco, 'member'),
       metalworksAdmin: await partnerPerson(tenant.id, metalworks, 'admin'),
@@ -184,7 +187,7 @@ describe('partners: what they are owed', () => {
   const pass = async (tenant: Tenant, person: Person, partnerId: string, ids: string[], steps: string[]) => {
     const answers: Record<string, object> = {
       polishing: { answers: surfaceOk },
-      final_qc: { answers: [{ item: 'weight', value: '5.0' }], photo_file_version_ids: [tenant.photo] },
+      final_qc: { answers: [{ item: 'weight', value: '5.0' }], photo_file_version_ids: [tenant.photos[partnerId]] },
     };
     for (const at_step of steps) {
       await person

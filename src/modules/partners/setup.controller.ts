@@ -6,8 +6,13 @@ import type { ApiDocOptions } from '../../docs/api-doc';
 import { CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { PartnerAccess, RequirePermission } from '../identity/route-markers';
-import { capacityHistoryResponseSchema, partnerResponseSchema, partnerSetupResponseSchema } from './partner-response';
-import type { CapacityHistoryResponse, PartnerResponse, PartnerSetupResponse } from './partner-response';
+import {
+  capacityHistoryResponseSchema,
+  partnerAgreementResponseSchema,
+  partnerResponseSchema,
+  partnerSetupResponseSchema,
+} from './partner-response';
+import type { CapacityHistoryResponse, PartnerAgreementResponse, PartnerResponse, PartnerSetupResponse } from './partner-response';
 import { PartnersService } from './partners.service';
 import {
   SetupService,
@@ -55,6 +60,15 @@ const SETUP: ApiDocOptions = {
   response: partnerSetupResponseSchema,
   errors: [400, 404],
 };
+const CAPACITY_HISTORY: ApiDocOptions = {
+  summary: "The partner's load and capacity per step type, as kept each day.",
+  description:
+    'Kept daily at 02:00 UTC for every step type the partner can do. `from` and `to` are UTC days, both included: ' +
+    'by default the last 30 days, at most 366.',
+  query: capacityHistoryQuerySchema,
+  response: capacityHistoryResponseSchema,
+  errors: [400, 404],
+};
 
 /** Staff set a partner up on its behalf (Partners spec, goals 4–6). */
 @Controller('partners/:id')
@@ -68,15 +82,7 @@ export class SetupController {
     return this.setup.get(tenantId, id);
   }
 
-  @ApiDoc({
-    summary: "The partner's load and capacity per step type, as kept each day.",
-    description:
-      'Kept daily at 02:00 UTC for every step type the partner can do. `from` and `to` are UTC days, both included: ' +
-      'by default the last 30 days, at most 366.',
-    query: capacityHistoryQuerySchema,
-    response: capacityHistoryResponseSchema,
-    errors: [400, 404],
-  })
+  @ApiDoc(CAPACITY_HISTORY)
   @RequirePermission('partner.read')
   @Get('capacity-history')
   capacityHistory(
@@ -132,7 +138,10 @@ export class SetupController {
   }
 }
 
-/** A partner's owner and admins set it up themselves (Partners spec, goals 4–6 and 17). */
+/**
+ * A partner's owner and admins set it up themselves (Partners spec, goals 4–6 and 17); its people read
+ * its setup, its kept capacity and the agreement it signed.
+ */
 @Controller('partner-portal/partners/:partnerId')
 export class PortalSetupController {
   constructor(
@@ -145,6 +154,28 @@ export class PortalSetupController {
   @Get('setup')
   get(@CurrentPartner() partner: PartnerAuth): Promise<PartnerSetupResponse> {
     return this.setup.get(partner.tenantId, partner.partnerId);
+  }
+
+  @ApiDoc(CAPACITY_HISTORY)
+  @PartnerAccess('member')
+  @Get('capacity-history')
+  capacityHistory(
+    @CurrentPartner() partner: PartnerAuth,
+    @Query(new ZodValidationPipe(capacityHistoryQuerySchema)) query: z.infer<typeof capacityHistoryQuerySchema>,
+  ): Promise<CapacityHistoryResponse> {
+    return this.setup.capacityHistory(partner.tenantId, partner.partnerId, query);
+  }
+
+  @ApiDoc({
+    summary: 'The agreement the partner signed, with a short-lived download link.',
+    description: 'For its owner and admins. Staff put it on file; none yet is a 404.',
+    response: partnerAgreementResponseSchema,
+    errors: [400, 404],
+  })
+  @PartnerAccess('admin')
+  @Get('agreement')
+  agreement(@CurrentPartner() partner: PartnerAuth): Promise<PartnerAgreementResponse> {
+    return this.partners.agreement(partner.tenantId, partner.partnerId);
   }
 
   @ApiDoc(CAPABILITIES)

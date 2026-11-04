@@ -7,10 +7,11 @@ import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import type { Partner, Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { FilesService } from '../files/files.service';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PARTNER_STATUSES } from './partner-response';
-import type { PartnerResponse, PartnerStatus, PayoutAccountState } from './partner-response';
+import type { PartnerAgreementResponse, PartnerResponse, PartnerStatus, PayoutAccountState } from './partner-response';
 import { ScoreService } from './score.service';
 
 /** Who made a change: staff, or a partner person acting for the partner. */
@@ -51,6 +52,7 @@ export class PartnersService {
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
     private readonly score: ScoreService,
+    private readonly files: FilesService,
   ) {}
 
   async create(auth: TenantAuth, input: z.infer<typeof createPartnerSchema>): Promise<PartnerResponse> {
@@ -102,6 +104,30 @@ export class PartnersService {
       }
       return { agreementFileVersionId: input.file_version_id, agreementSignedOn: new Date(`${input.signed_on}T00:00:00Z`) };
     });
+  }
+
+  /** The agreement on file, for the partner's own people; none, or its file removed, is not found. */
+  async agreement(tenantId: string, id: string): Promise<PartnerAgreementResponse> {
+    const row = await this.prisma.inTenant(tenantId, (tx) =>
+      tx.partner.findUnique({
+        where: { id },
+        select: {
+          agreementSignedOn: true,
+          agreementVersion: { select: { id: true, fileId: true, originalName: true } },
+        },
+      }),
+    );
+    if (!row?.agreementVersion || !row.agreementSignedOn) {
+      throw new NotFoundException('Agreement not found');
+    }
+    const version = row.agreementVersion;
+    const link = await this.files.downloadUrl(tenantId, version.fileId, version.id);
+    return {
+      file_version_id: version.id,
+      signed_on: row.agreementSignedOn.toISOString().slice(0, 10),
+      name: version.originalName,
+      ...link,
+    };
   }
 
   /** Only with a signed agreement on file; a suspended partner can be approved again. */
