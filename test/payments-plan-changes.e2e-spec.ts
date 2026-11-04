@@ -303,7 +303,8 @@ describe('payments: changing plans and failed payments', () => {
     expect(await planKey(w)).toBe('pro');
     const failed = await told(w, 'subscription.payment_failed');
     expect(failed).toHaveLength(1);
-    expect(failed[0].payload).toMatchObject({ plan: 'Pro', portal_url: expect.stringContaining('/billing') });
+    // A workspace without a customer site: the API's own page, never the staff app.
+    expect(failed[0].payload).toMatchObject({ plan: 'Pro', portal_url: expect.stringMatching(/\/payment-return\?outcome=back$/) });
     expect(JSON.stringify((await change(w, w.business).expect(409)).body)).toContain('late');
 
     fake.giveUp(id);

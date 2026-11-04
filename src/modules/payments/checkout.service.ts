@@ -92,7 +92,7 @@ export class CheckoutService implements OnModuleInit {
     const { order, row, tenant, collection } = prepared;
 
     await this.expireAtProvider(keys.keys, prepared.replaced);
-    const target = { webTemplate: this.config.get('WEB_URL_TEMPLATE'), slug: tenant.slug, customerSiteOrigin: tenant.customerSiteOrigin };
+    const target = { apiUrl: this.config.get('API_PUBLIC_URL'), customerSiteOrigin: tenant.customerSiteOrigin };
     let checkout: { id: string; url: string };
     try {
       checkout = await this.provider.createCheckout(keys.keys, {
@@ -100,8 +100,8 @@ export class CheckoutService implements OnModuleInit {
         currency: row.currency,
         description: `Order ${order.number}`,
         expiresAt: row.expiresAt,
-        successUrl: collection.checkoutSuccessUrl ?? customerOrderLink(target, orderId, '?payment=success'),
-        cancelUrl: collection.checkoutCancelUrl ?? customerOrderLink(target, orderId, '?payment=cancelled'),
+        successUrl: collection.checkoutSuccessUrl ?? customerOrderLink(target, orderId, 'paid'),
+        cancelUrl: collection.checkoutCancelUrl ?? customerOrderLink(target, orderId, 'cancelled'),
         metadata: { tenant_id: tenantId, order_id: orderId, order_payment_id: row.id },
         idempotencyKey: row.id,
       });

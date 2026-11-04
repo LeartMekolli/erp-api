@@ -229,4 +229,11 @@ describe('loadEnv', () => {
   it('rejects a SENTRY_DSN that is not a URL', () => {
     expect(() => loadEnv({ ...valid, SENTRY_DSN: 'nonsense' })).toThrow(/SENTRY_DSN/);
   });
+
+  it('defaults API_PUBLIC_URL to the local port outside production, and requires it in production', () => {
+    expect(loadEnv({ ...valid, PORT: '3005' }).API_PUBLIC_URL).toBe('http://localhost:3005');
+    expect(loadEnv({ ...valid, API_PUBLIC_URL: 'https://api.example.test' }).API_PUBLIC_URL).toBe('https://api.example.test');
+    expect(() => loadEnv({ ...valid, NODE_ENV: 'production' })).toThrow(/API_PUBLIC_URL: required in production/);
+    expect(() => loadEnv({ ...valid, API_PUBLIC_URL: 'nonsense' })).toThrow(/API_PUBLIC_URL/);
+  });
 });

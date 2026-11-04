@@ -1,4 +1,4 @@
-import { identityLink, webLink } from './web-links';
+import { customerBillingLink, customerOrderLink, identityLink, webLink } from './web-links';
 
 describe('webLink', () => {
   it('puts the slug in the host and the token in the fragment', () => {
@@ -37,5 +37,26 @@ describe('identityLink', () => {
     expect(identityLink({ ...base, customerSiteOrigin: 'https://shop.test', forCustomer: false }, '/reset-password', 'abc')).toBe(
       'https://acme.app.example/reset-password#token=abc',
     );
+  });
+});
+
+describe('customer return links', () => {
+  const site = { apiUrl: 'https://api.example/', customerSiteOrigin: 'https://shop.test/' };
+  const noSite = { apiUrl: 'https://api.example/', customerSiteOrigin: null };
+
+  it("sends a customer back to the workspace's customer site", () => {
+    expect(customerOrderLink(site, 'o1', 'paid')).toBe('https://shop.test/orders/o1?payment=success');
+    expect(customerOrderLink(site, 'o1', 'cancelled')).toBe('https://shop.test/orders/o1?payment=cancelled');
+    expect(customerBillingLink(site, 'paid', '?pack=done')).toBe('https://shop.test/billing?pack=done');
+    expect(customerBillingLink(site, 'back')).toBe('https://shop.test/billing');
+  });
+
+  it("sends a customer to the API's page when the workspace has no customer site, never the staff app", () => {
+    expect(customerOrderLink(noSite, 'o1', 'paid')).toBe('https://api.example/payment-return?outcome=paid');
+    expect(customerOrderLink(noSite, 'o1', 'cancelled')).toBe('https://api.example/payment-return?outcome=cancelled');
+    expect(customerBillingLink(noSite, 'cancelled', '?subscription=cancelled')).toBe(
+      'https://api.example/payment-return?outcome=cancelled',
+    );
+    expect(customerBillingLink(noSite, 'back')).toBe('https://api.example/payment-return?outcome=back');
   });
 });

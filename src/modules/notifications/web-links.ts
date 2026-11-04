@@ -13,26 +13,34 @@ export function webLink(
   return `${base}${path}#token=${encodeURIComponent(token)}`;
 }
 
-/**
- * Where a customer lands on an order of theirs, as after a checkout: the workspace's customer site
- * when it has one, else the web app.
- */
-export function customerOrderLink(
-  target: { webTemplate: string; slug: string; customerSiteOrigin: string | null },
-  orderId: string,
-  query = '',
-): string {
-  const base = target.customerSiteOrigin ?? target.webTemplate.replace('{tenant}', target.slug);
-  return `${base.replace(/\/+$/, '')}/orders/${orderId}${query}`;
+/** How a customer comes back from the payment provider: paid, gave up, or back from its billing portal. */
+export type PaymentOutcome = 'paid' | 'cancelled' | 'back';
+
+/** Where a customer comes back to from the payment provider: their customer site, or the API's own page. */
+export interface CustomerReturnTarget {
+  apiUrl: string;
+  customerSiteOrigin: string | null;
 }
 
-/** The customer's billing page, as after a subscription's checkout or the provider's billing portal. */
-export function customerBillingLink(
-  target: { webTemplate: string; slug: string; customerSiteOrigin: string | null },
-  query = '',
-): string {
-  const base = target.customerSiteOrigin ?? target.webTemplate.replace('{tenant}', target.slug);
-  return `${base.replace(/\/+$/, '')}/billing${query}`;
+/**
+ * The API's page for a customer back from the payment provider when the workspace has no customer
+ * site. The web app is the staff app, never a customer's.
+ */
+function paymentReturnLink(apiUrl: string, outcome: PaymentOutcome): string {
+  return `${apiUrl.replace(/\/+$/, '')}/payment-return?outcome=${outcome}`;
+}
+
+/** Where a customer lands on an order of theirs after a checkout. */
+export function customerOrderLink(target: CustomerReturnTarget, orderId: string, outcome: 'paid' | 'cancelled'): string {
+  if (!target.customerSiteOrigin) return paymentReturnLink(target.apiUrl, outcome);
+  const query = outcome === 'paid' ? '?payment=success' : '?payment=cancelled';
+  return `${target.customerSiteOrigin.replace(/\/+$/, '')}/orders/${orderId}${query}`;
+}
+
+/** The customer's billing page, as after a subscription's or a pack's checkout, or the provider's billing portal. */
+export function customerBillingLink(target: CustomerReturnTarget, outcome: PaymentOutcome, query = ''): string {
+  if (!target.customerSiteOrigin) return paymentReturnLink(target.apiUrl, outcome);
+  return `${target.customerSiteOrigin.replace(/\/+$/, '')}/billing${query}`;
 }
 
 /** A page of the partner app in the web app, for one partner, as after onboarding at the payment provider. */
