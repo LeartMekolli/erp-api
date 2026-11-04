@@ -10,6 +10,8 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { TENANT_PERMISSIONS } from '../src/modules/identity/permissions';
+import { sessionTokensSchema } from '../src/modules/auth/session.service';
+import type { SessionTokens as Session } from '../src/modules/auth/session.service';
 import { tenantResponseSchema } from '../src/platform/tenant.service';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { expectDocumented } from './documented';
@@ -27,6 +29,7 @@ describe('platform', () => {
   let adminId: string;
   let adminToken: string;
   const createdTenants: string[] = [];
+  const createdAdmins: string[] = [];
   const run = newId().slice(-8);
 
   const tenantBody = (suffix: string) => ({
@@ -75,18 +78,19 @@ describe('platform', () => {
 
   afterAll(async () => {
     await deleteTestTenants(prisma, createdTenants);
-    await prisma.platformAdmin.delete({ where: { id: adminId } });
+    // Their refresh tokens go with them.
+    await prisma.platformAdmin.deleteMany({ where: { id: { in: [adminId, ...createdAdmins] } } });
     await app.close();
   });
 
   describe('login', () => {
-    it('returns an access token for the right password', async () => {
+    it('returns an access token and a refresh token for the right password', async () => {
       const response = await post('auth/login')
         .send({ email: adminEmail.toUpperCase(), password: ADMIN_PASSWORD })
         .expect(200);
 
-      expect(response.body).toEqual({ access_token: expect.any(String), expires_at: expect.any(String) });
-      await get('tenants?limit=1', (response.body as { access_token: string }).access_token).expect(200);
+      expectDocumented(sessionTokensSchema, response.body);
+      await get('tenants?limit=1', (response.body as Session).access_token).expect(200);
     });
 
     it('answers a wrong password and an unknown email identically', async () => {
@@ -99,6 +103,76 @@ describe('platform', () => {
       expect(wrong.status).toBe(401);
       expect(unknown.status).toBe(401);
       expect(unknown.body).toEqual(wrong.body);
+    });
+  });
+
+  describe('staying logged in', () => {
+    const login = async (email = adminEmail, password = ADMIN_PASSWORD) =>
+      (await post('auth/login').send({ email, password }).expect(200)).body as Session;
+    const refresh = (refreshToken: string) => post('auth/refresh').send({ refresh_token: refreshToken });
+
+    /** A platform admin of this test's own, so revoking its sessions touches no other test. */
+    async function ownAdmin(): Promise<{ id: string; email: string }> {
+      const email = `platform-${newId()}@example.test`;
+      const admin = await prisma.platformAdmin.create({
+        data: { email, passwordHash: await hashPassword(ADMIN_PASSWORD), name: 'Platform Admin' },
+      });
+      createdAdmins.push(admin.id);
+      return { id: admin.id, email };
+    }
+
+    it('rotates the refresh token, within one session of 12 hours from login', async () => {
+      const admin = await ownAdmin();
+      const first = await login(admin.email);
+
+      const renewed = await refresh(first.refresh_token).expect(200);
+      expectDocumented(sessionTokensSchema, renewed.body);
+      const second = renewed.body as Session;
+      expect(second.refresh_token).not.toBe(first.refresh_token);
+      await get('tenants?limit=1', second.access_token).expect(200);
+
+      // Rotating never lengthens the session: every token of it ends when the first one does.
+      const rows = await prisma.platformRefreshToken.findMany({ where: { platformAdminId: admin.id }, orderBy: { issuedAt: 'asc' } });
+      expect(rows).toHaveLength(2);
+      expect(rows[1].expiresAt).toEqual(rows[0].expiresAt);
+      const hours = (rows[0].expiresAt.getTime() - rows[0].issuedAt.getTime()) / 3_600_000;
+      expect(hours).toBeCloseTo(12, 1);
+    });
+
+    it('revokes the whole session when a refresh token is used twice', async () => {
+      const admin = await ownAdmin();
+      const first = await login(admin.email);
+      const second = (await refresh(first.refresh_token).expect(200)).body as Session;
+
+      await refresh(first.refresh_token).expect(401);
+      // The thief's reuse also ends the session of whoever held the newest token.
+      await refresh(second.refresh_token).expect(401);
+    });
+
+    it('refuses a session that has ended, an admin no longer active, and tokens it never issued', async () => {
+      const admin = await ownAdmin();
+      const ended = await login(admin.email);
+      await prisma.platformRefreshToken.updateMany({ where: { platformAdminId: admin.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+      await refresh(ended.refresh_token).expect(401);
+
+      const live = await login(admin.email);
+      await prisma.platformAdmin.update({ where: { id: admin.id }, data: { status: 'disabled' } });
+      await refresh(live.refresh_token).expect(401);
+
+      await refresh('not-a-token').expect(401);
+      await refresh(`platform.${'a'.repeat(43)}`).expect(401);
+      // A workspace's refresh token is not a platform one.
+      await refresh(`${newId()}.${'a'.repeat(43)}`).expect(401);
+    });
+
+    it('logs out: the refresh token and the access token stop working at once', async () => {
+      const admin = await ownAdmin();
+      const session = await login(admin.email);
+
+      await post('auth/logout', session.access_token).send({ refresh_token: session.refresh_token }).expect(204);
+
+      await refresh(session.refresh_token).expect(401);
+      await get('tenants?limit=1', session.access_token).expect(401);
     });
   });
 

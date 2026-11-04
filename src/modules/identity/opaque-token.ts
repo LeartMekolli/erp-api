@@ -37,3 +37,21 @@ export function parseOpaqueToken(token: string): { tenantId: string; hash: strin
 
   return { tenantId: tenantId as string, hash: hashSecret(secret) };
 }
+
+const PLATFORM_PREFIX = 'platform';
+
+/** Platform admin refresh tokens: `platform.<secret>`. They name no tenant, as platform admins have none. */
+export function issuePlatformToken(): { token: string; hash: string } {
+  const secret = randomBytes(32).toString('base64url');
+  return { token: `${PLATFORM_PREFIX}.${secret}`, hash: hashSecret(secret) };
+}
+
+/** Null for anything `issuePlatformToken` could not have made, a tenant's token included. */
+export function parsePlatformToken(token: string): { hash: string } | null {
+  const parts = token.split('.');
+  const [prefix, secret] = parts;
+  if (parts.length !== 2 || prefix !== PLATFORM_PREFIX || !secret || !SECRET.test(secret)) {
+    return null;
+  }
+  return { hash: hashSecret(secret) };
+}
