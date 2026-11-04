@@ -29,10 +29,8 @@ describe('identityLink', () => {
     );
   });
 
-  it('falls back to the staff app when the workspace has no customer site', () => {
-    expect(identityLink({ ...base, customerSiteOrigin: null, forCustomer: true }, '/reset-password', 'abc')).toBe(
-      'https://acme.app.example/reset-password#token=abc',
-    );
+  it('has no link for customer people when the workspace has no customer site', () => {
+    expect(identityLink({ ...base, customerSiteOrigin: null, forCustomer: true }, '/reset-password', 'abc')).toBeNull();
   });
 
   it('always sends staff to the staff app', () => {

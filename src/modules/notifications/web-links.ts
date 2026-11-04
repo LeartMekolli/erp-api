@@ -43,16 +43,19 @@ export function partnerPortalLink(target: { webTemplate: string; slug: string },
 
 /**
  * The link in an identity email. Customer people go to the workspace's
- * customer site when it has one (Customers spec, goal 13); staff, and
- * customers of a workspace without a site, go to the staff app.
+ * customer site (Customers spec, goal 13), staff to the staff app. A customer
+ * of a workspace without a site has no link: the staff app is not theirs, so
+ * the email is not sent.
  */
 export function identityLink(
   target: { webTemplate: string; slug: string; customerSiteOrigin: string | null; forCustomer: boolean },
   path: '/accept-invitation' | '/reset-password',
   token: string,
-): string {
-  if (target.forCustomer && target.customerSiteOrigin) {
-    return `${target.customerSiteOrigin.replace(/\/+$/, '')}${path}#token=${encodeURIComponent(token)}`;
+): string | null {
+  if (target.forCustomer) {
+    return target.customerSiteOrigin
+      ? `${target.customerSiteOrigin.replace(/\/+$/, '')}${path}#token=${encodeURIComponent(token)}`
+      : null;
   }
   return webLink(target.webTemplate, target.slug, path, token);
 }
