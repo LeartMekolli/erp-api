@@ -11,6 +11,7 @@ import { API_DOC, IDEMPOTENCY_NOTE } from './api-doc';
 import type { ApiDocOptions, DocContext } from './api-doc';
 import { zodToOpenApi } from './zod-openapi';
 
+/** `ApiError` (`src/common/errors/api-error.ts`): a refusal with a `code` carries its extension members. */
 const PROBLEM_SCHEMA: SchemaObject = {
   type: 'object',
   required: ['type', 'title', 'status'],
@@ -23,10 +24,13 @@ const PROBLEM_SCHEMA: SchemaObject = {
       type: 'array',
       items: {
         type: 'object',
+        required: ['path', 'message'],
         properties: { path: { type: 'string' }, message: { type: 'string' } },
       },
     },
+    code: { type: 'string', description: 'Names a refusal clients act on, such as `price_changed`.', example: 'price_changed' },
   },
+  additionalProperties: true,
 };
 
 const ERROR_DESCRIPTIONS: Record<number, string> = {

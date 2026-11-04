@@ -43,6 +43,16 @@ describe('API docs', () => {
     expect(doc.paths['/me'].get?.description).toMatch(/any signed-in user/i);
   });
 
+  it('describes errors as the API sends them: a code, extension members, and complete field errors', async () => {
+    const app = await boot('true');
+    const doc = (await request(app.getHttpServer()).get('/docs/openapi.json').expect(200)).body as OpenAPIObject;
+
+    const problem = doc.components?.schemas?.Problem as SchemaObject;
+    expect(problem.properties?.code).toMatchObject({ type: 'string' });
+    expect(problem.additionalProperties).toBe(true);
+    expect(((problem.properties?.errors as SchemaObject).items as SchemaObject).required).toEqual(['path', 'message']);
+  });
+
   it('answers 404 for both when API_DOCS is false', async () => {
     const app = await boot('false');
 

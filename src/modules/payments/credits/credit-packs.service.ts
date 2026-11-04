@@ -125,7 +125,7 @@ export class CreditPacksService {
     });
 
     const { keys, pack, purchase, tenant } = prepared;
-    const target = { webTemplate: this.config.get('WEB_URL_TEMPLATE'), slug: tenant.slug, customerSiteOrigin: tenant.customerSiteOrigin };
+    const target = { apiUrl: this.config.get('API_PUBLIC_URL'), customerSiteOrigin: tenant.customerSiteOrigin };
     let checkout: { id: string; url: string };
     try {
       checkout = await this.provider.createCheckout(keys, {
@@ -133,8 +133,8 @@ export class CreditPacksService {
         currency: purchase.currency,
         description: pack.name,
         expiresAt: new Date(Date.now() + CHECKOUT_OPEN_MS),
-        successUrl: customerBillingLink(target, '?pack=done'),
-        cancelUrl: customerBillingLink(target, '?pack=cancelled'),
+        successUrl: customerBillingLink(target, 'paid', '?pack=done'),
+        cancelUrl: customerBillingLink(target, 'cancelled', '?pack=cancelled'),
         metadata: { tenant_id: tenantId, customer_id: customerId, credit_pack_purchase_id: purchase.id },
         idempotencyKey: purchase.id,
       });

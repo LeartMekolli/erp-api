@@ -26,7 +26,7 @@ describe('invitation preview', () => {
   const createdTenants: string[] = [];
 
   const http = () => request(app.getHttpServer());
-  const preview = (token: string) => http().get(`/auth/invitations/${encodeURIComponent(token)}`);
+  const preview = (token: string) => http().post('/auth/invitations/preview').send({ token });
   const email = () => `invitee-${newId()}@example.test`;
 
   beforeAll(async () => {
@@ -127,5 +127,10 @@ describe('invitation preview', () => {
 
     await prisma.tenant.update({ where: { id: w.id }, data: { status: 'suspended' } });
     await preview(token).expect(404);
+  });
+
+  it('takes the token only in the body, so it never reaches a request log', async () => {
+    await http().post('/auth/invitations/preview').send({}).expect(400);
+    await http().get('/auth/invitations/not-a-token').expect(404);
   });
 });

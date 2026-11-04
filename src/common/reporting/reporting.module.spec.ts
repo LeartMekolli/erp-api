@@ -10,6 +10,7 @@ const base = {
   SMTP_URL: 'smtp://localhost:1025',
   MAIL_FROM: 'ERP <no-reply@example.test>',
   WEB_URL_TEMPLATE: 'http://{tenant}.localhost:5173',
+  API_PUBLIC_URL: 'https://api.example.test',
   S3_ENDPOINT: 'http://localhost:9000',
   S3_BUCKET: 'erp-files',
   S3_ACCESS_KEY_ID: 'minio',

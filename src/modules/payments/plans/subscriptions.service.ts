@@ -152,8 +152,8 @@ export class SubscriptionsService {
       const made = await this.provider.createSubscriptionCheckout(prepared.keys, {
         providerCustomerId,
         priceId: prepared.price.providerPriceId,
-        successUrl: customerBillingLink(target, '?subscription=done'),
-        cancelUrl: customerBillingLink(target, '?subscription=cancelled'),
+        successUrl: customerBillingLink(target, 'paid', '?subscription=done'),
+        cancelUrl: customerBillingLink(target, 'cancelled', '?subscription=cancelled'),
         metadata: { tenant_id: tenantId, customer_id: customerId, plan_price_id: prepared.price.id },
         idempotencyKey: newId(),
       });
@@ -238,12 +238,12 @@ export class SubscriptionsService {
         skipDuplicates: true,
       });
       if (!created) return null;
-      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { slug: true, customerSiteOrigin: true } });
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { customerSiteOrigin: true } });
       return {
         kind,
         customerId: row.customerId,
         plan: (kind === 'upgrade_failed' ? row.pendingPrice?.plan.name : undefined) ?? row.planPrice.plan.name,
-        portalUrl: customerBillingLink(this.target(tenant)),
+        portalUrl: customerBillingLink(this.target(tenant), 'back'),
       };
     });
     if (!notice) return;
@@ -267,7 +267,7 @@ export class SubscriptionsService {
       const providerCustomerId = await this.providerCustomers.ensure(tenantId, customerId);
       return await this.provider.billingPortalLink(prepared.keys, {
         providerCustomerId,
-        returnUrl: customerBillingLink(this.target(prepared.tenant)),
+        returnUrl: customerBillingLink(this.target(prepared.tenant), 'back'),
       });
     } catch (error) {
       this.logger.error({ err: error, tenantId, customerId }, 'the payment provider refused a billing portal link');
@@ -397,7 +397,7 @@ export class SubscriptionsService {
     }
   }
 
-  private target(tenant: { slug: string; customerSiteOrigin: string | null }) {
-    return { webTemplate: this.config.get('WEB_URL_TEMPLATE'), slug: tenant.slug, customerSiteOrigin: tenant.customerSiteOrigin };
+  private target(tenant: { customerSiteOrigin: string | null }) {
+    return { apiUrl: this.config.get('API_PUBLIC_URL'), customerSiteOrigin: tenant.customerSiteOrigin };
   }
 }

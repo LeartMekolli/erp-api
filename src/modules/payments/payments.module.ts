@@ -34,6 +34,7 @@ import { PaymentAccountController } from './payment-account.controller';
 import { PaymentAccountService } from './payment-account.service';
 import { PaymentEventHandler } from './payment-event.handler';
 import { PaymentEventsService } from './payment-events.service';
+import { PaymentReturnController } from './payment-return.controller';
 import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider } from './payment-provider';
 import { PaymentTermsController } from './payment-terms.controller';
@@ -71,6 +72,7 @@ import { WebhooksController } from './webhooks.controller';
     WebhooksController,
     PaymentTermsController,
     CheckoutController,
+    PaymentReturnController,
     CreditController,
     RefundsController,
     PayoutAccountsController,

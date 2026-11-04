@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Ip, Param, Post } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Ip, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
@@ -27,6 +27,9 @@ const loginSchema = z.object({
 });
 
 const refreshTokenSchema = z.object({ refresh_token: z.string().min(1).max(200) });
+
+// The token travels in the body, never the path: request logs keep the path.
+const previewInvitationSchema = z.object({ token: z.string().min(1).max(200) });
 
 const acceptInvitationSchema = z.object({
   token: z.string().min(1).max(200),
@@ -168,13 +171,17 @@ export class AuthController {
       'The token is the one in the invitation email link; `kind` says which accept route takes it. ' +
       'An accepted or expired invitation still answers, with its `status`. ' +
       'A token the API never issued, or one of a suspended workspace, answers 404.',
+    body: previewInvitationSchema,
     response: invitationPreviewResponseSchema,
-    errors: [404],
+    errors: [400, 404],
   })
   @Public()
-  @Get('invitations/:token')
-  previewInvitation(@Param('token') token: string): Promise<InvitationPreviewResponse> {
-    return this.invitationPreviews.preview(token);
+  @Post('invitations/preview')
+  @HttpCode(200)
+  previewInvitation(
+    @Body(new ZodValidationPipe(previewInvitationSchema)) body: z.infer<typeof previewInvitationSchema>,
+  ): Promise<InvitationPreviewResponse> {
+    return this.invitationPreviews.preview(body.token);
   }
 
   @ApiDoc({

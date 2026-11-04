@@ -74,6 +74,9 @@ const envSchema = z
       .string()
       .refine((value) => value.includes('{tenant}'), 'must contain {tenant}')
       .refine((value) => URL.canParse(value.replace('{tenant}', 'tenant')), 'must be a URL'),
+    // The API's own public address, where the payment provider sends a customer back to when the
+    // workspace has no customer site. Required in production; elsewhere it is http://localhost:<PORT>.
+    API_PUBLIC_URL: z.url().optional(),
     // File storage, any S3-compatible service: MinIO locally, Cloudflare R2 in production (plan S1).
     S3_ENDPOINT: z.url(),
     // Where clients reach storage, when that differs from where the API does
@@ -197,7 +200,11 @@ const envSchema = z
         if (!env[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'required when VECTOR_STORE is pinecone' });
       }
     }
-  });
+    if (env.NODE_ENV === 'production' && !env.API_PUBLIC_URL) {
+      ctx.addIssue({ code: 'custom', path: ['API_PUBLIC_URL'], message: 'required in production' });
+    }
+  })
+  .transform((env) => ({ ...env, API_PUBLIC_URL: env.API_PUBLIC_URL ?? `http://localhost:${env.PORT}` }));
 
 export type Env = z.infer<typeof envSchema>;
 
