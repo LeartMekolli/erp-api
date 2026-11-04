@@ -10,6 +10,7 @@ import { AuthController } from './auth.controller';
 import { GoogleSignInService } from './google-sign-in.service';
 import { GoogleModule } from './google.module';
 import { InvitationAcceptService } from './invitation-accept.service';
+import { InvitationPreviewService } from './invitation-preview.service';
 import { PasswordResetService } from './password-reset.service';
 import { SessionService } from './session.service';
 
@@ -25,6 +26,6 @@ import { SessionService } from './session.service';
     GoogleModule,
   ],
   controllers: [AuthController],
-  providers: [SessionService, InvitationAcceptService, PasswordResetService, GoogleSignInService],
+  providers: [SessionService, InvitationAcceptService, InvitationPreviewService, PasswordResetService, GoogleSignInService],
 })
 export class AuthModule {}

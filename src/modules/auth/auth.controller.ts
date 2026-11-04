@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, HttpCode, Ip, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Ip, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ConfigService } from '../../config/config.service';
@@ -11,6 +11,8 @@ import { PartnerInvitationsService } from '../partners/partner-invitations.servi
 import { Authenticated, Public } from '../identity/route-markers';
 import { GoogleSignInService } from './google-sign-in.service';
 import { InvitationAcceptService } from './invitation-accept.service';
+import { InvitationPreviewService, invitationPreviewResponseSchema } from './invitation-preview.service';
+import type { InvitationPreviewResponse } from './invitation-preview.service';
 import { PasswordResetService } from './password-reset.service';
 import { SessionService } from './session.service';
 import { sessionTokensSchema } from './session.service';
@@ -67,6 +69,7 @@ export class AuthController {
   constructor(
     private readonly sessions: SessionService,
     private readonly invitations: InvitationAcceptService,
+    private readonly invitationPreviews: InvitationPreviewService,
     private readonly customerInvitations: CustomerInvitationsService,
     private readonly partnerInvitations: PartnerInvitationsService,
     private readonly passwordResets: PasswordResetService,
@@ -157,6 +160,21 @@ export class AuthController {
     @Body(new ZodValidationPipe(acceptInvitationSchema)) body: z.infer<typeof acceptInvitationSchema>,
   ): Promise<void> {
     await this.invitations.accept(body.token, body.name, body.password);
+  }
+
+  @ApiDoc({
+    summary: 'What an invitation link is: staff, partner or customer, who it is for, and what it joins.',
+    description:
+      'The token is the one in the invitation email link; `kind` says which accept route takes it. ' +
+      'An accepted or expired invitation still answers, with its `status`. ' +
+      'A token the API never issued, or one of a suspended workspace, answers 404.',
+    response: invitationPreviewResponseSchema,
+    errors: [404],
+  })
+  @Public()
+  @Get('invitations/:token')
+  previewInvitation(@Param('token') token: string): Promise<InvitationPreviewResponse> {
+    return this.invitationPreviews.preview(token);
   }
 
   @ApiDoc({
