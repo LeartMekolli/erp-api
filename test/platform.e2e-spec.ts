@@ -10,7 +10,9 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { TENANT_PERMISSIONS } from '../src/modules/identity/permissions';
+import { tenantResponseSchema } from '../src/platform/tenant.service';
 import { CapturingIdentityNotifier } from './capturing-notifier';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
 const ADMIN_PASSWORD = 'platform-admin-password';
@@ -196,6 +198,20 @@ describe('platform', () => {
     });
   });
 
+  describe('one tenant', () => {
+    it('answers the same view as the list', async () => {
+      const id = await createTenant('one');
+
+      const response = await get(`tenants/${id}`, adminToken).expect(200);
+      expectDocumented(tenantResponseSchema, response.body);
+      const listed = await get('tenants?limit=200', adminToken).expect(200);
+      expect(response.body).toEqual((listed.body as { data: { id: string }[] }).data.find((tenant) => tenant.id === id));
+
+      await get(`tenants/${newId()}`, adminToken).expect(404);
+      await get('tenants/not-a-uuid', adminToken).expect(400);
+    });
+  });
+
   describe('suspension', () => {
     // That a suspended tenant's tokens stop working is the guard's job, covered
     // in auth-guard.e2e-spec.ts; here: the state change and its audit entry.
@@ -233,6 +249,68 @@ describe('platform', () => {
     it('answers 404 for an unknown tenant and 400 for a malformed id', async () => {
       await post(`tenants/${newId()}/suspend`, adminToken).expect(404);
       await post('tenants/not-a-uuid/suspend', adminToken).expect(400);
+    });
+  });
+
+  describe('reactivation', () => {
+    it('reactivates a suspended tenant and audits the change', async () => {
+      const tenant = await createTestTenant(prisma, { status: 'suspended' });
+      createdTenants.push(tenant.id);
+
+      await post(`tenants/${tenant.id}/reactivate`, adminToken).expect(204);
+
+      await expect(prisma.tenant.findUniqueOrThrow({ where: { id: tenant.id } })).resolves.toMatchObject({ status: 'active' });
+      const entries = await prisma.inTenant(tenant.id, (tx) => tx.auditEntry.findMany({ where: { action: 'tenant.reactivated' } }));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ actorId: adminId, before: { status: 'suspended' }, after: { status: 'active' } });
+    });
+
+    it('treats reactivating an active tenant as done, without an entry, like suspending', async () => {
+      const tenant = await createTestTenant(prisma);
+      createdTenants.push(tenant.id);
+
+      await post(`tenants/${tenant.id}/reactivate`, adminToken).expect(204);
+
+      await expect(
+        prisma.inTenant(tenant.id, (tx) => tx.auditEntry.count({ where: { action: 'tenant.reactivated' } })),
+      ).resolves.toBe(0);
+      await post(`tenants/${newId()}/reactivate`, adminToken).expect(404);
+      await post('tenants/not-a-uuid/reactivate', adminToken).expect(400);
+    });
+  });
+
+  describe("resending the owner's invitation", () => {
+    it('sends a new link that replaces the old one, and audits it', async () => {
+      const id = await createTenant('resend');
+      const ownerEmail = 'owner.resend@example.test';
+      const first = notifier.lastInvitationFor(ownerEmail)!;
+
+      await post(`tenants/${id}/owner-invitation`, adminToken).expect(204);
+
+      const second = notifier.lastInvitationFor(ownerEmail)!;
+      expect(second.tenantId).toBe(id);
+      expect(second.token).not.toBe(first.token);
+      const invitations = await prisma.inTenant(id, (tx) => tx.invitation.findMany({ orderBy: { createdAt: 'asc' } }));
+      expect(invitations).toHaveLength(2);
+      // Only the newest link works.
+      expect(invitations[0].expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(invitations[1]).toMatchObject({ id: second.invitationId, email: ownerEmail, roleId: invitations[0].roleId, acceptedAt: null });
+      const entries = await prisma.inTenant(id, (tx) => tx.auditEntry.findMany({ where: { action: 'tenant.owner_invitation_resent' } }));
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ actorType: 'platform_admin', actorId: adminId, subjectId: id });
+    });
+
+    it('refuses once the owner has accepted, and for a suspended or unknown tenant', async () => {
+      const accepted = await createTenant('accepted');
+      await prisma.inTenant(accepted, (tx) => tx.invitation.updateMany({ data: { acceptedAt: new Date() } }));
+      await post(`tenants/${accepted}/owner-invitation`, adminToken).expect(409);
+
+      const suspended = await createTenant('resend-suspended');
+      await post(`tenants/${suspended}/suspend`, adminToken).expect(204);
+      await post(`tenants/${suspended}/owner-invitation`, adminToken).expect(409);
+
+      await post(`tenants/${newId()}/owner-invitation`, adminToken).expect(404);
+      await post('tenants/not-a-uuid/owner-invitation', adminToken).expect(400);
     });
   });
 

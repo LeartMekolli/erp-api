@@ -125,6 +125,16 @@ export class TenantService {
     return { next_cursor: page.next_cursor, data };
   }
 
+  async get(id: string): Promise<TenantResponse> {
+    return this.prisma.inTenant(id, async (tx) => {
+      const row = await tx.tenant.findUnique({ where: { id } });
+      if (!row) {
+        throw new NotFoundException('Tenant not found');
+      }
+      return this.toResponse(row, await aiSpent(tx, new Date()));
+    });
+  }
+
   /**
    * Sets or removes (null) the workspace's monthly AI limit in USD, audited; answers the tenant view. A limit
    * set below what the month has spent tells staff, through `ai.limit.check` after commit.
@@ -177,22 +187,81 @@ export class TenantService {
    * guard reads the tenant's status every time.
    */
   async suspend(id: string, actor: AuditInput['actor']): Promise<void> {
-    await this.prisma.inTenant(id, async (tx) => {
+    await this.setStatus(id, 'suspended', 'tenant.suspended', actor);
+  }
+
+  /** The counterpart of `suspend`, and as idempotent: its users get in again from their next request on. */
+  async reactivate(id: string, actor: AuditInput['actor']): Promise<void> {
+    await this.setStatus(id, 'active', 'tenant.reactivated', actor);
+  }
+
+  /**
+   * Sends the owner's invitation again, for a lost email: a new link, and the old one stops working
+   * (`createInvitation` expires it). Only while no one has accepted the owner's invitation, and not for
+   * a suspended workspace. The owner is notified after commit, as on creation.
+   */
+  async resendOwnerInvitation(id: string, actor: AuditInput['actor']): Promise<void> {
+    const sent = await this.prisma.inTenant(id, async (tx) => {
       const tenant = await tx.tenant.findUnique({ where: { id }, select: { status: true } });
       if (!tenant) {
         throw new NotFoundException('Tenant not found');
       }
       if (tenant.status === 'suspended') {
+        throw new ConflictException('The tenant is suspended');
+      }
+      // The owner's invitation is the one a platform admin made, with no inviting user.
+      const owner = await tx.role.findFirstOrThrow({ where: { name: 'owner', isSystem: true }, select: { id: true } });
+      const invitations = await tx.invitation.findMany({
+        where: { roleId: owner.id, invitedByUserId: null },
+        orderBy: { createdAt: 'desc' },
+        select: { email: true, acceptedAt: true },
+      });
+      if (invitations.length === 0) {
+        throw new NotFoundException('The tenant has no owner invitation');
+      }
+      if (invitations.some((invitation) => invitation.acceptedAt !== null)) {
+        throw new ConflictException('The owner has already accepted the invitation');
+      }
+      const email = invitations[0].email;
+      const created = await createInvitation(tx, id, { email, roleId: owner.id });
+      await this.audit.record(tx, {
+        actor,
+        action: 'tenant.owner_invitation_resent',
+        subject: { type: 'tenant', id },
+        after: { ownerEmail: email },
+      });
+      return { ...created, email };
+    });
+
+    await this.notifier.invitationCreated({ tenantId: id, invitationId: sent.invitationId, email: sent.email, token: sent.token });
+  }
+
+  /**
+   * Idempotent: setting the status a tenant already has changes nothing and records nothing. The guard
+   * reads the status on every request, so the change takes effect at once.
+   */
+  private async setStatus(
+    id: string,
+    status: TenantStatus,
+    action: 'tenant.suspended' | 'tenant.reactivated',
+    actor: AuditInput['actor'],
+  ): Promise<void> {
+    await this.prisma.inTenant(id, async (tx) => {
+      const tenant = await tx.tenant.findUnique({ where: { id }, select: { status: true } });
+      if (!tenant) {
+        throw new NotFoundException('Tenant not found');
+      }
+      if (tenant.status === status) {
         return;
       }
 
-      await tx.tenant.update({ where: { id }, data: { status: 'suspended' } });
+      await tx.tenant.update({ where: { id }, data: { status } });
       await this.audit.record(tx, {
         actor,
-        action: 'tenant.suspended',
+        action,
         subject: { type: 'tenant', id },
         before: { status: tenant.status },
-        after: { status: 'suspended' },
+        after: { status },
       });
     });
   }
