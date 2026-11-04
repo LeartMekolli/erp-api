@@ -7,6 +7,8 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { TENANT_PERMISSIONS } from '../src/modules/identity/permissions';
+import { meResponseSchema } from '../src/modules/users/me.controller';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
 describe('current identity and settings', () => {
@@ -81,6 +83,42 @@ describe('current identity and settings', () => {
       expect(body.memberships).toEqual([
         { organisation_type: 'partner', organisation_id: organisationId, role: 'operator' },
       ]);
+    });
+
+    it('says what kind of user is signed in, whatever memberships they have', async () => {
+      const kindOf = async (kind: string) => {
+        const user = await createTestUser(prisma, tenant.id, { roles: [] });
+        await prisma.inTenant(tenant.id, (tx) => tx.user.update({ where: { id: user.id }, data: { kind } }));
+        const response = await get('/me', (await tokens.issueForUser(tenant.id, user.id)).accessToken).expect(200);
+        expectDocumented(meResponseSchema, response.body);
+        return response.body as { kind: string; memberships: unknown[] };
+      };
+
+      const staff = (await get('/me', ownerToken).expect(200)).body as { kind: string };
+      expect(staff.kind).toBe('staff');
+      // A partner person with no membership left is still a partner person, never staff.
+      expect(await kindOf('partner')).toMatchObject({ kind: 'partner', memberships: [] });
+      expect(await kindOf('customer')).toMatchObject({ kind: 'customer', memberships: [] });
+    });
+
+    it("gives the workspace's name, currency and time zone, to anyone signed in to it", async () => {
+      const row = await prisma.tenant.findUniqueOrThrow({ where: { id: tenant.id } });
+      const workspace = {
+        id: tenant.id,
+        slug: tenant.slug,
+        name: row.name,
+        default_currency: row.defaultCurrency,
+        timezone: row.timezone,
+      };
+
+      for (const token of [ownerToken, memberToken]) {
+        const response = await get('/me', token).expect(200);
+        expectDocumented(meResponseSchema, response.body);
+        expect((response.body as { workspace: unknown }).workspace).toEqual(workspace);
+      }
+      // Each workspace's own.
+      const elsewhere = (await get('/me', otherOwnerToken).expect(200)).body as { workspace: { id: string } };
+      expect(elsewhere.workspace.id).toBe(other.id);
     });
 
     it('refuses a platform token', async () => {

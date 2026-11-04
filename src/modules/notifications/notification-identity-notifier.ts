@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import type {
@@ -9,7 +9,7 @@ import type {
   PasswordResetNotice,
 } from '../identity/identity-notifier';
 import { NotificationsService } from './notifications.service';
-import { identityLink } from './web-links';
+import { identityLink, webLink } from './web-links';
 
 interface TenantLinkInfo {
   name: string;
@@ -21,10 +21,13 @@ interface TenantLinkInfo {
  * Identity emails as notifications. The link is built here from the tenant's
  * slug, its customer site and the configured web URL, never from anything a
  * caller sent (D78), and travels as a secret variable, sealed until sent
- * (plan N2).
+ * (plan N2). A customer person's email needs the workspace's customer site;
+ * without one it is skipped with a warning, never sent into the staff app.
  */
 @Injectable()
 export class NotificationIdentityNotifier implements IdentityNotifier {
+  private readonly logger = new Logger(NotificationIdentityNotifier.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -35,7 +38,7 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
     const tenant = await this.tenant(notice.tenantId);
     await this.notifications.raise(notice.tenantId, 'user.invited', { type: 'invitation', id: notice.invitationId }, {
       tenant_name: tenant.name,
-      link: this.link(tenant, false, '/accept-invitation', notice.token),
+      link: this.staffLink(tenant, '/accept-invitation', notice.token),
     });
   }
 
@@ -44,15 +47,26 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
     const user = await this.prisma.inTenant(notice.tenantId, (tx) =>
       tx.user.findUniqueOrThrow({ where: { id: notice.userId }, select: { name: true, kind: true } }),
     );
+    const link =
+      user.kind === 'customer'
+        ? this.customerLink(tenant, '/reset-password', notice.token, `password reset for user ${notice.userId}`)
+        : this.staffLink(tenant, '/reset-password', notice.token);
+    if (!link) {
+      return;
+    }
     await this.notifications.raise(notice.tenantId, 'auth.password_reset_requested', { type: 'user', id: notice.userId }, {
       tenant_name: tenant.name,
       user_name: user.name,
-      link: this.link(tenant, user.kind === 'customer', '/reset-password', notice.token),
+      link,
     });
   }
 
   async customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void> {
     const tenant = await this.tenant(notice.tenantId);
+    const link = this.customerLink(tenant, '/accept-invitation', notice.token, `customer invitation ${notice.invitationId}`);
+    if (!link) {
+      return;
+    }
     await this.notifications.raise(
       notice.tenantId,
       'customer.invited',
@@ -60,7 +74,7 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
       {
         tenant_name: tenant.name,
         customer_name: notice.customerName,
-        link: this.link(tenant, true, '/accept-invitation', notice.token),
+        link,
       },
     );
   }
@@ -75,22 +89,31 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
       {
         tenant_name: tenant.name,
         partner_name: notice.partnerName,
-        link: this.link(tenant, false, '/accept-invitation', notice.token),
+        link: this.staffLink(tenant, '/accept-invitation', notice.token),
       },
     );
   }
 
-  private link(
+  private staffLink(tenant: TenantLinkInfo, path: '/accept-invitation' | '/reset-password', token: string): string {
+    return webLink(this.config.get('WEB_URL_TEMPLATE'), tenant.slug, path, token);
+  }
+
+  /** Null, with a warning naming what was skipped, when the workspace has no customer site. */
+  private customerLink(
     tenant: TenantLinkInfo,
-    forCustomer: boolean,
     path: '/accept-invitation' | '/reset-password',
     token: string,
-  ): string {
-    return identityLink(
-      { webTemplate: this.config.get('WEB_URL_TEMPLATE'), slug: tenant.slug, customerSiteOrigin: tenant.customerSiteOrigin, forCustomer },
+    skipped: string,
+  ): string | null {
+    const link = identityLink(
+      { webTemplate: this.config.get('WEB_URL_TEMPLATE'), slug: tenant.slug, customerSiteOrigin: tenant.customerSiteOrigin, forCustomer: true },
       path,
       token,
     );
+    if (!link) {
+      this.logger.warn(`Workspace ${tenant.slug} has no customer site, so the email for ${skipped} was not sent`);
+    }
+    return link;
   }
 
   /** The tenant table is platform-owned, so no tenant scope is needed to read it. */

@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { LOG_DESTINATION } from '../src/common/logging/logging.module';
+import { PinoLoggerService } from '../src/common/logging/pino-logger.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
@@ -93,7 +94,11 @@ describe('identity emails', () => {
     prisma = moduleRef.get(PrismaService);
     tokens = moduleRef.get(AccessTokenService);
 
-    worker = await startTestWorker((builder) => builder.overrideProvider(LOG_DESTINATION).useValue(capture));
+    // Compiling a testing module swaps Nest's logger for one that prints errors only, which would
+    // hide the API's warnings; the worker's keeps the API's, so both still write to `capture`.
+    worker = await startTestWorker((builder) =>
+      builder.overrideProvider(LOG_DESTINATION).useValue(capture).setLogger(app.get(PinoLoggerService)),
+    );
   });
 
   afterAll(async () => {
@@ -149,6 +154,51 @@ describe('identity emails', () => {
       finishRaise('done');
       raise.mockRestore();
     }
+  });
+
+  describe('customer people', () => {
+    const customerIn = async (tenant: Awaited<ReturnType<typeof freshTenant>>) =>
+      ((await http().post('/customers').set(authed(tenant.ownerToken)).send({ name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    const raised = (tenantId: string, eventKey: string) =>
+      prisma.inTenant(tenantId, (tx) => tx.notification.count({ where: { eventKey } }));
+
+    it("an invitation email links to the workspace's customer site", async () => {
+      const tenant = await freshTenant();
+      await prisma.tenant.update({ where: { id: tenant.id }, data: { customerSiteOrigin: 'https://shop.example.test' } });
+      const email = `customer-${newId()}@example.test`;
+      await http()
+        .post(`/customers/${await customerIn(tenant)}/invitations`)
+        .set(authed(tenant.ownerToken))
+        .send({ email, role: 'buyer' })
+        .expect(201);
+
+      expect((await waitForMessage(email)).text).toContain('https://shop.example.test/accept-invitation#token=');
+    });
+
+    it('without a customer site, an invitation is made but no email goes out, never one into the staff app', async () => {
+      const tenant = await freshTenant();
+      const email = `customer-${newId()}@example.test`;
+      const invited = await http()
+        .post(`/customers/${await customerIn(tenant)}/invitations`)
+        .set(authed(tenant.ownerToken))
+        .send({ email, role: 'buyer' })
+        .expect(201);
+      const invitationId = (invited.body as { id: string }).id;
+
+      expect(await raised(tenant.id, 'customer.invited')).toBe(0);
+      expect(lines.some((line) => line.includes('no customer site') && line.includes(invitationId))).toBe(true);
+    });
+
+    it('without a customer site, a password reset still answers 202 but no email goes out', async () => {
+      const tenant = await freshTenant();
+      const user = await createTestUser(prisma, tenant.id, { roles: [] });
+      await prisma.inTenant(tenant.id, (tx) => tx.user.update({ where: { id: user.id }, data: { kind: 'customer' } }));
+
+      await http().post('/auth/password-reset').send({ email: user.email, workspace: tenant.slug }).expect(202);
+      // The email is raised after answering, so wait for the line saying it was skipped.
+      await waitFor(async () => (lines.some((line) => line.includes('no customer site') && line.includes(user.id)) ? true : undefined));
+      expect(await raised(tenant.id, 'auth.password_reset_requested')).toBe(0);
+    });
   });
 
   it('the invitation token is in no log line, no feed row and no stored notification', async () => {

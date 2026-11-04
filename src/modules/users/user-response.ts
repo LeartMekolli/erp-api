@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+/** Every user is one kind (`User.kind`): customer and partner people hold memberships, never workspace roles. */
+export const USER_KINDS = ['staff', 'partner', 'customer'] as const;
+export type UserKind = (typeof USER_KINDS)[number];
+
 /**
  * The only shape a user leaves the API in: an allow-list, so a column added
  * later (a hash, a secret) stays out of responses unless someone adds it here
