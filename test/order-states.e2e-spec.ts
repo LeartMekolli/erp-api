@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { expectStoredStates } from './stored-states';
@@ -212,5 +213,84 @@ describe('orders: stored states', () => {
     expect([200, 409]).toContain(moved.status);
     expect(await stored(tenant.id, order.id)).toMatchObject({ state: 'in_production' });
     await expectStoredStates(prisma, app, tenant.id, tenant.staff);
+  });
+
+  describe('the hourly refresh (plan Task 3)', () => {
+    const refreshOpen = (tenantId: string) => app.get(OrderStatesService).refreshOpen(tenantId);
+    /** Every piece finished directly, then shipped through the API. */
+    const ship = async (tenant: Tenant, order: Order) => {
+      await prisma.inTenant(tenant.id, (tx) =>
+        tx.workOrder.updateMany({ where: { groupId: { in: order.lines.map((line) => line.group_id) } }, data: { status: 'finished', currentStepId: null } }),
+      );
+      await tenant.staff.post(`/orders/${order.id}/ship`, {}).expect(200);
+    };
+    /** Today in `timezone`, as `YYYY-MM-DD`. */
+    const todayIn = (timezone: string) => new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+    const addDays = (day: string, days: number) => new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+    it("makes an order overdue once its invoice is past due, by the workspace's own date (Review Focus 4)", async () => {
+      const tenant = await freshTenant();
+      // UTC+14: from 10:00 UTC on, its date is a day ahead of UTC's, so "yesterday" there is today in UTC.
+      const timezone = 'Pacific/Kiritimati';
+      await prisma.inTenant(tenant.id, (tx) => tx.tenant.update({ where: { id: tenant.id }, data: { timezone } }));
+      const order = await tenant.place(tenant.luna);
+      await ship(tenant, order);
+      // The invoice as the provider made it, written directly: no provider is connected here.
+      await prisma.inTenant(tenant.id, (tx) =>
+        tx.invoice.create({
+          data: {
+            orderId: order.id,
+            providerInvoiceId: `in_${order.id.replaceAll('-', '')}`,
+            url: 'https://invoices.example.test/1',
+            linesAmount: '10.00',
+            shipping: '0.00',
+            tax: '0.00',
+            total: '10.00',
+            currency: 'EUR',
+            dueOn: new Date(`${addDays(todayIn(timezone), -1)}T00:00:00Z`),
+            status: 'open',
+          },
+        }),
+      );
+
+      expect(await refreshOpen(tenant.id)).toBeGreaterThan(0);
+      expect(await stored(tenant.id, order.id)).toEqual({ state: 'shipped', paymentState: 'overdue' });
+      expect(((await tenant.staff.get(`/orders/${order.id}`).expect(200)).body as { payment: { state: string } }).payment.state).toBe('overdue');
+      await expectStoredStates(prisma, app, tenant.id, tenant.staff);
+    });
+
+    it('fills an order not computed yet, which reads as its facts give it meanwhile (goal 7)', async () => {
+      const tenant = await freshTenant();
+      const order = await tenant.place(tenant.luna);
+      await prisma.inTenant(tenant.id, (tx) => tx.order.update({ where: { id: order.id }, data: { state: null, paymentState: null } }));
+
+      const shown = (await tenant.staff.get(`/orders/${order.id}`).expect(200)).body as { state: string; payment: { state: string } };
+      expect([shown.state, shown.payment.state]).toEqual(['in_production', 'not_billed']);
+      expect(await stored(tenant.id, order.id)).toEqual({ state: null, paymentState: null });
+
+      await refreshOpen(tenant.id);
+      expect(await stored(tenant.id, order.id)).toEqual({ state: 'in_production', paymentState: 'not_billed' });
+      await expectStoredStates(prisma, app, tenant.id, tenant.staff);
+    });
+
+    it('leaves finished orders alone, and still checks one waiting on money', async () => {
+      const tenant = await freshTenant();
+      const open = await tenant.place(tenant.luna);
+      const cancelled = await tenant.place(tenant.sol);
+      await tenant.staff.post(`/orders/${cancelled.id}/cancel`, { reason: 'Changed their mind' }).expect(200);
+      // Delivered, but not billed yet: still waiting on money.
+      const delivered = await tenant.place(tenant.luna);
+      await ship(tenant, delivered);
+      await tenant.staff.post(`/orders/${delivered.id}/deliver`).expect(200);
+
+      const refresh = jest.spyOn(app.get(OrderStatesService), 'refresh');
+      try {
+        expect(await refreshOpen(tenant.id)).toBe(2);
+        const refreshed = refresh.mock.calls.flatMap(([, ids]) => ids);
+        expect(refreshed.sort()).toEqual([open.id, delivered.id].sort());
+      } finally {
+        refresh.mockRestore();
+      }
+    });
   });
 });

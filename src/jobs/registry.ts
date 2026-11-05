@@ -220,6 +220,10 @@ export const SCHEDULED_JOBS = {
   // day just after its midnight (Customers 2 spec). Which band is in force is decided when read, never by
   // this having run.
   'customers.priority.refresh': { queue: 'maintenance', schedule: { every: 3_600_000 }, lockTtlMs: 600_000 },
+  // Stores again the states of each workspace's orders that time alone can change, an invoice falling
+  // overdue by the workspace's local date, and fills orders not computed yet (Orders list spec, goals 6
+  // and 7). An order's state is decided by its facts, never by this having run.
+  'orders.states.refresh': { queue: 'maintenance', schedule: { every: 3_600_000 }, lockTtlMs: 600_000 },
   // Queues the morning briefing of each workspace where it is 07:00 or later and none ran today (AI 1 spec, goal 7).
   'ai.briefing': { queue: 'ai', schedule: { every: 900_000 }, lockTtlMs: 600_000 },
   // Queues the AI's brief of each job a workshop newly holds, in workspaces with AI set up (Orders 3 spec,

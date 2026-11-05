@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Order } from '../../generated/prisma/client';
 import { INVOICE_STATUSES, paidAndRefunded, paymentState } from '../payments/payment-state';
@@ -12,13 +13,22 @@ type Tx = Prisma.TransactionClient;
 
 export type StoredStates = { state: OrderState; paymentState: PaymentState };
 
+/** Order states nothing changes any more. */
+const FINISHED: OrderState[] = ['delivered', 'cancelled'];
+/** Payment states that still wait on money: an open invoice among them can fall overdue. */
+const OWING: PaymentState[] = ['awaiting_payment', 'not_billed', 'invoiced'];
+const REFRESH_BATCH = 200;
+
 /**
  * The only writer of an order's stored `state` and `payment_state` (Orders list spec, goals 1–7). Both are
  * decided by `orderState()` and `paymentState()` from the order's facts, never by what is stored.
  */
 @Injectable()
 export class OrderStatesService {
-  constructor(private readonly moves: MovesService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly moves: MovesService,
+  ) {}
 
   onModuleInit(): void {
     // Every move locks its pieces' orders first, and stores their states once its pieces are written.
@@ -110,6 +120,36 @@ export class OrderStatesService {
       const next = derived.get(order.id)!;
       if (order.state === next.state && order.paymentState === next.paymentState) continue;
       await tx.order.update({ where: { id: order.id }, data: { state: next.state, paymentState: next.paymentState } });
+    }
+  }
+
+  /**
+   * Refreshes every order of the workspace whose states time alone can still change, or that is not
+   * computed yet (`orders.states.refresh`, Orders list spec, goals 6 and 7): not finished, or still
+   * waiting on money. In batches of 200 by id, each in its own transaction, so no run holds every open
+   * order's lock at once. Answers how many orders it refreshed.
+   */
+  async refreshOpen(tenantId: string): Promise<number> {
+    let after: string | undefined;
+    let count = 0;
+    for (;;) {
+      const ids = await this.prisma.inTenant(tenantId, async (tx) => {
+        const batch = await tx.order.findMany({
+          where: {
+            ...(after ? { id: { gt: after } } : {}),
+            OR: [{ state: null }, { paymentState: null }, { state: { notIn: FINISHED } }, { paymentState: { in: OWING } }],
+          },
+          select: { id: true },
+          orderBy: { id: 'asc' },
+          take: REFRESH_BATCH,
+        });
+        const batchIds = batch.map((row) => row.id);
+        await this.refresh(tx, batchIds);
+        return batchIds;
+      });
+      count += ids.length;
+      if (ids.length < REFRESH_BATCH) return count;
+      after = ids[ids.length - 1];
     }
   }
 
