@@ -5,9 +5,15 @@ import { z } from 'zod';
 /**
  * Lists sort by id descending: a v7 id orders by creation time, so the id
  * alone is the whole sort key (ADR 0004). The work queue sorts by its group's
- * queue rank first, so its cursor carries the rank as well (Customers 2).
+ * queue rank first, so its cursor carries the rank as well (Customers 2). A list with a choice of sort
+ * carries the sort the cursor was made for and the last row's value of it (Orders list spec, goal 9).
  */
-const cursorPayloadSchema = z.object({ id: z.uuid(), rank: z.number().int().min(0).optional() });
+const cursorPayloadSchema = z.object({
+  id: z.uuid(),
+  rank: z.number().int().min(0).optional(),
+  sort: z.string().max(20).optional(),
+  key: z.string().max(40).optional(),
+});
 
 export type CursorPayload = z.infer<typeof cursorPayloadSchema>;
 

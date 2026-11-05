@@ -4,9 +4,9 @@ import type { Prisma } from '../../generated/prisma/client';
 import type { RecordRef } from '../ai/tools/tool';
 import type { TenantAuth } from '../identity/auth-context';
 import type { TenantPermission } from '../identity/permissions';
-import { localDate, startOfLocalDay, workingDaysAfter } from '../orders/dates';
+import { localDate, startOfLocalDay } from '../orders/dates';
 import type { BusinessCalendar } from '../orders/dates';
-import { lineState, orderState } from '../orders/order-state';
+import { needsDay, needsWhere } from '../orders/needs';
 import { DEFAULT_CALENDAR } from '../orders/place-order';
 import { EligibilityService } from '../partners/eligibility.service';
 import { SettingsService } from '../settings/settings.service';
@@ -43,8 +43,6 @@ const PERMISSION: Record<AttentionKind, TenantPermission> = {
 };
 
 export const MAX_ITEMS = 20;
-/** Working days before the promised date at which an order counts as at risk (Settled after the builder check). */
-const AT_RISK_WORKING_DAYS = 2;
 const NEAR_CAPACITY_PERCENT = 90;
 const UNANSWERED_MS = 24 * 3_600_000;
 const SPIKE_MIN_DEFECTS = 3;
@@ -116,32 +114,16 @@ export class AttentionService {
     }
   }
 
-  /** Promised date passed or within 2 working days, and not ready, shipped, delivered or cancelled. */
+  /** Late or due soon, by the orders list's needs-you rule (Orders list spec, goal 4), on the stored states. */
   private async ordersAtRisk(tx: Tx, context: Context) {
     const calendar = ((await this.settings.list(tx))['business.calendar'] as BusinessCalendar | undefined) ?? DEFAULT_CALENDAR;
     const orders = await tx.order.findMany({
-      where: {
-        cancelledAt: null,
-        shippedAt: null,
-        deliveredAt: null,
-        promisedOn: { lte: dateOnly(workingDaysAfter(context.today, AT_RISK_WORKING_DAYS, calendar)) },
-      },
+      where: needsWhere(['late', 'due_soon'], needsDay(context.today, calendar)),
       orderBy: [{ promisedOn: 'asc' }, { number: 'asc' }],
-      select: {
-        id: true,
-        number: true,
-        promisedOn: true,
-        productionStartedAt: true,
-        customer: { select: { name: true } },
-        lines: { select: { cancelledAt: true, group: { select: { workOrders: { select: { status: true } } } } } },
-      },
-    });
-    const risky = orders.filter((order) => {
-      const lines = order.lines.map((line) => lineState(line.group?.workOrders ?? [], line.cancelledAt));
-      return !['ready', 'cancelled'].includes(orderState(lines, null, null, order.productionStartedAt));
+      select: { id: true, number: true, promisedOn: true, customer: { select: { name: true } } },
     });
     return listed(
-      risky.map((order) => ({
+      orders.map((order) => ({
         ref: { type: 'order' as const, id: order.id },
         label: `Order ${order.number} for ${order.customer.name}, promised ${dayOf(order.promisedOn)}`,
         since: dayOf(order.promisedOn),

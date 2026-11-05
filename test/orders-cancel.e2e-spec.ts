@@ -294,8 +294,7 @@ describe('orders: state and cancelling', () => {
     expect([order.state, ...order.lines.map((line) => line.state)]).toEqual(['ready', 'ready', 'cancelled']);
 
     await finish(second.group_id);
-    // Shipping comes with plan Task 8; until then it is set directly.
-    await prisma.inTenant(tenant.id, (tx) => tx.order.update({ where: { id: placed.id }, data: { shippedAt: new Date() } }));
+    await tenant.staff.post(`/orders/${placed.id}/ship`, {}).expect(200);
     expect((await read(tenant, placed.id)).state).toBe('shipped');
     await cancel(tenant, placed.id, { reason: 'Too late' }).expect(409);
     await customerCancel(tenant, placed.id).expect(409);

@@ -1,7 +1,8 @@
 import { Prisma } from '../../generated/prisma/client';
 import { taxAmount } from '../orders/tax';
 
-// An order's payment state, derived from its frozen terms and the ledger, never stored (Payments spec).
+// An order's payment state, derived from its frozen terms and the ledger (Payments spec). It is stored on the
+// order by `OrderStatesService`, from this rule alone (Orders list spec, goal 5).
 
 export const PAYMENT_TERMS = ['pay_first', 'pay_later'] as const;
 export type PaymentTerms = (typeof PAYMENT_TERMS)[number];

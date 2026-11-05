@@ -7,10 +7,10 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { orderResponseSchema } from './order-response';
-import type { OrderResponse } from './order-response';
-import { OrdersService, cancelOrderSchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
-import type { CancelOrder, OrderListQuery, ShipOrder } from './orders.service';
+import { orderCountsResponseSchema, orderResponseSchema } from './order-response';
+import type { OrderCountsResponse, OrderResponse } from './order-response';
+import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
+import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipOrder } from './orders.service';
 import { staffPlaceOrderSchema } from './place-order';
 import type { StaffPlaceOrder } from './place-order';
 
@@ -47,7 +47,17 @@ export class OrdersController {
   }
 
   @ApiDoc({
-    summary: 'Orders, newest first, optionally of one customer, a page at a time.',
+    summary: 'Orders, filtered, searched and sorted, a page at a time.',
+    description:
+      '`state` and `payment_state` take one or more values, comma-separated (`state=ready,in_production`); an unknown ' +
+      'value is a 400. `promised_after` includes its day and `promised_before` excludes its day. `q` matches part of ' +
+      "the order number (a leading `#` is dropped) or part of the customer's name, case-insensitive. `needs` lists " +
+      'orders matching any of the reasons given: `late` (promised before today, not shipped), `to_ship` (ready), ' +
+      '`to_collect` (an overdue invoice, or waiting for payment) and `due_soon` (promised from today to 2 working days ' +
+      "on, not made yet); each order's own `needs` says which it matches, by the same rule. Filters combine " +
+      'with AND. An order whose state is not computed yet is in no `state` or `payment_state` filter until the hourly ' +
+      'refresh stores it. Newest first unless `sort` says otherwise; send the same filters and sort with each page, and ' +
+      'a cursor made for another sort is a 400.',
     query: orderListQuerySchema,
     response: pageSchema(orderResponseSchema),
     errors: [400],
@@ -59,6 +69,26 @@ export class OrdersController {
     @Query(new ZodValidationPipe(orderListQuerySchema)) query: OrderListQuery,
   ): Promise<Page<OrderResponse>> {
     return this.orders.list(tenantId, query);
+  }
+
+  @ApiDoc({
+    summary: "How many orders each tab and each needs-you reason holds, with the list's filters.",
+    description:
+      "Takes the list's `customer_id`, `payment_state`, `promised_after`, `promised_before` and `q`, with the same " +
+      'meaning; `state`, `needs`, paging and `sort` pick a tab or a page, and are a 400 here. `all` counts every ' +
+      'order the filters pick; `states` and `needs_you` count only orders whose state is computed. ' +
+      '`needs_you.total` counts an order matching several reasons once, so it can be less than their sum.',
+    query: orderCountsQuerySchema,
+    response: orderCountsResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('order.read')
+  @Get('counts')
+  counts(
+    @CurrentTenant() tenantId: string,
+    @Query(new ZodValidationPipe(orderCountsQuerySchema)) query: OrderCountsQuery,
+  ): Promise<OrderCountsResponse> {
+    return this.orders.counts(tenantId, query);
   }
 
   @ApiDoc({ summary: 'An order with its lines and totals.', response: orderResponseSchema, errors: [400, 404] })

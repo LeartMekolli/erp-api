@@ -8,6 +8,8 @@ import { SettingsModule } from '../settings/settings.module';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { CommentsService } from './comments.service';
 import { OrderCommentsController, PortalOrderCommentsController } from './comments.controller';
+import { OrderStatesHandler } from './order-states.handler';
+import { OrderStatesService } from './order-states.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { PortalOrdersController } from './portal-orders.controller';
@@ -37,6 +39,8 @@ import { TaxRatesService } from './tax-rates.service';
     ShippingMethodsService,
     TaxRatesService,
     OrdersService,
+    OrderStatesService,
+    OrderStatesHandler,
     CommentsService,
     ProgressEmailsService,
     ProgressEmailsHandler,
@@ -44,6 +48,6 @@ import { TaxRatesService } from './tax-rates.service';
     { provide: TAX_CALCULATOR, useClass: RateTableTaxCalculator },
   ],
   // CommentsService is also the partner's way into an order's comments (PartnersModule), so Orders never depends on Partners.
-  exports: [ShippingMethodsService, OrdersService, CommentsService, TAX_CALCULATOR],
+  exports: [ShippingMethodsService, OrdersService, OrderStatesService, CommentsService, TAX_CALCULATOR],
 })
 export class OrdersModule {}

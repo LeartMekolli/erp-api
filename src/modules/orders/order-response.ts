@@ -3,6 +3,7 @@ import { TRACKING_STATUSES } from '../couriers/courier-provider';
 import { INVOICE_STATUSES, PAYMENT_STATES, PAYMENT_TERMS } from '../payments/payment-state';
 import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 import { customerViewResponseSchema } from '../workflow/work-order-response';
+import { NEEDS_REASONS } from './needs';
 
 // What clients receive for orders and their setup; checked against real responses in the e2e tests.
 
@@ -177,10 +178,12 @@ export const orderResponseSchema = z.strictObject({
   number: z.number().int(),
   customer: z.strictObject({ id: z.uuid(), name: z.string() }),
   channel: z.enum(['staff', 'portal']),
-  /** Derived from the lines, and shipping. */
+  /** Decided by the lines, payment and shipping; stored, and kept current by every change. */
   state: z.enum(ORDER_STATES),
   /** The day the order is promised for, in the workspace's calendar. */
   promised_on: z.iso.date(),
+  /** Why the order needs staff today, in this order; empty when nothing does (Orders list spec, goal 12). */
+  needs: z.array(z.enum(NEEDS_REASONS)),
   /** The delivery speed key every line was priced at. */
   delivery_speed: z.string().nullable(),
   address: addressSchema,
@@ -207,6 +210,21 @@ export const orderResponseSchema = z.strictObject({
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
 
+const count = z.number().int().min(0);
+/** How many orders each tab and each needs-you reason holds (Orders list spec, goal 13). */
+export const orderCountsResponseSchema = z.strictObject({
+  /** Every order the filters pick, computed or not. */
+  all: count,
+  /** Per stored state; an order not computed yet is in none. */
+  states: z.strictObject(Object.fromEntries(ORDER_STATES.map((state) => [state, count])) as Record<(typeof ORDER_STATES)[number], typeof count>),
+  /** Per reason; `total` counts an order matching several reasons once. */
+  needs_you: z.strictObject({ total: count, ...Object.fromEntries(NEEDS_REASONS.map((reason) => [reason, count])) } as Record<
+    'total' | (typeof NEEDS_REASONS)[number],
+    typeof count
+  >),
+});
+export type OrderCountsResponse = z.infer<typeof orderCountsResponseSchema>;
+
 /** The shipping methods a customer can choose for a new order: only the active ones. */
 export const portalShippingMethodsResponseSchema = z.strictObject({
   data: z.array(shippingMethodResponseSchema.pick({ key: true, name: true, price: true })),
@@ -230,7 +248,7 @@ export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ gr
 export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponseSchema>;
 
 /** An order as its customer sees it (Global Constraints): never a partner, a partner's cost or a margin. */
-export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true }).extend({
+export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true, needs: true }).extend({
   /** Never the label or what it cost; how the parcel is doing instead. */
   shipping: orderResponseSchema.shape.shipping.omit({ label: true }).extend({ tracking_status: trackingStatusSchema }),
   lines: z.array(customerOrderLineResponseSchema),

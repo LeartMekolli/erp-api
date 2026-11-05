@@ -20,6 +20,7 @@ import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { sendEvent } from './payment-webhooks';
 import { pricedCastPart } from './pricing-fixtures';
+import { expectStoredStates } from './stored-states';
 import { startTestWorker } from './worker-harness';
 
 interface StaffOrder {
@@ -242,6 +243,7 @@ describe('payments: a paid order starts production', () => {
     await tenant.metalworks.person.get(`/partner-portal/partners/${tenant.metalworks.id}/jobs/${group}`).expect(200);
     expect(await raised(tenant, 'partner.job.direct')).toBe(1);
     expect(await prisma.inTenant(tenant.id, (tx) => tx.notification.count({ where: { eventKey: 'payment.received', subjectId: orderId } }))).toBe(1);
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   it('changes nothing when the same payment is told again, or a late expiry arrives', async () => {

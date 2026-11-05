@@ -2,13 +2,13 @@ import { z } from 'zod';
 import type { PrismaService } from '../../../database/prisma.service';
 import type { Prisma } from '../../../generated/prisma/client';
 import { localDate } from '../../orders/dates';
+import { isLate } from '../../orders/needs';
 import { ORDER_STATES } from '../../orders/order-response';
 import { lineState, orderState } from '../../orders/order-state';
 import type { OrderState } from '../../orders/order-state';
 import { MAX_TOOL_ROWS } from './tool';
 import type { AiTool } from './tool';
 
-const DONE: OrderState[] = ['ready', 'shipped', 'delivered', 'cancelled'];
 /** How many recent orders a search looks through before filtering by state. */
 const SEARCHED = 500;
 
@@ -22,6 +22,7 @@ const ORDER_FIELDS = {
   shippedAt: true,
   deliveredAt: true,
   productionStartedAt: true,
+  state: true,
   customer: { select: { id: true, name: true } },
   lines: {
     orderBy: { position: 'asc' },
@@ -38,7 +39,8 @@ type OrderRow = Prisma.OrderGetPayload<{ select: typeof ORDER_FIELDS }>;
 
 function view(order: OrderRow, today: string) {
   const lines = order.lines.map((line) => lineState(line.group?.workOrders ?? [], line.cancelledAt));
-  const state = orderState(lines, order.shippedAt, order.deliveredAt, order.productionStartedAt);
+  // As stored; worked out from the facts only while not computed yet (Orders list spec, goal 7).
+  const state = (order.state as OrderState | null) ?? orderState(lines, order.shippedAt, order.deliveredAt, order.productionStartedAt);
   const promisedOn = order.promisedOn.toISOString().slice(0, 10);
   return {
     id: order.id,
@@ -47,7 +49,8 @@ function view(order: OrderRow, today: string) {
     state,
     promised_on: promisedOn,
     placed_at: order.placedAt.toISOString(),
-    late: promisedOn < today && !DONE.includes(state),
+    // The orders list's `late` reason, the same rule everywhere.
+    late: isLate(state, promisedOn, today),
     total: `${order.total.toFixed(2)} ${order.currency}`,
     lines: order.lines.map((line, index) => ({ product: line.product.name, quantity: line.quantity, state: lines[index] })),
   };
@@ -64,7 +67,7 @@ export function orderTools(prisma: PrismaService): AiTool<unknown>[] {
     name: 'find_orders',
     description:
       'Find orders, newest first, at most 25: by number, by customer id, by state, or only late ones (promised date ' +
-      'passed and not ready, shipped, delivered or cancelled).',
+      'passed and not shipped, delivered or cancelled; a ready order not shipped by then is late).',
     permissions: ['order.read'],
     input: z.strictObject({
       number: z.number().int().positive().optional(),

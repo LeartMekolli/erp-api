@@ -5,6 +5,7 @@ import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
+import { OrderStatesService } from '../orders/order-states.service';
 import type { Account, JournalDraft } from './ledger';
 import type { LedgerJournalResponse, LedgerQuery } from './payment-response';
 
@@ -30,9 +31,14 @@ export class LedgerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly states: OrderStatesService,
   ) {}
 
-  /** Posts a journal in the caller's transaction. A repeat for the same provider fact is a no-op. */
+  /**
+   * Posts a journal in the caller's transaction. A repeat for the same provider fact is a no-op. A journal
+   * of an order stores the order's states again (Orders list spec, goal 5): money received, a refund, or
+   * an invoice billed, each posted after what it records. The caller holds the order's lock already.
+   */
   async post(tx: Prisma.TransactionClient, input: PostJournal): Promise<{ journalId: string; created: boolean }> {
     if (input.providerObjectId) {
       await this.lock(tx, `${input.kind}:${input.providerObjectId}`);
@@ -66,6 +72,7 @@ export class LedgerService {
       },
       select: { id: true },
     });
+    if (input.orderId) await this.states.refresh(tx, [input.orderId]);
     return { journalId: journal.id, created: true };
   }
 

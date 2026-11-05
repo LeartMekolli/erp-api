@@ -7,6 +7,7 @@ import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { ATTENTION_KINDS } from '../src/modules/reporting/attention.service';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { expectDocumented } from './documented';
@@ -161,6 +162,8 @@ describe('reporting: needs attention', () => {
           },
         })
       ).id;
+      // The facts were changed directly: the orders' states are stored again, as every real change does.
+      await app.get(OrderStatesService).refresh(tx, (await tx.order.findMany({ select: { id: true } })).map((row) => row.id));
     });
   }, SETUP_MS);
 

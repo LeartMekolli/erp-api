@@ -10,7 +10,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { decodeCursor } from '../../common/pagination/cursor';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
+import type { CursorPayload } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
@@ -27,27 +28,33 @@ import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
-import { INVOICE_STATUSES, paidAndRefunded, paymentState } from '../payments/payment-state';
-import type { PaymentTerms } from '../payments/payment-state';
+import { INVOICE_STATUSES, PAYMENT_STATES, paidAndRefunded } from '../payments/payment-state';
+import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
 import { parseSetting } from '../settings/setting-keys';
 import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
-import { localDate, promisedDate } from './dates';
+import { promisedDate } from './dates';
 import type { BusinessCalendar } from './dates';
-import { labelRequestSchema } from './order-response';
+import { ORDER_STATES, labelRequestSchema } from './order-response';
 import type {
   Address,
   CustomerOrderLineResponse,
   CustomerOrderResponse,
   LabelRequest,
   LabelResponse,
+  OrderCountsResponse,
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
+import { NEEDS_REASONS, needsDay, needsWhere, orderNeeds } from './needs';
+import type { NeedsDay, NeedsReason } from './needs';
 import { ONE_PARTNER } from './order-lines';
-import { lineState, orderState } from './order-state';
+import { lineState } from './order-state';
+import type { OrderState } from './order-state';
+import { OrderStatesService } from './order-states.service';
+import type { StoredStates } from './order-states.service';
 import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { TAX_CALCULATOR } from './tax';
@@ -56,8 +63,101 @@ import type { TaxCalculator } from './tax';
 type Tx = Prisma.TransactionClient;
 type Channel = 'staff' | 'portal';
 
-export const orderListQuerySchema = paginationQuerySchema.extend({ customer_id: z.uuid().optional() });
+/** A comma-separated list of `values`, at least one, each named once; anything else is a 400. */
+const commaList = <T extends readonly [string, ...string[]]>(values: T) =>
+  z
+    .string()
+    .transform((raw) => raw.split(','))
+    .pipe(z.array(z.enum(values)).min(1))
+    .transform((list) => [...new Set(list)]);
+
+export const ORDER_SORTS = ['placed_at', '-placed_at', 'promised_on', '-promised_on'] as const;
+export type OrderSort = (typeof ORDER_SORTS)[number];
+
+/** The staff list's filters, search and sort (Orders list spec, goal 8), combined with AND. */
+export const orderListQuerySchema = z.strictObject({
+  ...paginationQuerySchema.shape,
+  customer_id: z.uuid().optional(),
+  state: commaList(ORDER_STATES).optional().describe('One or more order states, comma-separated.'),
+  payment_state: commaList(PAYMENT_STATES).optional().describe('One or more payment states, comma-separated.'),
+  needs: commaList(NEEDS_REASONS)
+    .optional()
+    .describe('One or more needs-you reasons, comma-separated; an order matching any of them is listed.'),
+  promised_after: z.iso.date().optional().describe('Promised on this day or later.'),
+  promised_before: z.iso.date().optional().describe('Promised before this day.'),
+  q: z.string().trim().min(1).max(100).optional().describe("Part of the order number, or of the customer's name; case-insensitive."),
+  sort: z.enum(ORDER_SORTS).default('-placed_at').describe('Ties break by id in the same direction.'),
+});
 export type OrderListQuery = z.infer<typeof orderListQuerySchema>;
+/** The list's filters alone, without paging or sort. */
+export type OrderListFilters = Omit<OrderListQuery, 'limit' | 'cursor' | 'sort'>;
+
+/** The counts take the list's filters except those that pick a tab (`state`, `needs`), and no paging or sort (goal 13). */
+export const orderCountsQuerySchema = orderListQuerySchema.pick({
+  customer_id: true,
+  payment_state: true,
+  promised_after: true,
+  promised_before: true,
+  q: true,
+});
+export type OrderCountsQuery = z.infer<typeof orderCountsQuerySchema>;
+
+const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
+
+/**
+ * The orders the filters pick, on the stored states: an order not computed yet is in no state filter.
+ * `numberIds` are the orders whose number contains `q` (`numberMatches`); null when `q` isn't digits.
+ * `day` is the workspace's today, for `needs`.
+ */
+export function ordersWhere(filters: OrderListFilters, numberIds: string[] | null, day: NeedsDay): Prisma.OrderWhereInput {
+  const promised = {
+    ...(filters.promised_after ? { gte: asDay(filters.promised_after) } : {}),
+    ...(filters.promised_before ? { lt: asDay(filters.promised_before) } : {}),
+  };
+  return {
+    ...(filters.customer_id ? { customerId: filters.customer_id } : {}),
+    ...(filters.state ? { state: { in: filters.state } } : {}),
+    ...(filters.payment_state ? { paymentState: { in: filters.payment_state } } : {}),
+    ...(filters.promised_after || filters.promised_before ? { promisedOn: promised } : {}),
+    ...(filters.needs ? { AND: [needsWhere(filters.needs, day)] } : {}),
+    ...(filters.q
+      ? {
+          OR: [
+            { customer: { name: { contains: filters.q, mode: 'insensitive' as const } } },
+            ...(numberIds ? [{ id: { in: numberIds } }] : []),
+          ],
+        }
+      : {}),
+  };
+}
+
+/** Where a page starts, after the cursor's row, in the sort's direction; ties break by id. */
+function pageWhere(sort: OrderSort, after: CursorPayload): Prisma.OrderWhereInput {
+  // Newest first pages by id alone: a v7 id follows `placed_at` (ADR 0004).
+  if (sort === '-placed_at') return { id: { lt: after.id } };
+  const placed = sort.endsWith('placed_at');
+  const key = placed ? new Date(after.key!) : asDay(after.key!);
+  const past = <T>(value: T) => (sort.startsWith('-') ? { lt: value } : { gt: value });
+  const on = (filter: Prisma.DateTimeFilter | Date): Prisma.OrderWhereInput => (placed ? { placedAt: filter } : { promisedOn: filter });
+  return { OR: [on(past(key)), { AND: [on(key), { id: past(after.id) }] }] };
+}
+
+/** The cursor for `sort`, refused (400) when made for another sort or when its key isn't that sort's. */
+function cursorFor(sort: OrderSort, cursor: string, secret: string): CursorPayload {
+  const after = decodeCursor(cursor, secret);
+  const keyOk =
+    sort === '-placed_at'
+      ? after.key === undefined
+      : (sort.endsWith('placed_at') ? z.iso.datetime() : z.iso.date()).safeParse(after.key).success;
+  if ((after.sort ?? '-placed_at') !== sort || !keyOk) throw new BadRequestException('Invalid cursor');
+  return after;
+}
+
+/** The row's value of the sort, as its cursor carries it. */
+function sortKey(sort: OrderSort, order: Order): string | undefined {
+  if (sort === '-placed_at') return undefined;
+  return sort.endsWith('placed_at') ? order.placedAt.toISOString() : order.promisedOn.toISOString().slice(0, 10);
+}
 
 const reasonSchema = z.string().trim().min(1).max(500);
 
@@ -206,6 +306,7 @@ export class OrdersService {
     private readonly rates: RatesService,
     private readonly courierAccounts: CourierAccountService,
     private readonly shipments: ShipmentsService,
+    private readonly states: OrderStatesService,
   ) {}
 
   onModuleInit(): void {
@@ -359,7 +460,7 @@ export class OrdersService {
           }
         }
 
-        const response = (await this.views(tx, [order]))[0];
+        const response = (await this.views(tx, [await this.refreshed(tx, order.id)]))[0];
         await this.audit.record(tx, {
           actor: { type: 'user', id: auth.userId },
           action: 'order.changed',
@@ -494,7 +595,7 @@ export class OrdersService {
     return this.shipments.purchase(auth.tenantId, reserved.shipmentId, reserved.from, reserved.to);
   }
 
-  /** Audits a change to an order and answers it as staff see it now. */
+  /** Stores the order's states as its facts now give them, audits the change and answers it as staff see it now. */
   private async recordChange(
     tx: Tx,
     auth: Pick<TenantAuth, 'userId'>,
@@ -502,7 +603,7 @@ export class OrdersService {
     updated: Order,
     actor: AuditInput['actor'] = { type: 'user', id: auth.userId },
   ): Promise<OrderResponse> {
-    const after = (await this.views(tx, [updated]))[0];
+    const after = (await this.views(tx, [await this.refreshed(tx, updated.id)]))[0];
     await this.audit.record(tx, {
       actor,
       action: 'order.changed',
@@ -522,18 +623,60 @@ export class OrdersService {
     }
   }
 
+  /** Orders as the filters, search and sort pick them, a page at a time (Orders list spec, goals 8 and 9). */
   async list(tenantId: string, query: OrderListQuery): Promise<Page<OrderResponse>> {
     const secret = this.config.get('APP_SECRET');
-    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const { limit, cursor, sort, ...filters } = query;
+    const after = cursor ? cursorFor(sort, cursor, secret) : undefined;
+    const direction = sort.startsWith('-') ? ('desc' as const) : ('asc' as const);
+    // Newest first by id alone, as before; every other sort by its column, then id.
+    const orderBy: Prisma.OrderOrderByWithRelationInput[] =
+      sort === '-placed_at'
+        ? [{ id: 'desc' }]
+        : [sort.endsWith('placed_at') ? { placedAt: direction } : { promisedOn: direction }, { id: direction }];
     return this.prisma.inTenant(tenantId, async (tx) => {
+      const where = ordersWhere(filters, filters.q ? await this.numberMatches(tx, filters.q) : null, await this.needsToday(tx, tenantId));
       const rows = await tx.order.findMany({
-        where: { ...(query.customer_id ? { customerId: query.customer_id } : {}), ...(after ? { id: { lt: after.id } } : {}) },
-        orderBy: { id: 'desc' },
-        take: query.limit + 1,
+        where: after ? { AND: [where, pageWhere(sort, after)] } : where,
+        orderBy,
+        take: limit + 1,
       });
-      const page = toPage(rows, query.limit, secret);
-      return { data: await this.views(tx, page.data), next_cursor: page.next_cursor };
+      const data = rows.slice(0, limit);
+      const last = data.at(-1);
+      const next_cursor = rows.length > limit && last ? encodeCursor({ id: last.id, sort, key: sortKey(sort, last) }, secret) : null;
+      return { data: await this.views(tx, data), next_cursor };
     });
+  }
+
+  /**
+   * How many orders each tab and each needs-you reason holds, with the list's filters (goal 13). Exact, on
+   * the stored states: an order not computed yet is in `all` only.
+   */
+  async counts(tenantId: string, filters: OrderCountsQuery): Promise<OrderCountsResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const day = await this.needsToday(tx, tenantId);
+      const where = ordersWhere(filters, filters.q ? await this.numberMatches(tx, filters.q) : null, day);
+      const states = Object.fromEntries(ORDER_STATES.map((state) => [state, 0])) as OrderCountsResponse['states'];
+      const byState = await tx.order.groupBy({ by: ['state'], where, _count: { _all: true } });
+      for (const row of byState) {
+        if (row.state) states[row.state as OrderState] = row._count._all;
+      }
+      const countNeeding = (reasons: readonly NeedsReason[]) => tx.order.count({ where: { AND: [where, needsWhere(reasons, day)] } });
+      const needs_you = { total: await countNeeding(NEEDS_REASONS) } as OrderCountsResponse['needs_you'];
+      for (const reason of NEEDS_REASONS) needs_you[reason] = await countNeeding([reason]);
+      return { all: await tx.order.count({ where }), states, needs_you };
+    });
+  }
+
+  /**
+   * The orders whose number contains `q`, when `q` is digits (a leading `#` dropped); null otherwise. The
+   * number is an integer, so it is matched as text in SQL, under row-level security as every query.
+   */
+  private async numberMatches(tx: Tx, q: string): Promise<string[] | null> {
+    const digits = /^#?(\d+)$/.exec(q)?.[1];
+    if (!digits) return null;
+    const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "order" WHERE number::text LIKE ${`%${digits}%`}`;
+    return rows.map((row) => row.id);
   }
 
   /** Row-level security hides other workspaces' orders, so a foreign id is simply not found. */
@@ -726,12 +869,22 @@ export class OrdersService {
     });
   }
 
-  /** Locks the order row first, as every change to an order does (Global Constraints, lock order). */
+  /**
+   * Locks the order row first, as every change to an order does (Global Constraints, lock order). Its
+   * stored states are brought up to its facts under the lock, so what the change checks and audits as
+   * before is decided by the facts, never by a stored value.
+   */
   private async lockOrder(tx: Tx, id: string): Promise<Order> {
     const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "order" WHERE id = ${id}::uuid FOR UPDATE`;
     if (rows.length === 0) {
       throw new NotFoundException('Order not found');
     }
+    return this.refreshed(tx, id);
+  }
+
+  /** The order, read again once its stored states are refreshed. */
+  private async refreshed(tx: Tx, id: string): Promise<Order> {
+    await this.states.refresh(tx, [id]);
     return tx.order.findUniqueOrThrow({ where: { id } });
   }
 
@@ -953,6 +1106,11 @@ export class OrdersService {
     return calendar ?? DEFAULT_CALENDAR;
   }
 
+  /** The workspace's today and due-soon window, for the needs-you rule. */
+  private async needsToday(tx: Tx, tenantId: string): Promise<NeedsDay> {
+    return needsDay(await this.states.today(tx, tenantId), await this.calendar(tx));
+  }
+
   private async timezone(tx: Tx, tenantId: string): Promise<string> {
     return (await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } })).timezone;
   }
@@ -1054,7 +1212,10 @@ export class OrdersService {
       where: { id: { in: orders.flatMap((order) => (order.releasedByUserId ? [order.releasedByUserId] : [])) } },
       select: { id: true, name: true },
     });
-    const today = localDate(new Date(), await this.timezone(tx, orders[0].tenantId));
+    // Both states as stored; worked out from the facts only for an order not computed yet (Orders list spec, goal 7).
+    const missing = orders.filter((order) => order.state === null || order.paymentState === null);
+    const day = await this.needsToday(tx, orders[0].tenantId);
+    const derived = missing.length > 0 ? await this.states.derive(tx, missing, day.today) : new Map<string, StoredStates>();
     // A waiting order's open checkout, once the provider has given it a link.
     const openCheckouts = await tx.orderPayment.findMany({
       where: { orderId: { in: ids }, status: 'open', url: { not: null } },
@@ -1102,6 +1263,7 @@ export class OrdersService {
       const terms = order.paymentTerms as PaymentTerms;
       const found = invoices.find((row) => row.orderId === order.id);
       const label = labels.find((row) => row.orderId === order.id);
+      const states = derived.get(order.id) ?? { state: order.state as OrderState, paymentState: order.paymentState as PaymentState };
       const invoice = found?.url
         ? {
             url: found.url,
@@ -1115,8 +1277,9 @@ export class OrdersService {
         number: order.number,
         customer: customers.find((customer) => customer.id === order.customerId)!,
         channel: order.channel as Channel,
-        state: orderState(orderLines.map((line) => line.state), order.shippedAt, order.deliveredAt, order.productionStartedAt),
+        state: states.state,
         promised_on: order.promisedOn.toISOString().slice(0, 10),
+        needs: orderNeeds({ ...states, promisedOn: order.promisedOn.toISOString().slice(0, 10) }, day),
         delivery_speed: order.deliverySpeedKey,
         address: order.address as Address,
         shipping: {
@@ -1137,15 +1300,7 @@ export class OrdersService {
         placed_at: order.placedAt.toISOString(),
         payment: {
           terms,
-          state: paymentState({
-            terms,
-            cancelled: order.cancelledAt !== null,
-            started: order.productionStartedAt !== null,
-            paid,
-            refunded,
-            invoice: invoice && { status: invoice.status, dueOn: invoice.due_on },
-            today,
-          }),
+          state: states.paymentState,
           pay_by: order.payBy?.toISOString() ?? null,
           held_for_credit: order.heldForCredit,
           released: releaser && order.releaseReason ? { by: releaser, reason: order.releaseReason } : null,
