@@ -1913,7 +1913,7 @@ model Order {
   note             String?
   placedByUserId   String   @map("placed_by_user_id") @db.Uuid
   placedAt         DateTime @default(now()) @map("placed_at")
-  // Shipment facts (goal 9): with cancelling, the only state stored on an order; the rest is derived.
+  // Shipment facts (goal 9): with cancelling and the pieces, what the order's state is decided from.
   courier          String?
   tracking         String?
   shippedAt        DateTime? @map("shipped_at")
@@ -1932,6 +1932,11 @@ model Order {
   // Who let it start past the credit limit, and why.
   releasedByUserId String?   @map("released_by_user_id") @db.Uuid
   releaseReason    String?   @map("release_reason")
+  // The order's state and payment state, stored so lists filter and count them (Orders list spec, goals
+  // 1 and 5). Null: not computed yet. OrderStatesService is the only writer; the rules live in
+  // order-state.ts and payment-state.ts.
+  state            String?
+  paymentState     String?   @map("payment_state")
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer       Customer       @relation(fields: [tenantId, customerId], references: [tenantId, id], onDelete: NoAction)
@@ -1953,6 +1958,9 @@ model Order {
   @@unique([tenantId, channel, channelOrderId])
   @@unique([tenantId, id])
   @@index([tenantId, customerId])
+  @@index([tenantId, state, promisedOn, id])
+  @@index([tenantId, paymentState])
+  @@index([tenantId, promisedOn, id])
   @@map("order")
 }
 

@@ -27,14 +27,14 @@ import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
-import { INVOICE_STATUSES, paidAndRefunded, paymentState } from '../payments/payment-state';
-import type { PaymentTerms } from '../payments/payment-state';
+import { INVOICE_STATUSES, paidAndRefunded } from '../payments/payment-state';
+import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
 import { parseSetting } from '../settings/setting-keys';
 import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
-import { localDate, promisedDate } from './dates';
+import { promisedDate } from './dates';
 import type { BusinessCalendar } from './dates';
 import { labelRequestSchema } from './order-response';
 import type {
@@ -47,7 +47,10 @@ import type {
   OrderResponse,
 } from './order-response';
 import { ONE_PARTNER } from './order-lines';
-import { lineState, orderState } from './order-state';
+import { lineState } from './order-state';
+import type { OrderState } from './order-state';
+import { OrderStatesService } from './order-states.service';
+import type { StoredStates } from './order-states.service';
 import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { TAX_CALCULATOR } from './tax';
@@ -206,6 +209,7 @@ export class OrdersService {
     private readonly rates: RatesService,
     private readonly courierAccounts: CourierAccountService,
     private readonly shipments: ShipmentsService,
+    private readonly states: OrderStatesService,
   ) {}
 
   onModuleInit(): void {
@@ -359,7 +363,7 @@ export class OrdersService {
           }
         }
 
-        const response = (await this.views(tx, [order]))[0];
+        const response = (await this.views(tx, [await this.refreshed(tx, order.id)]))[0];
         await this.audit.record(tx, {
           actor: { type: 'user', id: auth.userId },
           action: 'order.changed',
@@ -494,7 +498,7 @@ export class OrdersService {
     return this.shipments.purchase(auth.tenantId, reserved.shipmentId, reserved.from, reserved.to);
   }
 
-  /** Audits a change to an order and answers it as staff see it now. */
+  /** Stores the order's states as its facts now give them, audits the change and answers it as staff see it now. */
   private async recordChange(
     tx: Tx,
     auth: Pick<TenantAuth, 'userId'>,
@@ -502,7 +506,7 @@ export class OrdersService {
     updated: Order,
     actor: AuditInput['actor'] = { type: 'user', id: auth.userId },
   ): Promise<OrderResponse> {
-    const after = (await this.views(tx, [updated]))[0];
+    const after = (await this.views(tx, [await this.refreshed(tx, updated.id)]))[0];
     await this.audit.record(tx, {
       actor,
       action: 'order.changed',
@@ -726,12 +730,22 @@ export class OrdersService {
     });
   }
 
-  /** Locks the order row first, as every change to an order does (Global Constraints, lock order). */
+  /**
+   * Locks the order row first, as every change to an order does (Global Constraints, lock order). Its
+   * stored states are brought up to its facts under the lock, so what the change checks and audits as
+   * before is decided by the facts, never by a stored value.
+   */
   private async lockOrder(tx: Tx, id: string): Promise<Order> {
     const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "order" WHERE id = ${id}::uuid FOR UPDATE`;
     if (rows.length === 0) {
       throw new NotFoundException('Order not found');
     }
+    return this.refreshed(tx, id);
+  }
+
+  /** The order, read again once its stored states are refreshed. */
+  private async refreshed(tx: Tx, id: string): Promise<Order> {
+    await this.states.refresh(tx, [id]);
     return tx.order.findUniqueOrThrow({ where: { id } });
   }
 
@@ -1054,7 +1068,9 @@ export class OrdersService {
       where: { id: { in: orders.flatMap((order) => (order.releasedByUserId ? [order.releasedByUserId] : [])) } },
       select: { id: true, name: true },
     });
-    const today = localDate(new Date(), await this.timezone(tx, orders[0].tenantId));
+    // Both states as stored; worked out from the facts only for an order not computed yet (Orders list spec, goal 7).
+    const missing = orders.filter((order) => order.state === null || order.paymentState === null);
+    const derived = missing.length > 0 ? await this.states.derive(tx, missing, await this.states.today(tx, orders[0].tenantId)) : new Map<string, StoredStates>();
     // A waiting order's open checkout, once the provider has given it a link.
     const openCheckouts = await tx.orderPayment.findMany({
       where: { orderId: { in: ids }, status: 'open', url: { not: null } },
@@ -1102,6 +1118,7 @@ export class OrdersService {
       const terms = order.paymentTerms as PaymentTerms;
       const found = invoices.find((row) => row.orderId === order.id);
       const label = labels.find((row) => row.orderId === order.id);
+      const states = derived.get(order.id) ?? { state: order.state as OrderState, paymentState: order.paymentState as PaymentState };
       const invoice = found?.url
         ? {
             url: found.url,
@@ -1115,7 +1132,7 @@ export class OrdersService {
         number: order.number,
         customer: customers.find((customer) => customer.id === order.customerId)!,
         channel: order.channel as Channel,
-        state: orderState(orderLines.map((line) => line.state), order.shippedAt, order.deliveredAt, order.productionStartedAt),
+        state: states.state,
         promised_on: order.promisedOn.toISOString().slice(0, 10),
         delivery_speed: order.deliverySpeedKey,
         address: order.address as Address,
@@ -1137,15 +1154,7 @@ export class OrdersService {
         placed_at: order.placedAt.toISOString(),
         payment: {
           terms,
-          state: paymentState({
-            terms,
-            cancelled: order.cancelledAt !== null,
-            started: order.productionStartedAt !== null,
-            paid,
-            refunded,
-            invoice: invoice && { status: invoice.status, dueOn: invoice.due_on },
-            today,
-          }),
+          state: states.paymentState,
           pay_by: order.payBy?.toISOString() ?? null,
           held_for_credit: order.heldForCredit,
           released: releaser && order.releaseReason ? { by: releaser, reason: order.releaseReason } : null,
