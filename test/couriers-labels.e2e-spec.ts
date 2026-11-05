@@ -11,6 +11,7 @@ import { signFakeCourierEvent } from '../src/modules/couriers/fake-courier-provi
 import type { FakeCourierProvider } from '../src/modules/couriers/fake-courier-provider';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { customerOrderResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
+import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { webhookAckResponseSchema } from '../src/modules/payments/payment-response';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -102,14 +103,18 @@ describe('couriers: labels and tracking', () => {
             .expect(201)
         ).body as { quote: { id: string } }
       ).quote.id;
-    /** Placed and every piece finished directly: moving pieces through every step is Workflow's to test. */
+    /**
+     * Placed and every piece finished directly: moving pieces through every step is Workflow's to test. The
+     * order's states are then stored again, as a real move does, so a refused ship still reads `ready`.
+     */
     const ready = async (method = 'live', address: object = ADDRESS): Promise<Order> => {
       const placed = (
         await staff.post('/orders', { customer_id: luna, lines: [{ quote_id: await quote() }], address, shipping_method: method }).expect(201)
       ).body as Order;
-      await prisma.inTenant(tenant.id, (tx) =>
-        tx.workOrder.updateMany({ where: { groupId: { in: placed.lines.map((line) => line.group_id) } }, data: { status: 'finished', currentStepId: null } }),
-      );
+      await prisma.inTenant(tenant.id, async (tx) => {
+        await tx.workOrder.updateMany({ where: { groupId: { in: placed.lines.map((line) => line.group_id) } }, data: { status: 'finished', currentStepId: null } });
+        await app.get(OrderStatesService).refresh(tx, [placed.id]);
+      });
       return placed;
     };
     const ship = (id: string, body: object = { label: {} }) => staff.post(`/orders/${id}/ship`, body);
