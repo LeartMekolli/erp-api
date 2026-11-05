@@ -115,11 +115,22 @@ interface ReplacementRow {
  */
 export type PassHook = (tx: Prisma.TransactionClient, passed: { groupIds: string[]; userId: string }) => Promise<void>;
 
+/**
+ * Run inside every move's transaction (pass, fail or correction, by staff or a partner), so Orders can keep
+ * an order's stored state current without Workflow depending on it (Orders list spec, goals 2 and 3).
+ * `lock` runs first, before the move locks anything of its own; `moved` once every piece is written.
+ */
+export interface MoveHooks {
+  lock(tx: Prisma.TransactionClient, workOrderIds: string[]): Promise<void>;
+  moved(tx: Prisma.TransactionClient, groupIds: string[]): Promise<void>;
+}
+
 /** The move command (Workflow/QC spec, goals 5 and 6): the only writer of transitions. */
 @Injectable()
 export class MovesService {
   private readonly logger = new Logger(MovesService.name);
   private readonly passHooks: PassHook[] = [];
+  private readonly moveHooks: MoveHooks[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -128,6 +139,10 @@ export class MovesService {
 
   registerPassHook(hook: PassHook): void {
     this.passHooks.push(hook);
+  }
+
+  registerMoveHooks(hooks: MoveHooks): void {
+    this.moveHooks.push(hooks);
   }
 
   /**
@@ -156,6 +171,9 @@ export class MovesService {
   ): Promise<{ response: MoveResponse; groupIds: string[] }> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const ids = body.work_order_ids;
+      // Lock order: the pieces' orders first (through the move hooks), then the pieces, then their groups,
+      // as every change to an order locks it first.
+      for (const hooks of this.moveHooks) await hooks.lock(tx, ids);
       // In id order, so two moves sharing pieces can't deadlock; the second sees where the first left them.
       // NO KEY, so another move's sample drawing one of these pieces can still check its key at commit
       // (a key share lock), instead of waiting on this move while this one waits on its draw.
@@ -376,6 +394,8 @@ export class MovesService {
       for (const { group, stepId } of arrivals.values()) {
         await ensureDraw(tx, group, stepById.get(stepId)!);
       }
+      // Once every piece is written: the moved ones, a scrapped one's replacement, a restored one's cancelled one.
+      for (const hooks of this.moveHooks) await hooks.moved(tx, groupIds);
 
       const moved = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: pieceInclude });
       const movedById = new Map(moved.map((row) => [row.id, row]));

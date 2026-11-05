@@ -4,6 +4,7 @@ import type { Invoice, PaymentEvent, Prisma } from '../../generated/prisma/clien
 import { JobsService } from '../../jobs/jobs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { localDate } from '../orders/dates';
+import { OrderStatesService } from '../orders/order-states.service';
 import { OrdersService } from '../orders/orders.service';
 import { openOnInvoice } from './credit-notes.service';
 import { billedJournal, feeJournal, receivedJournal } from './ledger';
@@ -41,6 +42,7 @@ export class InvoicesService implements OnModuleInit {
     private readonly orders: OrdersService,
     private readonly providerCustomers: ProviderCustomers,
     private readonly addresses: CustomerAddressesService,
+    private readonly states: OrderStatesService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
 
@@ -222,11 +224,16 @@ export class InvoicesService implements OnModuleInit {
 
   private async notifyOneOverdue(tenantId: string, invoiceId: string): Promise<void> {
     const marked = await this.prisma.inTenant(tenantId, async (tx) => {
+      // The order first (lock order); an invoice's order never changes, so a plain read finds it.
+      const { orderId } = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { orderId: true } });
+      await tx.$queryRaw`SELECT id FROM "order" WHERE id = ${orderId}::uuid FOR UPDATE`;
       const updated = await tx.invoice.updateMany({
         where: { id: invoiceId, status: 'open', overdueNotifiedAt: null },
         data: { overdueNotifiedAt: new Date() },
       });
       if (updated.count === 0) return null;
+      // Found overdue: its order's payment state is stored as overdue now, not at the next hourly refresh.
+      await this.states.refresh(tx, [orderId]);
       const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: invoiceId },
         include: { order: { select: { id: true, number: true, customer: { select: { name: true } } } } },

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import type { Order } from '../../generated/prisma/client';
 import { INVOICE_STATUSES, paidAndRefunded, paymentState } from '../payments/payment-state';
+import { MovesService } from '../workflow/moves.service';
 import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import { localDate } from './dates';
 import { lineState, orderState } from './order-state';
@@ -17,6 +18,39 @@ export type StoredStates = { state: OrderState; paymentState: PaymentState };
  */
 @Injectable()
 export class OrderStatesService {
+  constructor(private readonly moves: MovesService) {}
+
+  onModuleInit(): void {
+    // Every move locks its pieces' orders first, and stores their states once its pieces are written.
+    this.moves.registerMoveHooks({
+      lock: (tx, workOrderIds) => this.lockForPieces(tx, workOrderIds),
+      moved: (tx, groupIds) => this.refreshForGroups(tx, groupIds),
+    });
+  }
+
+  /**
+   * Locks, in id order, the orders whose lines or line parts own these pieces' groups. A plain read finds
+   * them: a piece's group never changes. A claim's remake has no order line, so it locks nothing.
+   */
+  async lockForPieces(tx: Tx, workOrderIds: string[]): Promise<void> {
+    const pieces = await tx.workOrder.findMany({ where: { id: { in: workOrderIds } }, select: { groupId: true } });
+    const orderIds = await this.ordersOf(tx, [...new Set(pieces.map((piece) => piece.groupId))]);
+    if (orderIds.length === 0) return;
+    await tx.$queryRaw`SELECT id FROM "order" WHERE id IN (${Prisma.join(orderIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR UPDATE`;
+  }
+
+  /** Refreshes the orders of these groups; a group with no order line is left out. */
+  async refreshForGroups(tx: Tx, groupIds: string[]): Promise<void> {
+    await this.refresh(tx, await this.ordersOf(tx, groupIds));
+  }
+
+  private async ordersOf(tx: Tx, groupIds: string[]): Promise<string[]> {
+    if (groupIds.length === 0) return [];
+    const lines = await tx.orderLine.findMany({ where: { groupId: { in: groupIds } }, select: { orderId: true } });
+    const parts = await tx.orderLinePart.findMany({ where: { groupId: { in: groupIds } }, select: { line: { select: { orderId: true } } } });
+    return [...new Set([...lines.map((line) => line.orderId), ...parts.map((part) => part.line.orderId)])];
+  }
+
   /** Both states of each order, from its facts alone: the stored columns are ignored. */
   async derive(tx: Tx, orders: Order[], today: string): Promise<Map<string, StoredStates>> {
     if (orders.length === 0) return new Map();

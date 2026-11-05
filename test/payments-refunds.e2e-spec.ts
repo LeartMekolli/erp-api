@@ -18,6 +18,7 @@ import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { sendEvent } from './payment-webhooks';
 import { pricedCastPart } from './pricing-fixtures';
+import { expectStoredStates } from './stored-states';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
 
@@ -238,6 +239,7 @@ describe('payments: refunds', () => {
     expect((await balance(tenant, 'sales', order.id)).toFixed(2)).toBe('0.00');
     expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'refunded', paid: order.total, refunded: order.total });
     await waitFor(async () => ((await raised(tenant, 'refund.made', order.id)) === 1 ? true : undefined));
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   it('suggests a refund from the work a partner is owed for, and refunds what staff decide', async () => {
@@ -346,6 +348,7 @@ describe('payments: refunds', () => {
     expect((await journals(tenant, order.id)).filter((journal) => journal.kind === 'refund')).toHaveLength(2);
     expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'refunded', refunded: order.total });
     expect(await raised(tenant, 'refund.made', order.id)).toBe(1);
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   it('tells staff of a refund the provider refuses, and journals nothing', async () => {

@@ -16,6 +16,7 @@ import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { sendEvent } from './payment-webhooks';
 import { pricedCastPart } from './pricing-fixtures';
+import { expectStoredStates } from './stored-states';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
 
@@ -212,6 +213,7 @@ describe('payments: paid by hand', () => {
     // Paid already: nothing is paid twice.
     await paidByHand(tenant, placed.id, { reference: 'Again', received_on: today() }).expect(409);
     expect(await journals(tenant, placed.id)).toHaveLength(2);
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   it('starts an order held for its credit limit once it is paid by hand', async () => {
@@ -251,6 +253,7 @@ describe('payments: paid by hand', () => {
     expect((await balance(tenant, 'stripe_balance', placed.id)).toFixed(2)).toBe('0.00');
     expect(await raised(tenant, 'payment.received', placed.id)).toBe(1);
     await paidByHand(tenant, placed.id, { reference: 'Again', received_on: today() }).expect(409);
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   it('refuses an order with nothing to pay, a future or missing date, an empty reference, and a member', async () => {

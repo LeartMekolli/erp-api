@@ -20,6 +20,7 @@ import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { sendEvent } from './payment-webhooks';
 import { pricedCastPart } from './pricing-fixtures';
+import { expectStoredStates } from './stored-states';
 import { waitFor } from './wait-for';
 import { startTestWorker } from './worker-harness';
 
@@ -267,6 +268,9 @@ describe('payments: invoices on shipping', () => {
     expect(again[0].providerInvoiceId).toBe(invoice.providerInvoiceId);
     expect(await journals(tenant, placed.id)).toHaveLength(1);
     expect(await raised(tenant, 'invoice.sent', placed.id)).toBe(1);
+    // Shipped and invoiced, as stored.
+    expect((await staffView(tenant, placed.id)).payment.state).toBe('invoiced');
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   const HEAD_OFFICE = { name: 'Brightline GmbH', line1: 'Ringstraße 4', city: 'Wien', postal_code: '1010', region: 'Wien', country: 'AT' };
@@ -359,6 +363,7 @@ describe('payments: invoices on shipping', () => {
     await sendEvent(app, tenant.id, event('invoice.payment_succeeded', invoice.providerInvoiceId));
     expect(await journals(tenant, placed.id)).toHaveLength(3);
     expect(await raised(tenant, 'payment.received', placed.id)).toBe(1);
+    await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });
 
   it('ignores a paid event for an invoice the provider says is still open', async () => {
