@@ -44,11 +44,12 @@ import type {
   CustomerOrderResponse,
   LabelRequest,
   LabelResponse,
+  OrderCountsResponse,
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
 import { NEEDS_REASONS, needsDay, needsWhere, orderNeeds } from './needs';
-import type { NeedsDay } from './needs';
+import type { NeedsDay, NeedsReason } from './needs';
 import { ONE_PARTNER } from './order-lines';
 import { lineState } from './order-state';
 import type { OrderState } from './order-state';
@@ -90,6 +91,16 @@ export const orderListQuerySchema = z.strictObject({
 export type OrderListQuery = z.infer<typeof orderListQuerySchema>;
 /** The list's filters alone, without paging or sort. */
 export type OrderListFilters = Omit<OrderListQuery, 'limit' | 'cursor' | 'sort'>;
+
+/** The counts take the list's filters except those that pick a tab (`state`, `needs`), and no paging or sort (goal 13). */
+export const orderCountsQuerySchema = orderListQuerySchema.pick({
+  customer_id: true,
+  payment_state: true,
+  promised_after: true,
+  promised_before: true,
+  q: true,
+});
+export type OrderCountsQuery = z.infer<typeof orderCountsQuerySchema>;
 
 const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
 
@@ -634,6 +645,26 @@ export class OrdersService {
       const last = data.at(-1);
       const next_cursor = rows.length > limit && last ? encodeCursor({ id: last.id, sort, key: sortKey(sort, last) }, secret) : null;
       return { data: await this.views(tx, data), next_cursor };
+    });
+  }
+
+  /**
+   * How many orders each tab and each needs-you reason holds, with the list's filters (goal 13). Exact, on
+   * the stored states: an order not computed yet is in `all` only.
+   */
+  async counts(tenantId: string, filters: OrderCountsQuery): Promise<OrderCountsResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const day = await this.needsToday(tx, tenantId);
+      const where = ordersWhere(filters, filters.q ? await this.numberMatches(tx, filters.q) : null, day);
+      const states = Object.fromEntries(ORDER_STATES.map((state) => [state, 0])) as OrderCountsResponse['states'];
+      const byState = await tx.order.groupBy({ by: ['state'], where, _count: { _all: true } });
+      for (const row of byState) {
+        if (row.state) states[row.state as OrderState] = row._count._all;
+      }
+      const countNeeding = (reasons: readonly NeedsReason[]) => tx.order.count({ where: { AND: [where, needsWhere(reasons, day)] } });
+      const needs_you = { total: await countNeeding(NEEDS_REASONS) } as OrderCountsResponse['needs_you'];
+      for (const reason of NEEDS_REASONS) needs_you[reason] = await countNeeding([reason]);
+      return { all: await tx.order.count({ where }), states, needs_you };
     });
   }
 

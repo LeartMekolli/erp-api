@@ -1,7 +1,8 @@
 import { groupReady } from '../workflow/progress';
 import type { LINE_STATES, ORDER_STATES } from './order-response';
 
-// An order's and its lines' states, derived from pieces and shipment facts, never stored (Orders spec, goal 5).
+// An order's and its lines' states, derived from pieces and shipment facts (Orders spec, goal 5). The order's
+// state is stored on it by `OrderStatesService`, from this rule alone (Orders list spec, goal 1); lines' never are.
 
 export type LineState = (typeof LINE_STATES)[number];
 export type OrderState = (typeof ORDER_STATES)[number];

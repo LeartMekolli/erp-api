@@ -10,7 +10,7 @@ import type { Prisma } from '../src/generated/prisma/client';
 import { AI_TOOLS } from '../src/modules/ai/tools/tool';
 import type { AiTool } from '../src/modules/ai/tools/tool';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { orderResponseSchema } from '../src/modules/orders/order-response';
+import { orderCountsResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -118,6 +118,18 @@ describe('orders: the staff list', () => {
     return (response.body as Page).data.map((order) => order.id);
   };
   const idsOf = (...orders: Order[]) => orders.map((order) => order.id).sort();
+
+  interface Counts {
+    all: number;
+    states: Record<string, number>;
+    needs_you: Record<'total' | 'late' | 'to_ship' | 'to_collect' | 'due_soon', number>;
+  }
+  /** `GET /orders/counts?<query>`, checked against its documented shape. */
+  const counts = async (query: string, by: Tenant = w) => {
+    const response = await by.staff.get(`/orders/counts?${query}`).expect(200);
+    expectDocumented(orderCountsResponseSchema, response.body);
+    return response.body as Counts;
+  };
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -298,6 +310,65 @@ describe('orders: the staff list', () => {
     }
   });
 
+  describe('counts (plan Task 6)', () => {
+    it('counts each tab and each needs-you reason, as the list filters them', async () => {
+      const shown = await counts('');
+      expect(shown).toEqual({
+        all: 6,
+        states: { awaiting_payment: 1, in_production: 2, ready: 1, shipped: 1, delivered: 0, cancelled: 1 },
+        // Every promise is in 2030: nothing late or due soon. Ready is to ship; waiting and overdue are to collect.
+        needs_you: { total: 3, late: 0, to_ship: 1, to_collect: 2, due_soon: 0 },
+      });
+      for (const reason of ['late', 'to_ship', 'to_collect', 'due_soon'] as const) {
+        expect([reason, shown.needs_you[reason]]).toEqual([reason, (await ids(`needs=${reason}`)).length]);
+      }
+      expect(shown.needs_you.total).toEqual((await ids('needs=late,to_ship,to_collect,due_soon')).length);
+      for (const [state, count] of Object.entries(shown.states)) {
+        expect([state, count]).toEqual([state, (await ids(`state=${state}`)).length]);
+      }
+    });
+
+    it('follows the filters', async () => {
+      expect(await counts('q=luna')).toEqual({
+        all: 5,
+        states: { awaiting_payment: 0, in_production: 2, ready: 1, shipped: 1, delivered: 0, cancelled: 1 },
+        needs_you: { total: 2, late: 0, to_ship: 1, to_collect: 1, due_soon: 0 },
+      });
+      expect((await counts('q=1003')).all).toBe(1);
+      expect((await counts(`customer_id=${w.sol}`)).states.awaiting_payment).toBe(1);
+      expect((await counts('payment_state=overdue')).states).toEqual({
+        awaiting_payment: 0,
+        in_production: 0,
+        ready: 0,
+        shipped: 1,
+        delivered: 0,
+        cancelled: 0,
+      });
+      expect((await counts(`promised_after=${D}&promised_before=2030-01-11`)).all).toBe(3);
+      // The other workspace counts its own single order only.
+      expect((await counts('', other)).all).toBe(1);
+    });
+
+    it('leaves an order not computed yet out of every count but `all`', async () => {
+      await prisma.inTenant(w.id, (tx) => tx.order.update({ where: { id: o.ready.id }, data: { state: null, paymentState: null } }));
+      try {
+        const shown = await counts('');
+        expect(shown.all).toBe(6);
+        expect(shown.states.ready).toBe(0);
+        expect(shown.needs_you).toEqual({ total: 2, late: 0, to_ship: 0, to_collect: 2, due_soon: 0 });
+      } finally {
+        await prisma.inTenant(w.id, (tx) => app.get(OrderStatesService).refresh(tx, [o.ready.id]));
+      }
+    });
+
+    it('refuses the tab filters, paging, sort and anything unknown with a 400 (Review Focus 5)', async () => {
+      for (const query of ['state=ready', 'needs=late', 'sort=promised_on', 'cursor=abc', 'limit=10', 'color=red', 'payment_state=late', 'promised_before=tomorrow']) {
+        const response = await w.staff.get(`/orders/counts?${query}`);
+        expect([query, response.status]).toEqual([query, 400]);
+      }
+    });
+  });
+
   describe('needs you (plan Task 5)', () => {
     /** Today in the workspace (UTC, as test workspaces are), `days` on. */
     const fromToday = (days: number) => new Date(Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
@@ -367,6 +438,18 @@ describe('orders: the staff list', () => {
       expect((await ids('needs=late,to_ship,to_collect,due_soon', n)).sort()).toEqual(any);
       // Combined with the other filters by AND.
       expect(await ids('needs=to_collect&state=shipped', n)).toEqual([r.overdue.id]);
+    });
+
+    it('counts each reason as the field gives it, and an order matching two once in the total (plan Task 6)', async () => {
+      expect((await counts('', n)).needs_you).toEqual({ total: 5, late: 1, to_ship: 1, to_collect: 2, due_soon: 1 });
+      // Waiting for payment and past its promise: late and to collect.
+      await promise(n, r.waiting, fromToday(-1));
+      try {
+        expect((await needsOf()).get(r.waiting.id)).toEqual(['late', 'to_collect']);
+        expect((await counts('', n)).needs_you).toEqual({ total: 5, late: 2, to_ship: 1, to_collect: 2, due_soon: 1 });
+      } finally {
+        await promise(n, r.waiting, fromToday(30));
+      }
     });
 
     it('refuses a reason it does not know', async () => {

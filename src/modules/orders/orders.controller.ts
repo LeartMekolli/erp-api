@@ -7,10 +7,10 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { orderResponseSchema } from './order-response';
-import type { OrderResponse } from './order-response';
-import { OrdersService, cancelOrderSchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
-import type { CancelOrder, OrderListQuery, ShipOrder } from './orders.service';
+import { orderCountsResponseSchema, orderResponseSchema } from './order-response';
+import type { OrderCountsResponse, OrderResponse } from './order-response';
+import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
+import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipOrder } from './orders.service';
 import { staffPlaceOrderSchema } from './place-order';
 import type { StaffPlaceOrder } from './place-order';
 
@@ -69,6 +69,26 @@ export class OrdersController {
     @Query(new ZodValidationPipe(orderListQuerySchema)) query: OrderListQuery,
   ): Promise<Page<OrderResponse>> {
     return this.orders.list(tenantId, query);
+  }
+
+  @ApiDoc({
+    summary: "How many orders each tab and each needs-you reason holds, with the list's filters.",
+    description:
+      "Takes the list's `customer_id`, `payment_state`, `promised_after`, `promised_before` and `q`, with the same " +
+      'meaning; `state`, `needs`, paging and `sort` pick a tab or a page, and are a 400 here. `all` counts every ' +
+      'order the filters pick; `states` and `needs_you` count only orders whose state is computed. ' +
+      '`needs_you.total` counts an order matching several reasons once, so it can be less than their sum.',
+    query: orderCountsQuerySchema,
+    response: orderCountsResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('order.read')
+  @Get('counts')
+  counts(
+    @CurrentTenant() tenantId: string,
+    @Query(new ZodValidationPipe(orderCountsQuerySchema)) query: OrderCountsQuery,
+  ): Promise<OrderCountsResponse> {
+    return this.orders.counts(tenantId, query);
   }
 
   @ApiDoc({ summary: 'An order with its lines and totals.', response: orderResponseSchema, errors: [400, 404] })

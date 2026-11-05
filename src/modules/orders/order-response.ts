@@ -210,6 +210,21 @@ export const orderResponseSchema = z.strictObject({
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
 
+const count = z.number().int().min(0);
+/** How many orders each tab and each needs-you reason holds (Orders list spec, goal 13). */
+export const orderCountsResponseSchema = z.strictObject({
+  /** Every order the filters pick, computed or not. */
+  all: count,
+  /** Per stored state; an order not computed yet is in none. */
+  states: z.strictObject(Object.fromEntries(ORDER_STATES.map((state) => [state, count])) as Record<(typeof ORDER_STATES)[number], typeof count>),
+  /** Per reason; `total` counts an order matching several reasons once. */
+  needs_you: z.strictObject({ total: count, ...Object.fromEntries(NEEDS_REASONS.map((reason) => [reason, count])) } as Record<
+    'total' | (typeof NEEDS_REASONS)[number],
+    typeof count
+  >),
+});
+export type OrderCountsResponse = z.infer<typeof orderCountsResponseSchema>;
+
 /** The shipping methods a customer can choose for a new order: only the active ones. */
 export const portalShippingMethodsResponseSchema = z.strictObject({
   data: z.array(shippingMethodResponseSchema.pick({ key: true, name: true, price: true })),
