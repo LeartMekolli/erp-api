@@ -230,32 +230,42 @@ describe('orders: stored states', () => {
 
     it("makes an order overdue once its invoice is past due, by the workspace's own date (Review Focus 4)", async () => {
       const tenant = await freshTenant();
-      // UTC+14: from 10:00 UTC on, its date is a day ahead of UTC's, so "yesterday" there is today in UTC.
-      const timezone = 'Pacific/Kiritimati';
+      // A zone whose date differs from UTC's right now, whatever the hour: UTC+14 is a day ahead from 10:00 UTC,
+      // UTC−11 a day behind until 11:00 UTC. Due on the local yesterday is overdue and due on the local today is
+      // not, so a UTC date fails one side or the other at any hour.
+      const timezone = new Date().getUTCHours() >= 10 ? 'Pacific/Kiritimati' : 'Pacific/Pago_Pago';
+      expect(todayIn(timezone)).not.toBe(new Date().toISOString().slice(0, 10));
       await prisma.inTenant(tenant.id, (tx) => tx.tenant.update({ where: { id: tenant.id }, data: { timezone } }));
-      const order = await tenant.place(tenant.luna);
-      await ship(tenant, order);
-      // The invoice as the provider made it, written directly: no provider is connected here.
-      await prisma.inTenant(tenant.id, (tx) =>
-        tx.invoice.create({
-          data: {
-            orderId: order.id,
-            providerInvoiceId: `in_${order.id.replaceAll('-', '')}`,
-            url: 'https://invoices.example.test/1',
-            linesAmount: '10.00',
-            shipping: '0.00',
-            tax: '0.00',
-            total: '10.00',
-            currency: 'EUR',
-            dueOn: new Date(`${addDays(todayIn(timezone), -1)}T00:00:00Z`),
-            status: 'open',
-          },
-        }),
-      );
+      const pastDue = await tenant.place(tenant.luna);
+      const dueToday = await tenant.place(tenant.luna);
+      for (const [order, dueOn] of [
+        [pastDue, addDays(todayIn(timezone), -1)],
+        [dueToday, todayIn(timezone)],
+      ] as const) {
+        await ship(tenant, order);
+        // The invoice as the provider made it, written directly: no provider is connected here.
+        await prisma.inTenant(tenant.id, (tx) =>
+          tx.invoice.create({
+            data: {
+              orderId: order.id,
+              providerInvoiceId: `in_${order.id.replaceAll('-', '')}`,
+              url: 'https://invoices.example.test/1',
+              linesAmount: '10.00',
+              shipping: '0.00',
+              tax: '0.00',
+              total: '10.00',
+              currency: 'EUR',
+              dueOn: new Date(`${dueOn}T00:00:00Z`),
+              status: 'open',
+            },
+          }),
+        );
+      }
 
       expect(await refreshOpen(tenant.id)).toBeGreaterThan(0);
-      expect(await stored(tenant.id, order.id)).toEqual({ state: 'shipped', paymentState: 'overdue' });
-      expect(((await tenant.staff.get(`/orders/${order.id}`).expect(200)).body as { payment: { state: string } }).payment.state).toBe('overdue');
+      expect(await stored(tenant.id, pastDue.id)).toEqual({ state: 'shipped', paymentState: 'overdue' });
+      expect(await stored(tenant.id, dueToday.id)).toEqual({ state: 'shipped', paymentState: 'invoiced' });
+      expect(((await tenant.staff.get(`/orders/${pastDue.id}`).expect(200)).body as { payment: { state: string } }).payment.state).toBe('overdue');
       await expectStoredStates(prisma, app, tenant.id, tenant.staff);
     });
 
