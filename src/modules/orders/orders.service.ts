@@ -10,7 +10,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { decodeCursor } from '../../common/pagination/cursor';
+import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
+import type { CursorPayload } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
@@ -27,7 +28,7 @@ import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
-import { INVOICE_STATUSES, paidAndRefunded } from '../payments/payment-state';
+import { INVOICE_STATUSES, PAYMENT_STATES, paidAndRefunded } from '../payments/payment-state';
 import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
@@ -36,7 +37,7 @@ import { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from '../workflow/work-orders.service';
 import { promisedDate } from './dates';
 import type { BusinessCalendar } from './dates';
-import { labelRequestSchema } from './order-response';
+import { ORDER_STATES, labelRequestSchema } from './order-response';
 import type {
   Address,
   CustomerOrderLineResponse,
@@ -59,8 +60,86 @@ import type { TaxCalculator } from './tax';
 type Tx = Prisma.TransactionClient;
 type Channel = 'staff' | 'portal';
 
-export const orderListQuerySchema = paginationQuerySchema.extend({ customer_id: z.uuid().optional() });
+/** A comma-separated list of `values`, at least one, each named once; anything else is a 400. */
+const commaList = <T extends readonly [string, ...string[]]>(values: T) =>
+  z
+    .string()
+    .transform((raw) => raw.split(','))
+    .pipe(z.array(z.enum(values)).min(1))
+    .transform((list) => [...new Set(list)]);
+
+export const ORDER_SORTS = ['placed_at', '-placed_at', 'promised_on', '-promised_on'] as const;
+export type OrderSort = (typeof ORDER_SORTS)[number];
+
+/** The staff list's filters, search and sort (Orders list spec, goal 8), combined with AND. */
+export const orderListQuerySchema = z.strictObject({
+  ...paginationQuerySchema.shape,
+  customer_id: z.uuid().optional(),
+  state: commaList(ORDER_STATES).optional().describe('One or more order states, comma-separated.'),
+  payment_state: commaList(PAYMENT_STATES).optional().describe('One or more payment states, comma-separated.'),
+  promised_after: z.iso.date().optional().describe('Promised on this day or later.'),
+  promised_before: z.iso.date().optional().describe('Promised before this day.'),
+  q: z.string().trim().min(1).max(100).optional().describe("Part of the order number, or of the customer's name; case-insensitive."),
+  sort: z.enum(ORDER_SORTS).default('-placed_at').describe('Ties break by id in the same direction.'),
+});
 export type OrderListQuery = z.infer<typeof orderListQuerySchema>;
+/** The list's filters alone, without paging or sort. */
+export type OrderListFilters = Omit<OrderListQuery, 'limit' | 'cursor' | 'sort'>;
+
+const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
+
+/**
+ * The orders the filters pick, on the stored states: an order not computed yet is in no state filter.
+ * `numberIds` are the orders whose number contains `q` (`numberMatches`); null when `q` isn't digits.
+ */
+export function ordersWhere(filters: OrderListFilters, numberIds: string[] | null): Prisma.OrderWhereInput {
+  const promised = {
+    ...(filters.promised_after ? { gte: asDay(filters.promised_after) } : {}),
+    ...(filters.promised_before ? { lt: asDay(filters.promised_before) } : {}),
+  };
+  return {
+    ...(filters.customer_id ? { customerId: filters.customer_id } : {}),
+    ...(filters.state ? { state: { in: filters.state } } : {}),
+    ...(filters.payment_state ? { paymentState: { in: filters.payment_state } } : {}),
+    ...(filters.promised_after || filters.promised_before ? { promisedOn: promised } : {}),
+    ...(filters.q
+      ? {
+          OR: [
+            { customer: { name: { contains: filters.q, mode: 'insensitive' as const } } },
+            ...(numberIds ? [{ id: { in: numberIds } }] : []),
+          ],
+        }
+      : {}),
+  };
+}
+
+/** Where a page starts, after the cursor's row, in the sort's direction; ties break by id. */
+function pageWhere(sort: OrderSort, after: CursorPayload): Prisma.OrderWhereInput {
+  // Newest first pages by id alone: a v7 id follows `placed_at` (ADR 0004).
+  if (sort === '-placed_at') return { id: { lt: after.id } };
+  const placed = sort.endsWith('placed_at');
+  const key = placed ? new Date(after.key!) : asDay(after.key!);
+  const past = <T>(value: T) => (sort.startsWith('-') ? { lt: value } : { gt: value });
+  const on = (filter: Prisma.DateTimeFilter | Date): Prisma.OrderWhereInput => (placed ? { placedAt: filter } : { promisedOn: filter });
+  return { OR: [on(past(key)), { AND: [on(key), { id: past(after.id) }] }] };
+}
+
+/** The cursor for `sort`, refused (400) when made for another sort or when its key isn't that sort's. */
+function cursorFor(sort: OrderSort, cursor: string, secret: string): CursorPayload {
+  const after = decodeCursor(cursor, secret);
+  const keyOk =
+    sort === '-placed_at'
+      ? after.key === undefined
+      : (sort.endsWith('placed_at') ? z.iso.datetime() : z.iso.date()).safeParse(after.key).success;
+  if ((after.sort ?? '-placed_at') !== sort || !keyOk) throw new BadRequestException('Invalid cursor');
+  return after;
+}
+
+/** The row's value of the sort, as its cursor carries it. */
+function sortKey(sort: OrderSort, order: Order): string | undefined {
+  if (sort === '-placed_at') return undefined;
+  return sort.endsWith('placed_at') ? order.placedAt.toISOString() : order.promisedOn.toISOString().slice(0, 10);
+}
 
 const reasonSchema = z.string().trim().min(1).max(500);
 
@@ -526,18 +605,40 @@ export class OrdersService {
     }
   }
 
+  /** Orders as the filters, search and sort pick them, a page at a time (Orders list spec, goals 8 and 9). */
   async list(tenantId: string, query: OrderListQuery): Promise<Page<OrderResponse>> {
     const secret = this.config.get('APP_SECRET');
-    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const { limit, cursor, sort, ...filters } = query;
+    const after = cursor ? cursorFor(sort, cursor, secret) : undefined;
+    const direction = sort.startsWith('-') ? ('desc' as const) : ('asc' as const);
+    // Newest first by id alone, as before; every other sort by its column, then id.
+    const orderBy: Prisma.OrderOrderByWithRelationInput[] =
+      sort === '-placed_at'
+        ? [{ id: 'desc' }]
+        : [sort.endsWith('placed_at') ? { placedAt: direction } : { promisedOn: direction }, { id: direction }];
     return this.prisma.inTenant(tenantId, async (tx) => {
+      const where = ordersWhere(filters, filters.q ? await this.numberMatches(tx, filters.q) : null);
       const rows = await tx.order.findMany({
-        where: { ...(query.customer_id ? { customerId: query.customer_id } : {}), ...(after ? { id: { lt: after.id } } : {}) },
-        orderBy: { id: 'desc' },
-        take: query.limit + 1,
+        where: after ? { AND: [where, pageWhere(sort, after)] } : where,
+        orderBy,
+        take: limit + 1,
       });
-      const page = toPage(rows, query.limit, secret);
-      return { data: await this.views(tx, page.data), next_cursor: page.next_cursor };
+      const data = rows.slice(0, limit);
+      const last = data.at(-1);
+      const next_cursor = rows.length > limit && last ? encodeCursor({ id: last.id, sort, key: sortKey(sort, last) }, secret) : null;
+      return { data: await this.views(tx, data), next_cursor };
     });
+  }
+
+  /**
+   * The orders whose number contains `q`, when `q` is digits (a leading `#` dropped); null otherwise. The
+   * number is an integer, so it is matched as text in SQL, under row-level security as every query.
+   */
+  private async numberMatches(tx: Tx, q: string): Promise<string[] | null> {
+    const digits = /^#?(\d+)$/.exec(q)?.[1];
+    if (!digits) return null;
+    const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "order" WHERE number::text LIKE ${`%${digits}%`}`;
+    return rows.map((row) => row.id);
   }
 
   /** Row-level security hides other workspaces' orders, so a foreign id is simply not found. */
