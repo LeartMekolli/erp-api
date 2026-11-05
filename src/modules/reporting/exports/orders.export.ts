@@ -4,6 +4,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import type { TenantPermission } from '../../identity/permissions';
 import { localDate, startOfLocalDay } from '../../orders/dates';
 import { lineState, orderState } from '../../orders/order-state';
+import type { OrderState } from '../../orders/order-state';
 import { addDays } from '../week-metrics';
 import type { CsvCell, CsvColumn } from './csv';
 import type { CsvBuilder, ExportContext, ordersParamsSchema } from './export-kinds';
@@ -17,8 +18,8 @@ const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 
 /**
  * Orders placed in a range (Reporting 2 spec, goal 11), one row per line with the order's fields
- * repeated, by order number then line. The state is the one the order screens show, filtered after it is
- * worked out. Money columns need `payment.read`, the partner holding a line's job `partner.read`.
+ * repeated, by order number then line. The state is the one the order screens show, as stored, filtered
+ * after it is read. Money columns need `payment.read`, the partner holding a line's job `partner.read`.
  */
 @Injectable()
 export class OrdersExport implements CsvBuilder<Params>, OnModuleInit {
@@ -95,12 +96,15 @@ export class OrdersExport implements CsvBuilder<Params>, OnModuleInit {
         const lines = page.lines
           .filter((line) => line.orderId === order.id)
           .map((line) => ({ line, state: lineState(page.pieces.filter((piece) => piece.groupId === line.groupId), line.cancelledAt) }));
-        const state = orderState(
-          lines.map((one) => one.state),
-          order.shippedAt,
-          order.deliveredAt,
-          order.productionStartedAt,
-        );
+        // As stored; worked out from the facts only while not computed yet (Orders list spec, goal 7).
+        const state =
+          (order.state as OrderState | null) ??
+          orderState(
+            lines.map((one) => one.state),
+            order.shippedAt,
+            order.deliveredAt,
+            order.productionStartedAt,
+          );
         if (states && !states.includes(state)) continue;
         for (const { line } of lines) {
           rows.push({

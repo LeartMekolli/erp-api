@@ -51,7 +51,10 @@ export class OrdersController {
     description:
       '`state` and `payment_state` take one or more values, comma-separated (`state=ready,in_production`); an unknown ' +
       'value is a 400. `promised_after` includes its day and `promised_before` excludes its day. `q` matches part of ' +
-      "the order number (a leading `#` is dropped) or part of the customer's name, case-insensitive. Filters combine " +
+      "the order number (a leading `#` is dropped) or part of the customer's name, case-insensitive. `needs` lists " +
+      'orders matching any of the reasons given: `late` (promised before today, not shipped), `to_ship` (ready), ' +
+      '`to_collect` (an overdue invoice, or waiting for payment) and `due_soon` (promised from today to 2 working days ' +
+      "on, not made yet); each order's own `needs` says which it matches, by the same rule. Filters combine " +
       'with AND. An order whose state is not computed yet is in no `state` or `payment_state` filter until the hourly ' +
       'refresh stores it. Newest first unless `sort` says otherwise; send the same filters and sort with each page, and ' +
       'a cursor made for another sort is a 400.',

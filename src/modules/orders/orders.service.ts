@@ -47,6 +47,8 @@ import type {
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
+import { NEEDS_REASONS, needsDay, needsWhere, orderNeeds } from './needs';
+import type { NeedsDay } from './needs';
 import { ONE_PARTNER } from './order-lines';
 import { lineState } from './order-state';
 import type { OrderState } from './order-state';
@@ -77,6 +79,9 @@ export const orderListQuerySchema = z.strictObject({
   customer_id: z.uuid().optional(),
   state: commaList(ORDER_STATES).optional().describe('One or more order states, comma-separated.'),
   payment_state: commaList(PAYMENT_STATES).optional().describe('One or more payment states, comma-separated.'),
+  needs: commaList(NEEDS_REASONS)
+    .optional()
+    .describe('One or more needs-you reasons, comma-separated; an order matching any of them is listed.'),
   promised_after: z.iso.date().optional().describe('Promised on this day or later.'),
   promised_before: z.iso.date().optional().describe('Promised before this day.'),
   q: z.string().trim().min(1).max(100).optional().describe("Part of the order number, or of the customer's name; case-insensitive."),
@@ -91,8 +96,9 @@ const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
 /**
  * The orders the filters pick, on the stored states: an order not computed yet is in no state filter.
  * `numberIds` are the orders whose number contains `q` (`numberMatches`); null when `q` isn't digits.
+ * `day` is the workspace's today, for `needs`.
  */
-export function ordersWhere(filters: OrderListFilters, numberIds: string[] | null): Prisma.OrderWhereInput {
+export function ordersWhere(filters: OrderListFilters, numberIds: string[] | null, day: NeedsDay): Prisma.OrderWhereInput {
   const promised = {
     ...(filters.promised_after ? { gte: asDay(filters.promised_after) } : {}),
     ...(filters.promised_before ? { lt: asDay(filters.promised_before) } : {}),
@@ -102,6 +108,7 @@ export function ordersWhere(filters: OrderListFilters, numberIds: string[] | nul
     ...(filters.state ? { state: { in: filters.state } } : {}),
     ...(filters.payment_state ? { paymentState: { in: filters.payment_state } } : {}),
     ...(filters.promised_after || filters.promised_before ? { promisedOn: promised } : {}),
+    ...(filters.needs ? { AND: [needsWhere(filters.needs, day)] } : {}),
     ...(filters.q
       ? {
           OR: [
@@ -617,7 +624,7 @@ export class OrdersService {
         ? [{ id: 'desc' }]
         : [sort.endsWith('placed_at') ? { placedAt: direction } : { promisedOn: direction }, { id: direction }];
     return this.prisma.inTenant(tenantId, async (tx) => {
-      const where = ordersWhere(filters, filters.q ? await this.numberMatches(tx, filters.q) : null);
+      const where = ordersWhere(filters, filters.q ? await this.numberMatches(tx, filters.q) : null, await this.needsToday(tx, tenantId));
       const rows = await tx.order.findMany({
         where: after ? { AND: [where, pageWhere(sort, after)] } : where,
         orderBy,
@@ -1068,6 +1075,11 @@ export class OrdersService {
     return calendar ?? DEFAULT_CALENDAR;
   }
 
+  /** The workspace's today and due-soon window, for the needs-you rule. */
+  private async needsToday(tx: Tx, tenantId: string): Promise<NeedsDay> {
+    return needsDay(await this.states.today(tx, tenantId), await this.calendar(tx));
+  }
+
   private async timezone(tx: Tx, tenantId: string): Promise<string> {
     return (await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } })).timezone;
   }
@@ -1171,7 +1183,8 @@ export class OrdersService {
     });
     // Both states as stored; worked out from the facts only for an order not computed yet (Orders list spec, goal 7).
     const missing = orders.filter((order) => order.state === null || order.paymentState === null);
-    const derived = missing.length > 0 ? await this.states.derive(tx, missing, await this.states.today(tx, orders[0].tenantId)) : new Map<string, StoredStates>();
+    const day = await this.needsToday(tx, orders[0].tenantId);
+    const derived = missing.length > 0 ? await this.states.derive(tx, missing, day.today) : new Map<string, StoredStates>();
     // A waiting order's open checkout, once the provider has given it a link.
     const openCheckouts = await tx.orderPayment.findMany({
       where: { orderId: { in: ids }, status: 'open', url: { not: null } },
@@ -1235,6 +1248,7 @@ export class OrdersService {
         channel: order.channel as Channel,
         state: states.state,
         promised_on: order.promisedOn.toISOString().slice(0, 10),
+        needs: orderNeeds({ ...states, promisedOn: order.promisedOn.toISOString().slice(0, 10) }, day),
         delivery_speed: order.deliverySpeedKey,
         address: order.address as Address,
         shipping: {

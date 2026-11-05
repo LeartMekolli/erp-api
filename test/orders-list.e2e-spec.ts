@@ -7,6 +7,8 @@ import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import type { Prisma } from '../src/generated/prisma/client';
+import { AI_TOOLS } from '../src/modules/ai/tools/tool';
+import type { AiTool } from '../src/modules/ai/tools/tool';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { orderResponseSchema } from '../src/modules/orders/order-response';
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
@@ -294,5 +296,111 @@ describe('orders: the staff list', () => {
       const theirs = await ids(query, other);
       expect([query, theirs.filter((id) => id !== foreign.id)]).toEqual([query, []]);
     }
+  });
+
+  describe('needs you (plan Task 5)', () => {
+    /** Today in the workspace (UTC, as test workspaces are), `days` on. */
+    const fromToday = (days: number) => new Date(Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+    let n: Tenant;
+    let r: Record<'late' | 'soon' | 'ready' | 'waiting' | 'overdue' | 'calm', Order>;
+
+    /** Every staff order of `n` with its `needs`, as the list shows them. */
+    const needsOf = async () => {
+      const page = (await n.staff.get('/orders?limit=200').expect(200)).body as { data: (Order & { needs: string[] })[] };
+      expectDocumented(pageSchema(orderResponseSchema), page);
+      return new Map(page.data.map((order) => [order.id, order.needs]));
+    };
+
+    beforeAll(async () => {
+      n = await freshTenant();
+      r = {
+        late: await n.place(n.luna),
+        soon: await n.place(n.luna),
+        ready: await n.place(n.luna),
+        waiting: await n.place(n.sol),
+        overdue: await n.place(n.luna),
+        calm: await n.place(n.luna),
+      };
+      for (const order of Object.values(r)) await promise(n, order, fromToday(30));
+      await promise(n, r.late, fromToday(-1));
+      await promise(n, r.soon, fromToday(0));
+      await finish(n, r.ready);
+      await finish(n, r.overdue);
+      await n.staff.post(`/orders/${r.overdue.id}/ship`, {}).expect(200);
+      await fake(n, r.overdue.id, (tx) =>
+        tx.invoice.create({
+          data: {
+            orderId: r.overdue.id,
+            providerInvoiceId: `in_${r.overdue.id.replaceAll('-', '')}`,
+            url: 'https://invoices.example.test/2',
+            linesAmount: '10.00',
+            shipping: '0.00',
+            tax: '0.00',
+            total: '10.00',
+            currency: 'EUR',
+            dueOn: new Date('2000-01-01T00:00:00Z'),
+            status: 'open',
+          },
+        }),
+      );
+    });
+
+    it('gives each staff order the reasons it needs attention', async () => {
+      const needs = await needsOf();
+      expect(Object.fromEntries(Object.entries(r).map(([name, order]) => [name, needs.get(order.id)]))).toEqual({
+        late: ['late'],
+        soon: ['due_soon'],
+        ready: ['to_ship'],
+        waiting: ['to_collect'],
+        overdue: ['to_collect'],
+        calm: [],
+      });
+    });
+
+    it('agrees with the needs filter, reason by reason and all together', async () => {
+      const needs = await needsOf();
+      for (const reason of ['late', 'to_ship', 'to_collect', 'due_soon']) {
+        const expected = [...needs].filter(([, reasons]) => reasons.includes(reason)).map(([id]) => id).sort();
+        expect([reason, (await ids(`needs=${reason}`, n)).sort()]).toEqual([reason, expected]);
+      }
+      const any = [...needs].filter(([, reasons]) => reasons.length > 0).map(([id]) => id).sort();
+      expect((await ids('needs=late,to_ship,to_collect,due_soon', n)).sort()).toEqual(any);
+      // Combined with the other filters by AND.
+      expect(await ids('needs=to_collect&state=shipped', n)).toEqual([r.overdue.id]);
+    });
+
+    it('refuses a reason it does not know', async () => {
+      await n.staff.get('/orders?needs=urgent').expect(400);
+      await n.staff.get('/orders?needs=').expect(400);
+    });
+
+    it("leaves `needs` out of the customer's own view of an order", async () => {
+      const user = await createTestUser(prisma, n.id, { roles: [] });
+      await prisma.inTenant(n.id, async (tx) => {
+        await tx.user.update({ where: { id: user.id }, data: { kind: 'customer' } });
+        await tx.organisationMembership.create({ data: { userId: user.id, organisationType: 'customer', organisationId: n.luna, role: 'buyer' } });
+      });
+      const buyer = as((await tokens.issueForUser(n.id, user.id)).accessToken);
+      const seen = (await buyer.get(`/portal/customers/${n.luna}/orders/${r.late.id}`).expect(200)).body as Record<string, unknown>;
+      expect(seen).not.toHaveProperty('needs');
+    });
+
+    it('counts a ready order past its promised date as at risk on the dashboard, and late for the assistant', async () => {
+      await promise(n, r.ready, fromToday(-1));
+      try {
+        const dashboard = (await n.staff.get('/reports/dashboard').expect(200)).body as {
+          attention: { kind: string; items: { ref: { id: string } }[] }[];
+        };
+        const atRisk = dashboard.attention.find((group) => group.kind === 'order_at_risk')!.items.map((item) => item.ref.id);
+        expect(atRisk.sort()).toEqual(idsOf(r.late, r.soon, r.ready));
+
+        const findOrders = (app.get(AI_TOOLS) as AiTool<unknown>[]).find((tool) => tool.name === 'find_orders')!;
+        const owner = await prisma.inTenant(n.id, (tx) => tx.user.findFirstOrThrow({ where: { kind: 'staff' } }));
+        const found = await findOrders.run({ tenantId: n.id, permissions: new Set(['order.read']), userId: owner.id }, { late: true });
+        expect((found.data as { id: string }[]).map((order) => order.id).sort()).toEqual(idsOf(r.late, r.ready));
+      } finally {
+        await promise(n, r.ready, fromToday(30));
+      }
+    });
   });
 });
