@@ -9,8 +9,16 @@ import { KnowledgeModule } from '../modules/ai/knowledge/knowledge.module';
 import { AuditModule } from '../modules/audit/audit.module';
 import { CourierAccountService } from '../modules/couriers/courier-account.service';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
+import { OrderStatesService } from '../modules/orders/order-states.service';
+import { OrdersService } from '../modules/orders/orders.service';
+import { JobsService } from '../modules/partners/jobs.service';
+import { InvoicesService } from '../modules/payments/invoices.service';
+import { PaidByHandService } from '../modules/payments/paid-by-hand.service';
 import { PaymentAccountService } from '../modules/payments/payment-account.service';
 import { PaymentsModule } from '../modules/payments/payments.module';
+import { RefundsService } from '../modules/payments/refunds.service';
+import { QuotesService } from '../modules/pricing/quotes.service';
+import { MovesService } from '../modules/workflow/moves.service';
 import { CampaignsService } from '../modules/payments/credits/campaigns.service';
 import { CreditPacksService } from '../modules/payments/credits/credit-packs.service';
 import { PayoutAccountsService } from '../modules/payments/payout-accounts.service';
@@ -24,6 +32,7 @@ import { seedAi } from './seed-ai';
 import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
 import { seedClaims } from './seed-claims';
 import { seedCustomers } from './seed-customers';
+import { seedDemoOrders } from './seed-demo-orders';
 import { seedOrders } from './seed-orders';
 import { seedPartners } from './seed-partners';
 import { seedPayments } from './seed-payments';
@@ -59,7 +68,8 @@ const SEED_TENANTS: CreateTenantInput[] = [
  * and writes the demo's knowledge articles, so it loads Payments, the knowledge base and the global
  * modules their imports rely on, as the worker does (without consuming jobs). The brand profile service
  * is provided on its own: the AI module would bring the AI and image providers the seed never calls. So
- * is the courier account service, which only seals and stores the demo's key.
+ * is the courier account service, which only seals and stores the demo's key. The demo orders use the
+ * Orders, Pricing, Partners, Workflow and Payments services, which Payments' imports already load.
  */
 @Module({
   imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule, AuditModule],
@@ -72,7 +82,8 @@ class SeedModule {}
  * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
  * (`seed-orders.ts`), its claim settings, an accountant and the accountant's monthly files (`seed-claims.ts`), its fake
- * courier account, a live-rate method, daily capacities and the job summary (`seed-production.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`), its plans, packs
+ * courier account, a live-rate method, daily capacities and the job summary (`seed-production.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`),
+ * demo orders in every state the Orders screen shows (`seed-demo-orders.ts`), its plans, packs
  * and campaign (`seed-plans.ts`) and its AI limit, knowledge articles, AI plan switches and a brand
  * profile (`seed-ai.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
@@ -197,6 +208,32 @@ void runCli(async (app) => {
       (keys
         ? `, ${payments.account} payment accounts, ${payments.payoutAccounts} payout accounts\n`
         : '; no DEMO_STRIPE_* keys, so the payment account and payout accounts are skipped\n'),
+  );
+
+  // Placed, paid, made and shipped as the demo's catalog user, and accepted as each workshop's owner.
+  const demoOrders = await seedDemoOrders(
+    {
+      prisma,
+      quotes: app.get(QuotesService),
+      orders: app.get(OrdersService),
+      states: app.get(OrderStatesService),
+      paidByHand: app.get(PaidByHandService),
+      refunds: app.get(RefundsService),
+      invoices: app.get(InvoicesService),
+      jobs: app.get(JobsService),
+      moves: app.get(MovesService),
+    },
+    demo.id,
+    uploader.id,
+  );
+  const { needs_you: needs } = demoOrders.counts;
+  process.stdout.write(
+    `orders for demo: created ${demoOrders.customers} customers, ${demoOrders.orders} orders ` +
+      `(${needs.total} need you today: ${needs.late} late, ${needs.to_ship} to ship, ${needs.to_collect} to collect, ${needs.due_soon} due soon)` +
+      (demoOrders.notInvoiced
+        ? `; no payment account, so ${demoOrders.notInvoiced} shipped pay-later ${demoOrders.notInvoiced === 1 ? 'order is' : 'orders are'} not invoiced`
+        : '') +
+      '\n',
   );
 
   // Audited as the demo's catalog user, which can't sign in, like the catalog's uploads.
