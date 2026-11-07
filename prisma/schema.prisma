@@ -2322,6 +2322,9 @@ model OrderLine {
   quantity   Int
   unitPrice  Decimal   @map("unit_price") @db.Decimal(18, 2)
   total      Decimal   @db.Decimal(18, 2)
+  // What was picked (options by name, size, design file), copied when the order is placed and never
+  // changed; `linePicksSchema` (line-picks.ts). The default is a line placed before it was kept.
+  picks      Json      @default("{\"options\":[],\"size\":null,\"design_file\":null}")
   // Set as soon as the line starts, in the transaction that places the order.
   groupId    String?   @map("group_id") @db.Uuid
   cancelledAt DateTime? @map("cancelled_at")
@@ -2356,6 +2359,8 @@ model OrderLinePart {
   quantity  Int
   unitPrice Decimal @map("unit_price") @db.Decimal(18, 2)
   total     Decimal @db.Decimal(18, 2)
+  // What the part was made with, copied like its line's (`linePicksSchema`).
+  picks     Json    @default("{\"options\":[],\"size\":null,\"design_file\":null}")
   // Set as soon as the part starts, in the transaction that places the order.
   groupId   String? @map("group_id") @db.Uuid
 

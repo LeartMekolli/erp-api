@@ -34,6 +34,11 @@ interface Quote {
   id: string;
   total: string;
 }
+interface Picked {
+  options: object[];
+  size: object | null;
+  design_file: { file_id: string; file_version_id: string; name: string } | null;
+}
 
 /**
  * Orders in the customer app (Orders spec, goals 1, 10 and 16; plan Task 6 and Review Focus 5): a
@@ -149,6 +154,7 @@ describe('portal: customers order and follow their orders', () => {
       metalworks,
       luna,
       sol,
+      design,
       lunaQuote,
       solQuote,
     };
@@ -224,6 +230,35 @@ describe('portal: customers order and follow their orders', () => {
     const listed = await tenant.viewer.get(`/portal/customers/${tenant.luna}/orders`).expect(200);
     expectDocumented(pageSchema(customerOrderResponseSchema), listed.body);
     expect((listed.body as { data: CustomerOrder[] }).data.map((one) => one.id)).toEqual([body.id]);
+  });
+
+  it('shows the customer what it picked, and only its own design file', async () => {
+    const tenant = await freshTenant();
+    const options = [
+      { group: { key: 'material', name: 'material' }, value: { key: 'silver_925', name: 'silver_925' } },
+      { group: { key: 'finish', name: 'finish' }, value: { key: 'polished', name: 'polished' } },
+    ];
+
+    // Luna's buyer orders with Luna's own design: the customer sees it, as staff do.
+    const own = await order(tenant, [(await tenant.lunaQuote()).id]).expect(201);
+    expectDocumented(customerOrderResponseSchema, own.body);
+    const ownId = (own.body as CustomerOrder).id;
+    const staffOwn = ((await tenant.staff.get(`/orders/${ownId}`).expect(200)).body as { lines: Picked[] }).lines[0];
+    const portalOwn = await tenant.buyer.get(`/portal/customers/${tenant.luna}/orders/${ownId}`).expect(200);
+    expectDocumented(customerOrderResponseSchema, portalOwn.body);
+    const ownLine = (portalOwn.body as { lines: Picked[] }).lines[0];
+    expect(ownLine).toMatchObject({ options, size: { scale: '1.5' }, design_file: staffOwn.design_file });
+    expect(ownLine.design_file?.file_version_id).toBe(tenant.design);
+
+    // Staff order for Sol with the workspace's own file: staff see it, the customer doesn't.
+    const placed = await tenant.staff
+      .post('/orders', { customer_id: tenant.sol, lines: [{ quote_id: (await tenant.solQuote()).id }], address, shipping_method: 'courier' })
+      .expect(201);
+    const staffLine = (placed.body as { lines: Picked[] }).lines[0];
+    expect(staffLine.design_file?.file_version_id).toBe(tenant.cast.versionId);
+    const portal = await tenant.solBuyer.get(`/portal/customers/${tenant.sol}/orders/${(placed.body as { id: string }).id}`).expect(200);
+    expectDocumented(customerOrderResponseSchema, portal.body);
+    expect((portal.body as { lines: Picked[] }).lines[0]).toMatchObject({ options, size: { scale: '1.5' }, design_file: null });
   });
 
   it('never shows a customer the workshop it picked, its cost or the margin', async () => {

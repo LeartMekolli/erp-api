@@ -44,12 +44,15 @@ import type {
   CustomerOrderResponse,
   LabelRequest,
   LabelResponse,
+  LinePartner,
+  LinePicksResponse,
   OrderCountsResponse,
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
 import { NEEDS_REASONS, needsDay, needsWhere, orderNeeds } from './needs';
 import type { NeedsDay, NeedsReason } from './needs';
+import { linePicks, linePicksSchema } from './line-picks';
 import { ONE_PARTNER } from './order-lines';
 import { lineState } from './order-state';
 import type { OrderState } from './order-state';
@@ -225,6 +228,16 @@ function customerShipping(shipping: OrderResponse['shipping']): CustomerOrderRes
     shipped_at: shipping.shipped_at,
     delivered_at: shipping.delivered_at,
     tracking_status: shipping.label?.tracking_status ?? null,
+  };
+}
+
+/** A line's or part's stored picks as staff see them: whether the file is the customer's stays inside. */
+function picksResponse(stored: Prisma.JsonValue): LinePicksResponse {
+  const { options, size, design_file } = linePicksSchema.parse(stored);
+  return {
+    options,
+    size,
+    design_file: design_file ? { file_id: design_file.file_id, file_version_id: design_file.file_version_id, name: design_file.name } : null,
   };
 }
 
@@ -434,6 +447,7 @@ export class OrdersService {
               quantity: quote.quantity,
               unitPrice: quote.unitPrice,
               total: quote.total,
+              picks: await linePicks(tx, quote, customerId),
             },
           });
           const started = await this.startLine(tx, auth, quote, line.id, position);
@@ -452,6 +466,7 @@ export class OrdersService {
                 quantity: partQuote.quantity,
                 unitPrice: partQuote.unitPrice,
                 total: partQuote.total,
+                picks: await linePicks(tx, partQuote, customerId),
               },
             });
             const partStarted = await this.startLine(tx, auth, partQuote, part.id, position, started.group.id);
@@ -1129,13 +1144,24 @@ export class OrdersService {
       const group = groups.find((one) => one.id === groupId);
       return group ? await this.workOrders.customerProgress(tx, group) : { pieces: [] };
     };
+    // Only the customer's own design file is shown to it (Order detail spec, goal 6).
+    const stored = await tx.orderLine.findMany({ where: { orderId: { in: orders.map((order) => order.id) } }, select: { id: true, picks: true } });
+    const customerOwned = new Set(stored.filter((row) => linePicksSchema.parse(row.picks).design_file?.customer_owned).map((row) => row.id));
     const responses: CustomerOrderResponse[] = [];
     for (const view of views) {
       const lines: CustomerOrderLineResponse[] = [];
       for (const line of view.lines) {
         const parts: CustomerOrderLineResponse['parts'] = [];
         for (const part of line.parts) {
-          parts.push({ position: part.position, product: part.product, quantity: part.quantity, state: part.state, progress: await progress(part.group_id) });
+          parts.push({
+            position: part.position,
+            product: part.product,
+            quantity: part.quantity,
+            options: part.options,
+            size: part.size,
+            state: part.state,
+            progress: await progress(part.group_id),
+          });
         }
         lines.push({
           id: line.id,
@@ -1144,6 +1170,9 @@ export class OrdersService {
           quantity: line.quantity,
           unit_price: line.unit_price,
           total: line.total,
+          options: line.options,
+          size: line.size,
+          design_file: customerOwned.has(line.id) ? line.design_file : null,
           state: line.state,
           progress: await progress(line.group_id),
           parts,
@@ -1201,17 +1230,25 @@ export class OrdersService {
       where: { groupId: { in: groupIds }, status: { in: HOLDING } },
       include: { partner: { select: { id: true, name: true } } },
     });
-    const partnerOf = new Map(holding.map((row) => [row.groupId, row.partner]));
+    const partnerOf = new Map<string, LinePartner>(
+      holding.map((row) => [
+        row.groupId,
+        {
+          ...row.partner,
+          status: row.status as LinePartner['status'],
+          expires_at: row.status === 'offered' ? (row.expiresAt?.toISOString() ?? null) : null,
+        },
+      ]),
+    );
     const pieces = await tx.workOrder.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, status: true } });
     // What was paid and refunded comes from the ledger (Payments spec).
     const journals = await tx.ledgerJournal.findMany({
       where: { orderId: { in: ids }, kind: { in: ['payment_received', 'refund'] } },
       select: { orderId: true, kind: true, lines: { select: { account: true, amount: true } } },
     });
-    const releasers = await tx.user.findMany({
-      where: { id: { in: orders.flatMap((order) => (order.releasedByUserId ? [order.releasedByUserId] : [])) } },
-      select: { id: true, name: true },
-    });
+    // Who placed each order, and who let one start past the credit limit, in one read.
+    const peopleIds = orders.flatMap((order) => [order.placedByUserId, ...(order.releasedByUserId ? [order.releasedByUserId] : [])]);
+    const people = await tx.user.findMany({ where: { id: { in: [...new Set(peopleIds)] } }, select: { id: true, name: true } });
     // Both states as stored; worked out from the facts only for an order not computed yet (Orders list spec, goal 7).
     const missing = orders.filter((order) => order.state === null || order.paymentState === null);
     const day = await this.needsToday(tx, orders[0].tenantId);
@@ -1242,6 +1279,7 @@ export class OrdersService {
           quantity: line.quantity,
           unit_price: line.unitPrice.toFixed(2),
           total: line.total.toFixed(2),
+          ...picksResponse(line.picks),
           state: lineState(pieces.filter((piece) => piece.groupId === line.groupId), line.cancelledAt),
           group_id: line.groupId,
           partner: line.groupId ? (partnerOf.get(line.groupId) ?? null) : null,
@@ -1252,6 +1290,7 @@ export class OrdersService {
             quantity: part.quantity,
             unit_price: part.unitPrice.toFixed(2),
             total: part.total.toFixed(2),
+            ...picksResponse(part.picks),
             // A cancelled line's parts are cancelled with it.
             state: lineState(pieces.filter((piece) => piece.groupId === part.groupId), line.cancelledAt),
             group_id: part.groupId,
@@ -1259,7 +1298,7 @@ export class OrdersService {
           })),
         }));
       const { paid, refunded } = paidAndRefunded(journals.filter((journal) => journal.orderId === order.id));
-      const releaser = releasers.find((user) => user.id === order.releasedByUserId);
+      const releaser = people.find((user) => user.id === order.releasedByUserId);
       const terms = order.paymentTerms as PaymentTerms;
       const found = invoices.find((row) => row.orderId === order.id);
       const label = labels.find((row) => row.orderId === order.id);
@@ -1298,6 +1337,8 @@ export class OrdersService {
         currency: order.currency,
         note: order.note,
         placed_at: order.placedAt.toISOString(),
+        placed_by: people.find((user) => user.id === order.placedByUserId)!,
+        cancelled: order.cancelledAt ? { at: order.cancelledAt.toISOString(), reason: order.cancelReason } : null,
         payment: {
           terms,
           state: states.paymentState,

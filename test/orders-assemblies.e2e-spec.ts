@@ -23,6 +23,9 @@ interface Part {
   state: string;
   group_id: string;
   partner: { id: string; name: string } | null;
+  options: object[];
+  size: object | null;
+  design_file: object | null;
 }
 interface Line {
   id: string;
@@ -32,6 +35,7 @@ interface Line {
   state: string;
   group_id: string;
   partner: { id: string } | null;
+  options: object[];
   parts: Part[];
 }
 interface Order {
@@ -205,6 +209,31 @@ describe('orders: assemblies', () => {
       expect(started).toMatchObject({ sourceType: 'order_line', sourceId: part.id, quoteId: parts[index].quote_id, parentGroupId: line.group_id });
       expect(started.workOrders).toHaveLength(part.quantity);
     }
+    // Each part keeps what it was made with: the options its own groups take, its quote's size and its
+    // own pinned file; the set itself has no file.
+    expect(line).toMatchObject({
+      options: [
+        { group: { key: 'material', name: 'material' }, value: { key: 'silver_925', name: 'silver_925' } },
+        { group: { key: 'finish', name: 'finish' }, value: { key: 'polished', name: 'polished' } },
+      ],
+      size: null,
+      design_file: null,
+    });
+    const [pendantPart, bailPart] = line.parts;
+    expect(pendantPart.options).toEqual(line.options);
+    expect(bailPart.options).toEqual([]);
+    for (const part of line.parts) {
+      const facts = await prisma.inTenant(tenant.id, async (tx) => ({
+        quote: await tx.quote.findUniqueOrThrow({ where: { id: parts[part.position].quote_id } }),
+        product: await tx.product.findUniqueOrThrow({ where: { id: part.product.id }, include: { fileVersion: true } }),
+      }));
+      expect(part.size).toEqual((facts.quote.inputs as { size: object | null }).size);
+      expect(part.design_file).toEqual({
+        file_id: facts.product.fileVersion!.fileId,
+        file_version_id: facts.product.fileVersionId,
+        name: 'part.stl',
+      });
+    }
     // Read back as placed.
     expect(await staffView(tenant, body.id)).toEqual(placed.body);
   });
@@ -219,8 +248,24 @@ describe('orders: assemblies', () => {
     const [line] = (seen.body as { lines: { total: string; parts: object[] }[] }).lines;
     expect(line.total).toBe(placed.lines[0].total);
     expect(line.parts).toEqual([
-      { position: 0, product: { id: tenant.pendant, name: 'Pendant' }, quantity: 3, state: 'in_production', progress: expect.any(Object) },
-      { position: 1, product: { id: tenant.bail, name: 'Bail' }, quantity: 6, state: 'in_production', progress: expect.any(Object) },
+      {
+        position: 0,
+        product: { id: tenant.pendant, name: 'Pendant' },
+        quantity: 3,
+        options: placed.lines[0].parts[0].options,
+        size: { named: 'M' },
+        state: 'in_production',
+        progress: expect.any(Object),
+      },
+      {
+        position: 1,
+        product: { id: tenant.bail, name: 'Bail' },
+        quantity: 6,
+        options: [],
+        size: null,
+        state: 'in_production',
+        progress: expect.any(Object),
+      },
     ]);
     for (const secret of ['MetalWorks', 'partner', 'cost', 'margin', 'group_id', placed.lines[0].parts[0].total, placed.lines[0].parts[1].total]) {
       expect({ secret, found: seen.text.includes(secret) }).toEqual({ secret, found: false });

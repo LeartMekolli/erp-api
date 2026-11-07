@@ -45,7 +45,7 @@ export class ClaimsController {
   }
 
   @ApiDoc({
-    summary: 'Claims, newest first, by state, fault, workshop at fault or customer, a page at a time.',
+    summary: 'Claims, newest first, by order, state, fault, workshop at fault or customer, a page at a time.',
     query: claimListQuerySchema,
     response: pageSchema(claimResponseSchema),
     errors: [400],

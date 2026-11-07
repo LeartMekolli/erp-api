@@ -26,6 +26,9 @@ interface Line {
   state: string;
   group_id: string;
   partner: { id: string; name: string } | null;
+  options: { group: { key: string; name: string }; value: { key: string; name: string } }[];
+  size: object | null;
+  design_file: { file_id: string; file_version_id: string; name: string } | null;
 }
 interface Order {
   id: string;
@@ -86,8 +89,11 @@ describe('orders: placing an order', () => {
       await tx.user.update({ where: { id: user.id }, data: { kind } });
       await tx.organisationMembership.create({ data: { userId: user.id, organisationType: kind, organisationId, role } });
     });
-    return as((await tokens.issueForUser(tenantId, user.id)).accessToken);
+    return { ...as((await tokens.issueForUser(tenantId, user.id)).accessToken), userId: user.id };
   }
+  /** Gives a user a name of its own, so who placed an order can be told apart. */
+  const rename = (tenantId: string, userId: string, name: string) =>
+    prisma.inTenant(tenantId, (tx) => tx.user.update({ where: { id: userId }, data: { name } }));
 
   /**
    * The priced cast part, published; the standard speed promising 10 working days; `courier` at 9.90
@@ -148,7 +154,8 @@ describe('orders: placing an order', () => {
       await staff.put(`/customers/${customer}/payment-terms`, { terms: 'pay_later' }).expect(200);
     }
     // Luna's own design: a customer may only quote with its own files.
-    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
+    const designFile = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
+    const design = designFile.versionId;
     const timezone = (await prisma.inTenant(tenant.id, (tx) => tx.tenant.findUniqueOrThrow({ where: { id: tenant.id } }))).timezone;
 
     const configuration = (extra: object = {}) => ({
@@ -172,12 +179,15 @@ describe('orders: placing an order', () => {
     return {
       id: tenant.id,
       staff,
+      ownerId: owner.id,
       member: as((await tokens.issueForUser(tenant.id, member.id)).accessToken),
+      memberId: member.id,
       buyer,
       cast,
       metalworks,
       luna,
       sol,
+      designFile,
       timezone,
       staffQuote,
       lunaQuote,
@@ -281,6 +291,32 @@ describe('orders: placing an order', () => {
     expect(audited).toBe(1);
   });
 
+  it('saves what each line was ordered with, by name, and keeps it when the catalog changes', async () => {
+    const tenant = await freshTenant();
+    const rename = (name: string) => tenant.staff.patch(`/catalog/option-values/${tenant.cast.v.silver}`, { name }).expect(200);
+    await rename('Sterling silver');
+
+    const placed = await order(tenant, [(await tenant.lunaQuote()).id]).expect(201);
+    expectDocumented(orderResponseSchema, placed.body);
+    const id = (placed.body as Order).id;
+    const ordered = {
+      // In the product's option group order, by the names they had when the order was placed.
+      options: [
+        { group: { key: 'material', name: 'material' }, value: { key: 'silver_925', name: 'Sterling silver' } },
+        { group: { key: 'finish', name: 'finish' }, value: { key: 'polished', name: 'polished' } },
+      ],
+      size: { scale: '1.5' },
+      design_file: { file_id: tenant.designFile.fileId, file_version_id: tenant.designFile.versionId, name: 'part.stl' },
+    };
+    expect((placed.body as Order).lines[0]).toMatchObject(ordered);
+
+    // Renaming the value later leaves the placed order as it was.
+    await rename('Silver');
+    const read = await tenant.staff.get(`/orders/${id}`).expect(200);
+    expectDocumented(orderResponseSchema, read.body);
+    expect((read.body as Order).lines[0]).toMatchObject(ordered);
+  });
+
   it("starts a line at the workshop the customer picked, as that workshop's job at once", async () => {
     const tenant = await freshTenant();
     await tenant.staff.patch(`/customers/${tenant.luna}`, { may_pick_partner: true }).expect(200);
@@ -288,7 +324,8 @@ describe('orders: placing an order', () => {
 
     const placed = await order(tenant, [picked.id]).expect(201);
     const line = (placed.body as Order).lines[0];
-    expect(line.partner).toEqual({ id: tenant.metalworks, name: 'MetalWorks Ltd' });
+    // A direct job is accepted at once, with no offer to answer.
+    expect(line.partner).toEqual({ id: tenant.metalworks, name: 'MetalWorks Ltd', status: 'accepted', expires_at: null });
     const history = (await tenant.staff.get(`/partners/jobs/${line.group_id}`).expect(200)).body as {
       data: { partner: { id: string }; kind: string; status: string }[];
     };
@@ -438,6 +475,22 @@ describe('orders: placing an order', () => {
     const listed = await tenant.member.get(`/orders?customer_id=${tenant.luna}`).expect(200);
     expectDocumented(pageSchema(orderResponseSchema), listed.body);
     expect((listed.body as { data: Order[] }).data.map((one) => one.id)).toEqual([(second.body as Order).id, (byMember.body as Order).id]);
+
+    // Each order says who placed it, staff or the customer's own person; none is cancelled.
+    await rename(tenant.id, tenant.ownerId, 'Olga Owner');
+    await rename(tenant.id, tenant.memberId, 'Max Member');
+    await rename(tenant.id, tenant.buyer.userId, 'Bea Buyer');
+    const portal = await tenant.buyer
+      .post(`/portal/customers/${tenant.luna}/orders`, { lines: [{ quote_id: (await tenant.lunaQuote()).id }], address, shipping_method: 'courier' })
+      .expect(201);
+    const placedBy = async (id: string) => {
+      const read = await tenant.staff.get(`/orders/${id}`).expect(200);
+      expectDocumented(orderResponseSchema, read.body);
+      return read.body as { placed_by: object; cancelled: object | null };
+    };
+    expect(await placedBy((byMember.body as Order).id)).toMatchObject({ placed_by: { id: tenant.memberId, name: 'Max Member' }, cancelled: null });
+    expect(await placedBy((second.body as Order).id)).toMatchObject({ placed_by: { id: tenant.ownerId, name: 'Olga Owner' }, cancelled: null });
+    expect(await placedBy((portal.body as Order).id)).toMatchObject({ placed_by: { id: tenant.buyer.userId, name: 'Bea Buyer' }, cancelled: null });
     const page = (await tenant.member.get('/orders?limit=1').expect(200)).body as { data: Order[]; next_cursor: string | null };
     expect(page.data).toHaveLength(1);
     expect(page.next_cursor).toEqual(expect.any(String));

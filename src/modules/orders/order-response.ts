@@ -3,6 +3,7 @@ import { TRACKING_STATUSES } from '../couriers/courier-provider';
 import { INVOICE_STATUSES, PAYMENT_STATES, PAYMENT_TERMS } from '../payments/payment-state';
 import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 import { customerViewResponseSchema } from '../workflow/work-order-response';
+import { linePicksSchema } from './line-picks';
 import { NEEDS_REASONS } from './needs';
 
 // What clients receive for orders and their setup; checked against real responses in the e2e tests.
@@ -135,6 +136,28 @@ export const customerOrderPaymentResponseSchema = orderPaymentResponseSchema.pic
 });
 export type CustomerOrderPaymentResponse = z.infer<typeof customerOrderPaymentResponseSchema>;
 
+/**
+ * The partner holding a line or part, and whether it has accepted (Order detail spec, goal 2).
+ * `expires_at` is an open offer's deadline, kept as it was until the expiry run lets it go; null once
+ * accepted, or for a direct job.
+ */
+export const linePartnerSchema = z.strictObject({
+  id: z.uuid(),
+  name: z.string(),
+  status: z.enum(['offered', 'accepted']),
+  expires_at: z.iso.datetime().nullable(),
+});
+export type LinePartner = z.infer<typeof linePartnerSchema>;
+
+/** What a line or part was ordered with, as it was named when the order was placed (Order detail spec, goal 1). */
+export const linePicksResponseSchema = z.strictObject({
+  options: linePicksSchema.shape.options,
+  size: linePicksSchema.shape.size,
+  /** The quote's file, else the product's own; null when neither. */
+  design_file: linePicksSchema.shape.design_file.unwrap().omit({ customer_owned: true }).nullable(),
+});
+export type LinePicksResponse = z.infer<typeof linePicksResponseSchema>;
+
 export const orderLineResponseSchema = z.strictObject({
   id: z.uuid(),
   /** From 0, in the order the lines were placed. */
@@ -143,12 +166,13 @@ export const orderLineResponseSchema = z.strictObject({
   quantity: z.number().int(),
   unit_price: z.string(),
   total: z.string(),
+  ...linePicksResponseSchema.shape,
   /** Derived from the line's pieces. */
   state: z.enum(LINE_STATES),
   /** The work order group the line is made as. */
   group_id: z.uuid().nullable(),
   /** The partner holding the line, offered or accepted; null while it is made in-house. */
-  partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+  partner: linePartnerSchema.nullable(),
   /**
    * An assembly's parts, each made as its own group under the line's and priced inside the line's
    * price; empty for any other line (Orders spec, goal 6).
@@ -163,9 +187,11 @@ export const orderLineResponseSchema = z.strictObject({
       quantity: z.number().int(),
       unit_price: z.string(),
       total: z.string(),
+      /** The options of the assembly's groups the part has, its own size, and its own pinned file. */
+      ...linePicksResponseSchema.shape,
       state: z.enum(LINE_STATES),
       group_id: z.uuid().nullable(),
-      partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+      partner: linePartnerSchema.nullable(),
     }),
   ),
 });
@@ -206,6 +232,10 @@ export const orderResponseSchema = z.strictObject({
   currency: z.string(),
   note: z.string().nullable(),
   placed_at: z.iso.datetime(),
+  /** The staff member, or the customer's own person for an order from the customer app (`channel`). */
+  placed_by: z.strictObject({ id: z.uuid(), name: z.string() }),
+  /** When and why, once every line is cancelled; null otherwise (Order detail spec, goal 3). */
+  cancelled: z.strictObject({ at: z.iso.datetime(), reason: z.string().nullable() }).nullable(),
   payment: orderPaymentResponseSchema,
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
@@ -231,7 +261,10 @@ export const portalShippingMethodsResponseSchema = z.strictObject({
 });
 export type PortalShippingMethodsResponse = z.infer<typeof portalShippingMethodsResponseSchema>;
 
-/** A line as its customer sees it: no partner and no work order group, with the stages the customer may see. */
+/**
+ * A line as its customer sees it: no partner and no work order group, with the stages the customer may
+ * see; its design file only when it is the customer's own (Order detail spec, goal 6).
+ */
 export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ group_id: true, partner: true }).extend({
   progress: customerViewResponseSchema,
   /** What an assembly is made of, and how far each part is; never a part's price or who makes it. */
@@ -240,6 +273,8 @@ export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ gr
       position: z.number().int(),
       product: z.strictObject({ id: z.uuid(), name: z.string() }),
       quantity: z.number().int(),
+      options: linePicksResponseSchema.shape.options,
+      size: linePicksResponseSchema.shape.size,
       state: z.enum(LINE_STATES),
       progress: customerViewResponseSchema,
     }),
@@ -248,7 +283,7 @@ export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ gr
 export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponseSchema>;
 
 /** An order as its customer sees it (Global Constraints): never a partner, a partner's cost or a margin. */
-export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true, needs: true }).extend({
+export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true, needs: true, placed_by: true, cancelled: true }).extend({
   /** Never the label or what it cost; how the parcel is doing instead. */
   shipping: orderResponseSchema.shape.shipping.omit({ label: true }).extend({ tracking_status: trackingStatusSchema }),
   lines: z.array(customerOrderLineResponseSchema),

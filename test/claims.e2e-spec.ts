@@ -196,6 +196,14 @@ describe('claims: opening a claim', () => {
     expect(claimOf(read).lines[0]).toMatchObject({ pieces: 2, decision: null });
     expect(((await w.staff.get(`/claims?customer_id=${w.sol}`).expect(200)).body as { data: Claim[] }).data).toEqual([]);
 
+    // By order: the order's own claims, none for another delivered order.
+    const byOrder = await w.staff.get(`/claims?order_id=${order.id}`).expect(200);
+    expectDocumented(pageSchema(claimResponseSchema), byOrder.body);
+    expect((byOrder.body as { data: Claim[] }).data.map((row) => row.id)).toEqual([claim.id]);
+    const other = await w.deliver(await w.place(1));
+    expect(((await w.staff.get(`/claims?order_id=${other.id}`).expect(200)).body as { data: Claim[] }).data).toEqual([]);
+    await w.staff.get('/claims?order_id=nope').expect(400);
+
     // The customer's people follow it in the portal: the list, and one claim.
     const own = await w.viewer.get(`/portal/customers/${w.luna}/claims`).expect(200);
     expectDocumented(pageSchema(customerClaimResponseSchema), own.body);
