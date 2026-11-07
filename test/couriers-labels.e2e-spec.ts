@@ -10,7 +10,7 @@ import { COURIER_PROVIDER } from '../src/modules/couriers/courier-provider';
 import { signFakeCourierEvent } from '../src/modules/couriers/fake-courier-provider';
 import type { FakeCourierProvider } from '../src/modules/couriers/fake-courier-provider';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { customerOrderResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
+import { bulkShipResponseSchema, customerOrderResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { webhookAckResponseSchema } from '../src/modules/payments/payment-response';
 import { expectDocumented } from './documented';
@@ -71,7 +71,8 @@ describe('couriers: labels and tracking', () => {
     const tenant = await createTestTenant(prisma);
     createdTenants.push(tenant.id);
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
-    const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
+    const staffToken = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
+    const staff = as(staffToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
     await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
@@ -107,10 +108,11 @@ describe('couriers: labels and tracking', () => {
      * Placed and every piece finished directly: moving pieces through every step is Workflow's to test. The
      * order's states are then stored again, as a real move does, so a refused ship still reads `ready`.
      */
+    const place = async (method = 'live', address: object = ADDRESS): Promise<Order> =>
+      (await staff.post('/orders', { customer_id: luna, lines: [{ quote_id: await quote() }], address, shipping_method: method }).expect(201))
+        .body as Order;
     const ready = async (method = 'live', address: object = ADDRESS): Promise<Order> => {
-      const placed = (
-        await staff.post('/orders', { customer_id: luna, lines: [{ quote_id: await quote() }], address, shipping_method: method }).expect(201)
-      ).body as Order;
+      const placed = await place(method, address);
       await prisma.inTenant(tenant.id, async (tx) => {
         await tx.workOrder.updateMany({ where: { groupId: { in: placed.lines.map((line) => line.group_id) } }, data: { status: 'finished', currentStepId: null } });
         await app.get(OrderStatesService).refresh(tx, [placed.id]);
@@ -125,8 +127,10 @@ describe('couriers: labels and tracking', () => {
     return {
       id: tenant.id,
       staff,
+      staffAuth: `Bearer ${staffToken}`,
       viewer: as((await tokens.issueForUser(tenant.id, viewerUser.id)).accessToken),
       luna,
+      place,
       ready,
       ship,
       shipments,
@@ -332,5 +336,177 @@ describe('couriers: labels and tracking', () => {
     await postRaw(none.id, body, signFakeCourierEvent(Buffer.from(body), ACCOUNT.webhook_secret)).expect(400);
     await postRaw(randomUUID(), body, signFakeCourierEvent(Buffer.from(body), ACCOUNT.webhook_secret)).expect(404);
     await postRaw('not-a-workspace', body).expect(404);
+  });
+
+  describe('shipping several orders at once', () => {
+    type Workspace = Awaited<ReturnType<typeof workspace>>;
+    type Result =
+      | { order_id: string; result: 'shipped'; order: Order }
+      | { order_id: string; result: 'failed'; error: { status: number; code: string | null; detail: string } };
+
+    const shipMany = (w: Workspace, orders: object[], key?: string) => {
+      const req = http().post('/orders/ship');
+      return (key ? req.set('Idempotency-Key', key) : req).set('Authorization', w.staffAuth).send({ orders });
+    };
+    /** `POST /orders/ship` answered 200, checked against its documented shape. */
+    const shipped = async (w: Workspace, orders: object[], key?: string) => {
+      const response = await shipMany(w, orders, key).expect(200);
+      expectDocumented(bulkShipResponseSchema, response.body);
+      return (response.body as { results: Result[] }).results;
+    };
+    const stateOf = async (w: Workspace, id: string) => ((await w.staff.get(`/orders/${id}`).expect(200)).body as Order).state;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it("ships each order as the single route does, in the request's order", async () => {
+      const w = await workspace();
+      const label = await w.ready();
+      const byHand = await w.ready();
+      const making = await w.place();
+      const boughtBefore = fake.bought.length;
+
+      const results = await shipped(w, [
+        { order_id: label.id, label: {} },
+        { order_id: byHand.id, courier: 'DHL', tracking: 'JD0001' },
+        { order_id: making.id },
+      ]);
+      expect(results.map((one) => [one.order_id, one.result])).toEqual([
+        [label.id, 'shipped'],
+        [byHand.id, 'shipped'],
+        [making.id, 'failed'],
+      ]);
+      const [first, second, third] = results;
+      expect(first).toMatchObject({ order: { state: 'shipped', shipping: { courier: 'FakeCarrier', label: { tracking: expect.stringMatching(/^FAKE/) } } } });
+      expect(second).toMatchObject({ order: { state: 'shipped', shipping: { courier: 'DHL', tracking: 'JD0001', label: null } } });
+      expect(third).toMatchObject({ error: { status: 409, code: 'order_not_ready' } });
+      expect(fake.bought.length - boughtBefore).toBe(1);
+      expect(await w.raised(label.id, 'order.shipped')).toHaveLength(1);
+      expect(await w.raised(byHand.id, 'order.shipped')).toHaveLength(1);
+      expect(await w.raised(making.id, 'order.shipped')).toHaveLength(0);
+    });
+
+    it('keeps going when one order fails', async () => {
+      const w = await workspace();
+      const elsewhere = await workspace();
+      const refused = await w.ready('live', { ...ADDRESS, line1: 'FAIL' });
+      const foreign = await elsewhere.ready();
+      const missing = randomUUID();
+      const byHand = await w.ready();
+
+      const results = await shipped(w, [
+        { order_id: refused.id, label: {} },
+        { order_id: foreign.id },
+        { order_id: missing },
+        { order_id: byHand.id },
+      ]);
+      expect(results).toEqual([
+        { order_id: refused.id, result: 'failed', error: { status: 503, code: null, detail: 'The address was refused' } },
+        { order_id: foreign.id, result: 'failed', error: expect.objectContaining({ status: 404, code: null }) },
+        { order_id: missing, result: 'failed', error: expect.objectContaining({ status: 404, code: null }) },
+        expect.objectContaining({ order_id: byHand.id, result: 'shipped' }),
+      ]);
+      expect(await stateOf(w, refused.id)).toBe('ready');
+      expect(await stateOf(elsewhere, foreign.id)).toBe('ready');
+
+      // An error nobody wrote is a 500 with the generic detail, and the order stays ready.
+      const broken = await w.ready();
+      jest.spyOn(fake, 'buy').mockRejectedValueOnce(new Error('boom'));
+      expect(await shipped(w, [{ order_id: broken.id, label: {} }])).toEqual([
+        { order_id: broken.id, result: 'failed', error: { status: 500, code: null, detail: 'An unexpected error occurred.' } },
+      ]);
+      expect(await stateOf(w, broken.id)).toBe('ready');
+    });
+
+    it("answers each order's conflict code", async () => {
+      const none = await workspace({ account: false });
+      const noAccount = await none.ready('courier');
+      // A live rate needs the courier account to price it: without one, the fixed method.
+      const done = await none.ready('courier');
+      await none.ship(done.id, {}).expect(200);
+
+      const results = await shipped(none, [
+        { order_id: noAccount.id, label: { parcel: PARCEL, carrier: 'FakeCarrier', service: 'standard' } },
+        { order_id: done.id },
+      ]);
+      expect(results).toEqual([
+        { order_id: noAccount.id, result: 'failed', error: expect.objectContaining({ status: 409, code: 'courier_account_missing' }) },
+        { order_id: done.id, result: 'failed', error: expect.objectContaining({ status: 409, code: 'order_already_shipped' }) },
+      ]);
+    });
+
+    it('ships 7 orders with labels, 5 at a time, one label each', async () => {
+      const w = await workspace();
+      const orders: Order[] = [];
+      for (let i = 0; i < 7; i += 1) orders.push(await w.ready());
+      const buy = fake.buy.bind(fake);
+      let pending = 0;
+      let highest = 0;
+      jest.spyOn(fake, 'buy').mockImplementation(async (...args) => {
+        pending += 1;
+        highest = Math.max(highest, pending);
+        try {
+          // Long enough that the 5 first purchases overlap, as real ones at about 3 seconds do.
+          await wait(300);
+          return await buy(...args);
+        } finally {
+          pending -= 1;
+        }
+      });
+
+      const results = await shipped(
+        w,
+        orders.map((order) => ({ order_id: order.id, label: {} })),
+      );
+      expect(results.map((one) => one.result)).toEqual(Array(7).fill('shipped'));
+      expect(highest).toBe(5);
+      for (const order of orders) expect(await w.shipments(order.id)).toEqual([expect.objectContaining({ status: 'bought' })]);
+    });
+
+    it('refuses a bad batch whole, and ships nothing', async () => {
+      const w = await workspace();
+      const a = await w.ready();
+      const b = await w.ready();
+      const many = [{ order_id: a.id }, ...Array.from({ length: 25 }, () => ({ order_id: randomUUID() }))];
+
+      for (const orders of [
+        [],
+        many,
+        [{ order_id: a.id }, { order_id: a.id }],
+        [{ order_id: a.id }, { order_id: b.id, label: {}, courier: 'DHL' }],
+        [{ order_id: a.id }, { order_id: 'abc' }],
+      ]) {
+        await shipMany(w, orders).expect(400);
+      }
+      expect(await stateOf(w, a.id)).toBe('ready');
+      expect(await stateOf(w, b.id)).toBe('ready');
+    });
+
+    it('replays the first answer for the same key, failed entries included', async () => {
+      const w = await workspace();
+      const good = await w.ready();
+      const refused = await w.ready('live', { ...ADDRESS, line1: 'FAIL' });
+      const orders = [
+        { order_id: good.id, label: {} },
+        { order_id: refused.id, label: {} },
+      ];
+      const key = `bulk-${randomUUID()}`;
+
+      const first = await shipped(w, orders, key);
+      expect(first.map((one) => one.result)).toEqual(['shipped', 'failed']);
+      const boughtAfterFirst = fake.bought.length;
+      expect(await shipped(w, orders, key)).toEqual(first);
+      expect(fake.bought.length).toBe(boughtAfterFirst);
+    });
+
+    it('lets only those who may ship', async () => {
+      const w = await workspace();
+      const placed = await w.ready();
+      const member = await createTestUser(prisma, w.id, { roles: ['member'] });
+      await http()
+        .post('/orders/ship')
+        .set('Authorization', `Bearer ${(await tokens.issueForUser(w.id, member.id)).accessToken}`)
+        .send({ orders: [{ order_id: placed.id }] })
+        .expect(403);
+      expect(await stateOf(w, placed.id)).toBe('ready');
+    });
   });
 });

@@ -255,6 +255,30 @@ export const orderCountsResponseSchema = z.strictObject({
 });
 export type OrderCountsResponse = z.infer<typeof orderCountsResponseSchema>;
 
+/**
+ * What shipping several orders at once answers, one result per order in the request's order: the order as
+ * shipping it alone answers, or what shipping it alone would have refused it with.
+ */
+export const bulkShipResponseSchema = z.strictObject({
+  results: z.array(
+    z.discriminatedUnion('result', [
+      z.strictObject({ order_id: z.uuid(), result: z.literal('shipped'), order: orderResponseSchema }),
+      z.strictObject({
+        order_id: z.uuid(),
+        result: z.literal('failed'),
+        error: z.strictObject({
+          /** The status shipping the order alone would have answered. */
+          status: z.number().int(),
+          /** Its problem code, such as `order_already_shipped`, when it has one. */
+          code: z.string().nullable(),
+          detail: z.string(),
+        }),
+      }),
+    ]),
+  ),
+});
+export type BulkShipResponse = z.infer<typeof bulkShipResponseSchema>;
+
 /** The shipping methods a customer can choose for a new order: only the active ones. */
 export const portalShippingMethodsResponseSchema = z.strictObject({
   data: z.array(shippingMethodResponseSchema.pick({ key: true, name: true, price: true })),

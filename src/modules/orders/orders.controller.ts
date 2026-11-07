@@ -7,10 +7,10 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { orderCountsResponseSchema, orderResponseSchema } from './order-response';
-import type { OrderCountsResponse, OrderResponse } from './order-response';
-import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
-import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipOrder } from './orders.service';
+import { bulkShipResponseSchema, orderCountsResponseSchema, orderResponseSchema } from './order-response';
+import type { BulkShipResponse, OrderCountsResponse, OrderResponse } from './order-response';
+import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipManySchema, shipOrderSchema } from './orders.service';
+import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipMany, ShipOrder } from './orders.service';
 import { staffPlaceOrderSchema } from './place-order';
 import type { StaffPlaceOrder } from './place-order';
 
@@ -44,6 +44,26 @@ export class OrdersController {
   ): Promise<OrderResponse> {
     const { customer_id, ...order } = body;
     return this.orders.place(auth, customer_id, order, 'staff');
+  }
+
+  @ApiDoc({
+    summary: "Ship up to 25 orders in one request, each as shipping one order does, and answer each one's result.",
+    description:
+      'Each entry is an order and the options shipping it alone takes (`courier` and `tracking`, or `label`). Up to 5 ' +
+      'ship at the same time while you wait. One failing never stops or undoes another: its `error` is what shipping ' +
+      'it alone would have answered, with its status, its `code` when it has one, and its detail; an order not found ' +
+      'is a failed 404. A malformed request, more than 25 entries or an order listed twice is a 400, and nothing ' +
+      'ships. A replayed answer includes its failed entries: to try those again, send them in a new request with a ' +
+      'new key.',
+    body: shipManySchema,
+    response: bulkShipResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('order.ship')
+  @Post('ship')
+  @HttpCode(200)
+  shipMany(@CurrentUser() auth: TenantAuth, @Body(new ZodValidationPipe(shipManySchema)) body: ShipMany): Promise<BulkShipResponse> {
+    return this.orders.shipMany(auth, body);
   }
 
   @ApiDoc({
