@@ -231,6 +231,12 @@ function customerShipping(shipping: OrderResponse['shipping']): CustomerOrderRes
   };
 }
 
+/** The 409 for shipping an order that isn't ready: a client refreshes one already shipped, and waits on the rest. */
+function notShippable(state: OrderState): ConflictException {
+  const code = state === 'shipped' || state === 'delivered' ? 'order_already_shipped' : 'order_not_ready';
+  return new ConflictException({ code, message: `Only a ready order can be shipped; this one is ${state.replace('_', ' ')}` });
+}
+
 /** A line's or part's stored picks as staff see them: whether the file is the customer's stays inside. */
 function picksResponse(stored: Prisma.JsonValue): LinePicksResponse {
   const { options, size, design_file } = linePicksSchema.parse(stored);
@@ -525,9 +531,7 @@ export class OrdersService {
     const shipped = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const order = await this.lockOrder(tx, id);
       const before = (await this.views(tx, [order]))[0];
-      if (before.state !== 'ready') {
-        throw new ConflictException(`Only a ready order can be shipped; this one is ${before.state.replace('_', ' ')}`);
-      }
+      if (before.state !== 'ready') throw notShippable(before.state);
       const updated = await tx.order.update({
         where: { id },
         data: {
@@ -598,9 +602,7 @@ export class OrdersService {
     const reserved = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const order = await this.lockOrder(tx, id);
       const before = (await this.views(tx, [order]))[0];
-      if (before.state !== 'ready') {
-        throw new ConflictException(`Only a ready order can be shipped; this one is ${before.state.replace('_', ' ')}`);
-      }
+      if (before.state !== 'ready') throw notShippable(before.state);
       const method = await tx.shippingMethod.findUniqueOrThrow({ where: { id: order.shippingMethodId } });
       const label = labelToBuy(method, request);
       const account = await this.courierAccounts.keys(tx);

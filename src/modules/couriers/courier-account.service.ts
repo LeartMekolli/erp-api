@@ -15,6 +15,13 @@ export interface CourierAccountKeys {
   fromAddress: Address;
 }
 
+export const NO_COURIER_ACCOUNT = 'No courier service is set up for this workspace';
+
+/** The 409 for a label the workspace can't buy: a client sends staff to enter tracking by hand instead. */
+export function courierAccountMissing(): ConflictException {
+  return new ConflictException({ code: 'courier_account_missing', message: NO_COURIER_ACCOUNT });
+}
+
 /** Each workspace's own courier service key, sealed at rest like the payment keys (Orders 3 spec, goal 21). */
 @Injectable()
 export class CourierAccountService {
@@ -73,7 +80,7 @@ export class CourierAccountService {
   /** For a request that holds a transaction. 409 when the workspace has no account. */
   async keys(tx: Prisma.TransactionClient): Promise<CourierAccountKeys> {
     const account = await this.find(tx);
-    if (!account) throw new ConflictException('No courier service is set up for this workspace');
+    if (!account) throw courierAccountMissing();
     return account;
   }
 

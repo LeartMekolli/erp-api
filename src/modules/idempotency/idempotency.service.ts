@@ -13,6 +13,10 @@ const ABANDONED_AFTER_SECONDS = 60;
 export const KEY_REUSED = 'Idempotency key reused with a different request';
 export const KEY_IN_PROGRESS = 'A request with this key is in progress';
 
+// Clients act on the code, never the message: wait and send it again, or fix the client.
+const keyReused = () => new ConflictException({ code: 'idempotency_key_reused', message: KEY_REUSED });
+const keyInProgress = () => new ConflictException({ code: 'idempotency_in_progress', message: KEY_IN_PROGRESS });
+
 export type Begin = { kind: 'proceed' } | { kind: 'replay'; status: number; body: unknown };
 
 interface Stored {
@@ -53,10 +57,10 @@ export class IdempotencyService {
       const row = await tx.idempotencyKey.findFirst({ where: { key } });
       if (!row) {
         // Released by a failing request between the insert and this read.
-        throw new ConflictException(KEY_IN_PROGRESS);
+        throw keyInProgress();
       }
       if (row.fingerprint !== fingerprint) {
-        throw new ConflictException(KEY_REUSED);
+        throw keyReused();
       }
       if (row.status === 'completed') {
         return { fingerprint: row.fingerprint, status: row.responseStatus ?? 200, body: row.responseBody };
@@ -69,7 +73,7 @@ export class IdempotencyService {
       if (reclaimed === 1) {
         return { kind: 'proceed' };
       }
-      throw new ConflictException(KEY_IN_PROGRESS);
+      throw keyInProgress();
     });
 
     if ('kind' in result) {
@@ -131,7 +135,7 @@ function cacheKey(tenantId: string, key: string): string {
 
 function replayOf(stored: Stored, fingerprint: string): Begin {
   if (stored.fingerprint !== fingerprint) {
-    throw new ConflictException(KEY_REUSED);
+    throw keyReused();
   }
   return { kind: 'replay', status: stored.status, body: stored.body };
 }
