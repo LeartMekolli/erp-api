@@ -212,13 +212,16 @@ describe('couriers: labels and tracking', () => {
     const placed = await w.ready();
     const boughtBefore = fake.bought.length;
 
-    const statuses = (await Promise.all([w.ship(placed.id), w.ship(placed.id)])).map((response) => response.status).sort();
+    const both = await Promise.all([w.ship(placed.id), w.ship(placed.id)]);
+    const statuses = both.map((response) => response.status).sort();
     expect(statuses).toEqual([200, 409]);
+    // The loser finds the label being bought, or the order already shipped.
+    expect(['label_in_progress', 'order_already_shipped']).toContain(both.find((response) => response.status === 409)!.body.code);
     expect(fake.bought.length - boughtBefore).toBe(1);
     expect(await w.shipments(placed.id)).toEqual([expect.objectContaining({ status: 'bought' })]);
     expect(await w.raised(placed.id, 'order.shipped')).toHaveLength(1);
     // Pressed again once shipped: still one label.
-    await w.ship(placed.id).expect(409);
+    expect((await w.ship(placed.id).expect(409)).body.code).toBe('order_already_shipped');
     expect(fake.bought.length - boughtBefore).toBe(1);
   });
 
@@ -277,7 +280,8 @@ describe('couriers: labels and tracking', () => {
 
     const none = await workspace({ account: false });
     const placed = await none.ready('courier');
-    await none.ship(placed.id, { label: { parcel: PARCEL, carrier: 'FakeCarrier', service: 'standard' } }).expect(409);
+    const missing = await none.ship(placed.id, { label: { parcel: PARCEL, carrier: 'FakeCarrier', service: 'standard' } }).expect(409);
+    expect(missing.body).toMatchObject({ code: 'courier_account_missing', detail: 'No courier service is set up for this workspace' });
     expect(((await none.staff.get(`/orders/${placed.id}`).expect(200)).body as Order).state).toBe('ready');
   });
 

@@ -151,7 +151,8 @@ describe('orders: shipping and notifications', () => {
     const placed = await placeOrder(tenant);
 
     // Not before every piece is made, and not delivered before it ships.
-    await ship(tenant, placed.id, { courier: 'DHL', tracking: 'JD0001' }).expect(409);
+    const early = await ship(tenant, placed.id, { courier: 'DHL', tracking: 'JD0001' }).expect(409);
+    expect(early.body).toMatchObject({ code: 'order_not_ready', detail: 'Only a ready order can be shipped; this one is in production' });
     await finish(tenant, placed);
     await deliver(tenant, placed.id).expect(409);
 
@@ -161,7 +162,7 @@ describe('orders: shipping and notifications', () => {
     expect(body.state).toBe('shipped');
     expect(body.shipping).toMatchObject({ courier: 'DHL', tracking: 'JD0001', delivered_at: null });
     expect(body.shipping.shipped_at).toEqual(expect.any(String));
-    await ship(tenant, placed.id).expect(409);
+    expect((await ship(tenant, placed.id).expect(409)).body.code).toBe('order_already_shipped');
 
     // The customer sees the courier and tracking.
     const seen = await tenant.viewer.client.get(`/portal/customers/${tenant.luna}/orders/${placed.id}`).expect(200);

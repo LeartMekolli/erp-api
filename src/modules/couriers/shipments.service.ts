@@ -3,7 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Shipment } from '../../generated/prisma/client';
 import type { Address } from '../orders/order-response';
-import { CourierAccountService } from './courier-account.service';
+import { CourierAccountService, NO_COURIER_ACCOUNT, courierAccountMissing } from './courier-account.service';
 import { COURIER_PROVIDER, CourierError } from './courier-provider';
 import type { CourierProvider, Parcel, TrackingStatus } from './courier-provider';
 
@@ -29,6 +29,7 @@ export type DeliveredHook = (tenantId: string, shipment: Shipment) => Promise<vo
 const STALE_MS = 5 * 60_000;
 const ERROR_MAX_LENGTH = 1000;
 const ALREADY = 'A label is already bought, or being bought';
+const labelInProgress = () => new ConflictException({ code: 'label_in_progress', message: ALREADY });
 
 /**
  * Labels (Orders 3 spec, goals 23–25): one per order, claim return and claim remake, bought while staff
@@ -64,9 +65,9 @@ export class ShipmentsService {
     const subject = { purpose: input.purpose, orderId: input.orderId ?? null, claimId: input.claimId ?? null };
     const rows = await tx.shipment.findMany({ where: subject, orderBy: { createdAt: 'desc' } });
     const open = rows.find((row) => row.status !== 'failed');
-    if (open?.status === 'bought') throw new ConflictException(ALREADY);
+    if (open?.status === 'bought') throw labelInProgress();
     if (open?.tracking) return open.id;
-    if (open && Date.now() - open.createdAt.getTime() < STALE_MS) throw new ConflictException(ALREADY);
+    if (open && Date.now() - open.createdAt.getTime() < STALE_MS) throw labelInProgress();
 
     // `created_at` is when this try was reserved, so a try in progress is never taken for a dead one.
     const attempt = {
@@ -88,7 +89,7 @@ export class ShipmentsService {
       return (await tx.shipment.create({ data: { ...subject, ...attempt }, select: { id: true } })).id;
     } catch (error) {
       // shipment_one_open: another purchase for the same order or claim got there first.
-      if (isUniqueViolation(error)) throw new ConflictException(ALREADY);
+      if (isUniqueViolation(error)) throw labelInProgress();
       throw error;
     }
   }
@@ -103,8 +104,8 @@ export class ShipmentsService {
     if (row.tracking && row.labelUrl && row.cost && row.currency) return toLabel(row);
     const account = await this.accounts.findFor(tenantId);
     if (!account) {
-      await this.fail(tenantId, shipmentId, 'No courier service is set up for this workspace');
-      throw new ConflictException('No courier service is set up for this workspace');
+      await this.fail(tenantId, shipmentId, NO_COURIER_ACCOUNT);
+      throw courierAccountMissing();
     }
     try {
       // An earlier try may have been bought with its answer lost (a timeout): use that label, never buy a second.
