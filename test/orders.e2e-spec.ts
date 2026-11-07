@@ -89,8 +89,11 @@ describe('orders: placing an order', () => {
       await tx.user.update({ where: { id: user.id }, data: { kind } });
       await tx.organisationMembership.create({ data: { userId: user.id, organisationType: kind, organisationId, role } });
     });
-    return as((await tokens.issueForUser(tenantId, user.id)).accessToken);
+    return { ...as((await tokens.issueForUser(tenantId, user.id)).accessToken), userId: user.id };
   }
+  /** Gives a user a name of its own, so who placed an order can be told apart. */
+  const rename = (tenantId: string, userId: string, name: string) =>
+    prisma.inTenant(tenantId, (tx) => tx.user.update({ where: { id: userId }, data: { name } }));
 
   /**
    * The priced cast part, published; the standard speed promising 10 working days; `courier` at 9.90
@@ -176,7 +179,9 @@ describe('orders: placing an order', () => {
     return {
       id: tenant.id,
       staff,
+      ownerId: owner.id,
       member: as((await tokens.issueForUser(tenant.id, member.id)).accessToken),
+      memberId: member.id,
       buyer,
       cast,
       metalworks,
@@ -470,6 +475,22 @@ describe('orders: placing an order', () => {
     const listed = await tenant.member.get(`/orders?customer_id=${tenant.luna}`).expect(200);
     expectDocumented(pageSchema(orderResponseSchema), listed.body);
     expect((listed.body as { data: Order[] }).data.map((one) => one.id)).toEqual([(second.body as Order).id, (byMember.body as Order).id]);
+
+    // Each order says who placed it, staff or the customer's own person; none is cancelled.
+    await rename(tenant.id, tenant.ownerId, 'Olga Owner');
+    await rename(tenant.id, tenant.memberId, 'Max Member');
+    await rename(tenant.id, tenant.buyer.userId, 'Bea Buyer');
+    const portal = await tenant.buyer
+      .post(`/portal/customers/${tenant.luna}/orders`, { lines: [{ quote_id: (await tenant.lunaQuote()).id }], address, shipping_method: 'courier' })
+      .expect(201);
+    const placedBy = async (id: string) => {
+      const read = await tenant.staff.get(`/orders/${id}`).expect(200);
+      expectDocumented(orderResponseSchema, read.body);
+      return read.body as { placed_by: object; cancelled: object | null };
+    };
+    expect(await placedBy((byMember.body as Order).id)).toMatchObject({ placed_by: { id: tenant.memberId, name: 'Max Member' }, cancelled: null });
+    expect(await placedBy((second.body as Order).id)).toMatchObject({ placed_by: { id: tenant.ownerId, name: 'Olga Owner' }, cancelled: null });
+    expect(await placedBy((portal.body as Order).id)).toMatchObject({ placed_by: { id: tenant.buyer.userId, name: 'Bea Buyer' }, cancelled: null });
     const page = (await tenant.member.get('/orders?limit=1').expect(200)).body as { data: Order[]; next_cursor: string | null };
     expect(page.data).toHaveLength(1);
     expect(page.next_cursor).toEqual(expect.any(String));

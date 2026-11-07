@@ -1246,10 +1246,9 @@ export class OrdersService {
       where: { orderId: { in: ids }, kind: { in: ['payment_received', 'refund'] } },
       select: { orderId: true, kind: true, lines: { select: { account: true, amount: true } } },
     });
-    const releasers = await tx.user.findMany({
-      where: { id: { in: orders.flatMap((order) => (order.releasedByUserId ? [order.releasedByUserId] : [])) } },
-      select: { id: true, name: true },
-    });
+    // Who placed each order, and who let one start past the credit limit, in one read.
+    const peopleIds = orders.flatMap((order) => [order.placedByUserId, ...(order.releasedByUserId ? [order.releasedByUserId] : [])]);
+    const people = await tx.user.findMany({ where: { id: { in: [...new Set(peopleIds)] } }, select: { id: true, name: true } });
     // Both states as stored; worked out from the facts only for an order not computed yet (Orders list spec, goal 7).
     const missing = orders.filter((order) => order.state === null || order.paymentState === null);
     const day = await this.needsToday(tx, orders[0].tenantId);
@@ -1299,7 +1298,7 @@ export class OrdersService {
           })),
         }));
       const { paid, refunded } = paidAndRefunded(journals.filter((journal) => journal.orderId === order.id));
-      const releaser = releasers.find((user) => user.id === order.releasedByUserId);
+      const releaser = people.find((user) => user.id === order.releasedByUserId);
       const terms = order.paymentTerms as PaymentTerms;
       const found = invoices.find((row) => row.orderId === order.id);
       const label = labels.find((row) => row.orderId === order.id);
@@ -1338,6 +1337,8 @@ export class OrdersService {
         currency: order.currency,
         note: order.note,
         placed_at: order.placedAt.toISOString(),
+        placed_by: people.find((user) => user.id === order.placedByUserId)!,
+        cancelled: order.cancelledAt ? { at: order.cancelledAt.toISOString(), reason: order.cancelReason } : null,
         payment: {
           terms,
           state: states.paymentState,

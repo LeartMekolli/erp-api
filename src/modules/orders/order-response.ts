@@ -232,6 +232,10 @@ export const orderResponseSchema = z.strictObject({
   currency: z.string(),
   note: z.string().nullable(),
   placed_at: z.iso.datetime(),
+  /** The staff member, or the customer's own person for an order from the customer app (`channel`). */
+  placed_by: z.strictObject({ id: z.uuid(), name: z.string() }),
+  /** When and why, once every line is cancelled; null otherwise (Order detail spec, goal 3). */
+  cancelled: z.strictObject({ at: z.iso.datetime(), reason: z.string().nullable() }).nullable(),
   payment: orderPaymentResponseSchema,
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
@@ -279,7 +283,7 @@ export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ gr
 export type CustomerOrderLineResponse = z.infer<typeof customerOrderLineResponseSchema>;
 
 /** An order as its customer sees it (Global Constraints): never a partner, a partner's cost or a margin. */
-export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true, needs: true }).extend({
+export const customerOrderResponseSchema = orderResponseSchema.omit({ customer: true, channel: true, needs: true, placed_by: true, cancelled: true }).extend({
   /** Never the label or what it cost; how the parcel is doing instead. */
   shipping: orderResponseSchema.shape.shipping.omit({ label: true }).extend({ tracking_status: trackingStatusSchema }),
   lines: z.array(customerOrderLineResponseSchema),

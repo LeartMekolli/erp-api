@@ -187,6 +187,15 @@ describe('orders: state and cancelling', () => {
     expect((await read(tenant, placed.id)).state).toBe('cancelled');
     expect(await audited(tenant, placed.id)).toBe(2);
 
+    // Staff see when and why; the customer sees neither that nor who placed it.
+    const staffView = await tenant.staff.get(`/orders/${placed.id}`).expect(200);
+    expectDocumented(orderResponseSchema, staffView.body);
+    const { cancelled: when } = staffView.body as { cancelled: { at: string; reason: string } | null };
+    expect(when).toEqual({ at: expect.any(String), reason: 'Changed my mind' });
+    expect(Math.abs(Date.parse(when!.at) - Date.now())).toBeLessThan(60_000);
+    expect(cancelled.body).not.toHaveProperty('cancelled');
+    expect(cancelled.body).not.toHaveProperty('placed_by');
+
     // Nothing left to cancel.
     await customerCancel(tenant, placed.id).expect(409);
     await cancel(tenant, placed.id, { reason: 'Again' }).expect(409);
@@ -236,6 +245,8 @@ describe('orders: state and cancelling', () => {
       ['in_production', tenant.metalworks],
     ]);
     expect(body.state).toBe('in_production');
+    // One line cancelled isn't the order cancelled.
+    expect((after.body as { cancelled: object | null }).cancelled).toBeNull();
 
     // MetalWorks is owed 25.00 for the cancelled job, at once.
     const owed = (await tenant.staff.get(`/partners/${tenant.metalworks}/owed`).expect(200)).body as {
