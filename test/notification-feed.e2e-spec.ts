@@ -7,6 +7,8 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { hashPassword } from '../src/modules/identity/passwords';
+import { unreadCountSchema } from '../src/modules/notifications/feed.controller';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
 interface FeedEntry {
@@ -65,6 +67,10 @@ describe('notification feed', () => {
     request(app.getHttpServer()).get(`/notifications${query}`).set('Authorization', `Bearer ${token}`);
   const markRead = (token: string, id: string) =>
     request(app.getHttpServer()).post(`/notifications/${id}/read`).set('Authorization', `Bearer ${token}`);
+  const unreadCount = (token: string) =>
+    request(app.getHttpServer()).get('/notifications/unread-count').set('Authorization', `Bearer ${token}`);
+  const markAllRead = (token: string) =>
+    request(app.getHttpServer()).post('/notifications/read-all').set('Authorization', `Bearer ${token}`);
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -150,6 +156,45 @@ describe('notification feed', () => {
     expect(theirs.map((entry) => [entry.id, entry.read_at])).toEqual([[colleagues, null]]);
   });
 
+  it('counts my unread notifications', async () => {
+    const me = await freshUser();
+    const colleague = await freshUser(me.tenantId);
+    const read = await feedEntry(me.tenantId, me.userId, 'Read');
+    await feedEntry(me.tenantId, me.userId, 'One');
+    await feedEntry(me.tenantId, me.userId, 'Two');
+    await feedEntry(me.tenantId, colleague.userId, 'Theirs');
+    await markRead(me.token, read).expect(204);
+
+    const counted = await unreadCount(me.token).expect(200);
+    expectDocumented(unreadCountSchema, counted.body);
+    expect(counted.body).toEqual({ count: 2 });
+  });
+
+  it('marks all my notifications read, keeping first read times', async () => {
+    const me = await freshUser();
+    const colleague = await freshUser(me.tenantId);
+    const before = await feedEntry(me.tenantId, me.userId, 'Before');
+    await feedEntry(me.tenantId, me.userId, 'One');
+    await feedEntry(me.tenantId, me.userId, 'Two');
+    const theirs = await feedEntry(me.tenantId, colleague.userId, 'Theirs');
+    await markRead(me.token, before).expect(204);
+    const readAt = async () => (((await feed(me.token).expect(200)).body as FeedPage).data.map((entry) => [entry.id, entry.read_at]));
+    const firstBefore = (await readAt()).find(([id]) => id === before)?.[1];
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await markAllRead(me.token).expect(204);
+    expect((await unreadCount(me.token).expect(200)).body).toEqual({ count: 0 });
+    const after = await readAt();
+    expect(after.every(([, at]) => typeof at === 'string')).toBe(true);
+    expect(after.find(([id]) => id === before)?.[1]).toBe(firstBefore);
+    // Another user's entries stay as they were.
+    expect(((await feed(colleague.token).expect(200)).body as FeedPage).data.map((entry) => [entry.id, entry.read_at])).toEqual([[theirs, null]]);
+
+    // Again: nothing moves.
+    await markAllRead(me.token).expect(204);
+    expect(await readAt()).toEqual(after);
+  });
+
   it('rejects a malformed id with 400', async () => {
     const me = await freshUser();
     await markRead(me.token, 'not-a-uuid').expect(400);
@@ -164,5 +209,7 @@ describe('notification feed', () => {
 
     await feed(token).expect(403);
     await markRead(token, newId()).expect(403);
+    await unreadCount(token).expect(403);
+    await markAllRead(token).expect(403);
   });
 });

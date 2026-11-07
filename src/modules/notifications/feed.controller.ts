@@ -28,6 +28,10 @@ export const feedEntrySchema = z.strictObject({
 });
 export type FeedEntry = z.infer<typeof feedEntrySchema>;
 
+/** How many of your entries are unread, for the bell. */
+export const unreadCountSchema = z.strictObject({ count: z.number().int().min(0) });
+export type UnreadCount = z.infer<typeof unreadCountSchema>;
+
 /**
  * The in-app feed (spec 6.5). Everyone reads their own, so the routes need a
  * signed-in tenant user and no permission; scope comes from the token, never
@@ -83,6 +87,33 @@ export class FeedController {
       })),
       next_cursor: page.next_cursor,
     };
+  }
+
+  @ApiDoc({
+    summary: 'How many of your in-app notifications are unread.',
+    response: unreadCountSchema,
+    errors: [401],
+  })
+  @Authenticated()
+  @Get('unread-count')
+  async unreadCount(@CurrentUser() auth: TenantAuth): Promise<UnreadCount> {
+    const count = await this.prisma.inTenant(auth.tenantId, (tx) => tx.notificationRecipient.count({ where: { userId: auth.userId, readAt: null } }));
+    return { count };
+  }
+
+  /** Idempotent: entries already read keep their first read time. */
+  @ApiDoc({
+    summary: 'Mark all your notifications as read.',
+    description: 'Notifications read before keep their first read time.',
+    errors: [401],
+  })
+  @Authenticated()
+  @Post('read-all')
+  @HttpCode(204)
+  async markAllRead(@CurrentUser() auth: TenantAuth): Promise<void> {
+    await this.prisma.inTenant(auth.tenantId, (tx) =>
+      tx.notificationRecipient.updateMany({ where: { userId: auth.userId, readAt: null }, data: { readAt: new Date() } }),
+    );
   }
 
   /** Idempotent: an entry already read keeps its first read time. */
