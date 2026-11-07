@@ -6,14 +6,16 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { orderResponseSchema } from '../src/modules/orders/order-response';
 import { measuredDesign } from './catalog-fixtures';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
 interface Line {
   position: number;
   group_id: string;
-  partner: { id: string; name: string } | null;
+  partner: { id: string; name: string; status: string; expires_at: string | null } | null;
 }
 interface Order {
   id: string;
@@ -173,6 +175,31 @@ describe('orders: the lines of one order and their partners', () => {
   afterAll(async () => {
     await deleteTestTenants(prisma, createdTenants);
     await app.close();
+  });
+
+  it('shows whether a line\'s partner has accepted, and until when an offer is open', async () => {
+    const tenant = await freshTenant();
+    const placed = await placeOrder(tenant, [10, 2, 1]);
+    const [offered, accepted, inHouse] = placed.lines;
+    await offer(tenant, offered.group_id, tenant.castco.id).expect(201);
+    await handTo(tenant, accepted.group_id, tenant.castco);
+    const deadline = async () =>
+      (await prisma.inTenant(tenant.id, (tx) => tx.jobAssignment.findFirstOrThrow({ where: { groupId: offered.group_id, status: 'offered' } }))).expiresAt!;
+    const read = async () => {
+      const response = await tenant.staff.get(`/orders/${placed.id}`).expect(200);
+      expectDocumented(orderResponseSchema, response.body);
+      return (response.body as Order).lines;
+    };
+
+    const lines = await read();
+    expect(lines[offered.position].partner).toEqual({ id: tenant.castco.id, name: 'CastCo', status: 'offered', expires_at: (await deadline()).toISOString() });
+    expect(lines[accepted.position].partner).toEqual({ id: tenant.castco.id, name: 'CastCo', status: 'accepted', expires_at: null });
+    expect(lines[inHouse.position].partner).toBeNull();
+
+    // Past its deadline but not yet expired by the minute run: still offered, with the deadline it had.
+    const past = new Date(Date.now() - 3_600_000);
+    await prisma.inTenant(tenant.id, (tx) => tx.jobAssignment.updateMany({ where: { groupId: offered.group_id }, data: { expiresAt: past } }));
+    expect((await read())[offered.position].partner).toEqual({ id: tenant.castco.id, name: 'CastCo', status: 'offered', expires_at: past.toISOString() });
   });
 
   it("offers a line only to the partner holding the order's other lines", async () => {

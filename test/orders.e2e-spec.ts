@@ -319,7 +319,8 @@ describe('orders: placing an order', () => {
 
     const placed = await order(tenant, [picked.id]).expect(201);
     const line = (placed.body as Order).lines[0];
-    expect(line.partner).toEqual({ id: tenant.metalworks, name: 'MetalWorks Ltd' });
+    // A direct job is accepted at once, with no offer to answer.
+    expect(line.partner).toEqual({ id: tenant.metalworks, name: 'MetalWorks Ltd', status: 'accepted', expires_at: null });
     const history = (await tenant.staff.get(`/partners/jobs/${line.group_id}`).expect(200)).body as {
       data: { partner: { id: string }; kind: string; status: string }[];
     };

@@ -136,6 +136,19 @@ export const customerOrderPaymentResponseSchema = orderPaymentResponseSchema.pic
 });
 export type CustomerOrderPaymentResponse = z.infer<typeof customerOrderPaymentResponseSchema>;
 
+/**
+ * The partner holding a line or part, and whether it has accepted (Order detail spec, goal 2).
+ * `expires_at` is an open offer's deadline, kept as it was until the expiry run lets it go; null once
+ * accepted, or for a direct job.
+ */
+export const linePartnerSchema = z.strictObject({
+  id: z.uuid(),
+  name: z.string(),
+  status: z.enum(['offered', 'accepted']),
+  expires_at: z.iso.datetime().nullable(),
+});
+export type LinePartner = z.infer<typeof linePartnerSchema>;
+
 /** What a line or part was ordered with, as it was named when the order was placed (Order detail spec, goal 1). */
 export const linePicksResponseSchema = z.strictObject({
   options: linePicksSchema.shape.options,
@@ -159,7 +172,7 @@ export const orderLineResponseSchema = z.strictObject({
   /** The work order group the line is made as. */
   group_id: z.uuid().nullable(),
   /** The partner holding the line, offered or accepted; null while it is made in-house. */
-  partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+  partner: linePartnerSchema.nullable(),
   /**
    * An assembly's parts, each made as its own group under the line's and priced inside the line's
    * price; empty for any other line (Orders spec, goal 6).
@@ -178,7 +191,7 @@ export const orderLineResponseSchema = z.strictObject({
       ...linePicksResponseSchema.shape,
       state: z.enum(LINE_STATES),
       group_id: z.uuid().nullable(),
-      partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
+      partner: linePartnerSchema.nullable(),
     }),
   ),
 });

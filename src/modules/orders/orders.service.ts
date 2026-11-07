@@ -44,6 +44,7 @@ import type {
   CustomerOrderResponse,
   LabelRequest,
   LabelResponse,
+  LinePartner,
   LinePicksResponse,
   OrderCountsResponse,
   OrderLineResponse,
@@ -1229,7 +1230,16 @@ export class OrdersService {
       where: { groupId: { in: groupIds }, status: { in: HOLDING } },
       include: { partner: { select: { id: true, name: true } } },
     });
-    const partnerOf = new Map(holding.map((row) => [row.groupId, row.partner]));
+    const partnerOf = new Map<string, LinePartner>(
+      holding.map((row) => [
+        row.groupId,
+        {
+          ...row.partner,
+          status: row.status as LinePartner['status'],
+          expires_at: row.status === 'offered' ? (row.expiresAt?.toISOString() ?? null) : null,
+        },
+      ]),
+    );
     const pieces = await tx.workOrder.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, status: true } });
     // What was paid and refunded comes from the ledger (Payments spec).
     const journals = await tx.ledgerJournal.findMany({
