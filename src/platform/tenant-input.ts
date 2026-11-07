@@ -26,6 +26,16 @@ function isTimeZone(value: string): boolean {
   }
 }
 
+/** A BCP 47 tag, made canonical (`de-at` becomes `de-AT`): a workspace's default locale, and a person's own. */
+export const localeSchema = z.string().transform((value, ctx) => {
+  const locale = canonicalLocale(value);
+  if (!locale) {
+    ctx.addIssue({ code: 'custom', message: 'locale must be a BCP 47 tag, such as en or de-AT' });
+    return z.NEVER;
+  }
+  return locale;
+});
+
 export const createTenantSchema = z.object({
   name: z.string().trim().min(1).max(200),
   slug: z
@@ -35,14 +45,7 @@ export const createTenantSchema = z.object({
   currency: z
     .string()
     .refine((code) => CURRENCIES.has(code), 'currency must be an ISO 4217 code, such as EUR'),
-  locale: z.string().transform((value, ctx) => {
-    const locale = canonicalLocale(value);
-    if (!locale) {
-      ctx.addIssue({ code: 'custom', message: 'locale must be a BCP 47 tag, such as en or de-AT' });
-      return z.NEVER;
-    }
-    return locale;
-  }),
+  locale: localeSchema,
   timezone: z.string().refine(isTimeZone, 'timezone must be an IANA zone, such as Europe/Berlin'),
   // Invited as the tenant's owner; nobody's password is ever configured (F6).
   ownerEmail: emailSchema,

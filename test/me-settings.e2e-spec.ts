@@ -171,6 +171,60 @@ describe('current identity and settings', () => {
     });
   });
 
+  describe('PATCH /me', () => {
+    const patch = (token: string | null, body: unknown) => {
+      const req = request(app.getHttpServer()).patch('/me');
+      return (token ? req.set('Authorization', `Bearer ${token}`) : req).send(body as object);
+    };
+    /** A member of their own, so other tests' users keep their locale. */
+    const freshMember = async () => {
+      const user = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+      return { id: user.id, token: (await tokens.issueForUser(tenant.id, user.id)).accessToken };
+    };
+    const audited = (userId: string) =>
+      prisma.inTenant(tenant.id, (tx) => tx.auditEntry.findMany({ where: { action: 'user.locale_changed', subjectId: userId } }));
+
+    it('changes my language and answers /me', async () => {
+      const me = await freshMember();
+      const response = await patch(me.token, { locale: 'de-at' }).expect(200);
+      expectDocumented(meResponseSchema, response.body);
+      expect((response.body as { user: { id: string; locale: string } }).user).toMatchObject({ id: me.id, locale: 'de-AT' });
+      expect(((await get('/me', me.token).expect(200)).body as { user: { locale: string } }).user.locale).toBe('de-AT');
+      expect(await audited(me.id)).toEqual([
+        expect.objectContaining({
+          actorType: 'user',
+          actorId: me.id,
+          subjectType: 'user',
+          subjectId: me.id,
+          before: { locale: 'en' },
+          after: { locale: 'de-AT' },
+        }),
+      ]);
+    });
+
+    it("records nothing when the language doesn't change", async () => {
+      const me = await freshMember();
+      await patch(me.token, { locale: 'fr' }).expect(200);
+      const again = await patch(me.token, { locale: 'FR' }).expect(200);
+      expect((again.body as { user: { locale: string } }).user.locale).toBe('fr');
+      expect(await audited(me.id)).toHaveLength(1);
+    });
+
+    it('changes nothing else', async () => {
+      const me = await freshMember();
+      for (const body of [{ name: 'X' }, {}, { locale: 'xx-!!' }, { locale: 'de', name: 'X' }]) {
+        await patch(me.token, body).expect(400);
+      }
+      expect(((await get('/me', me.token).expect(200)).body as { user: { locale: string; name: string } }).user).toMatchObject({
+        locale: 'en',
+        name: 'Test User',
+      });
+      await patch(platformToken, { locale: 'de' }).expect(403);
+      await patch(null, { locale: 'de' }).expect(401);
+      expect(await audited(me.id)).toEqual([]);
+    });
+  });
+
   describe('settings', () => {
     const sender = { name: 'Ops', email: 'ops@example.test' };
 

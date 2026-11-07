@@ -1,5 +1,5 @@
 import { ZodError } from 'zod';
-import { createTenantSchema } from './tenant-input';
+import { createTenantSchema, localeSchema } from './tenant-input';
 
 const valid = {
   name: 'Example',
@@ -50,6 +50,12 @@ describe('tenant input', () => {
   it('canonicalises the locale and rejects an invalid one', () => {
     expect(createTenantSchema.parse({ ...valid, locale: 'en-us' }).locale).toBe('en-US');
     expect(() => createTenantSchema.parse({ ...valid, locale: 'not a locale' })).toThrow(ZodError);
+  });
+
+  it("makes a locale canonical and refuses one that isn't BCP 47 (Review Focus 5)", () => {
+    expect(localeSchema.parse('en-us')).toBe('en-US');
+    expect(localeSchema.parse('EN')).toBe('en');
+    expect(() => localeSchema.parse('xx-!!')).toThrow(ZodError);
   });
 
   it('accepts IANA time zones and rejects unknown ones', () => {
