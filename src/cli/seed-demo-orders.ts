@@ -20,7 +20,7 @@ import type { ChecklistItem, StepConfig } from '../modules/workflow/workflow-con
 // Demo orders for the demo workspace's Orders screen, on top of its customers, partners, catalog, pricing,
 // workflows, ordering setup, couriers and payment terms (the other `seed-*.ts`): every tab, needs-you
 // reason and payment state has an order. Each is quoted, placed, paid, offered to and accepted by its
-// workshop, moved through every step, shipped, delivered, invoiced, cancelled and refunded through the
+// workshop (one offer is left unanswered), moved through every step, shipped, delivered, invoiced, cancelled and refunded through the
 // services staff and partners use. Only the clock is the seed's: the services stamp each change with
 // now, so once an order is done its own dates are moved back to when it would have happened, relative
 // to the day the seed runs, and its states are stored again from the facts.
@@ -115,6 +115,8 @@ interface DemoOrder {
   paid?: boolean;
   /** Offered every line and accepts it once the order has started. */
   partner?: string;
+  /** False: the partner is offered every line and never answers. */
+  accepts?: false;
   progress: Progress;
   /** Working days from today the order is promised; a waiting order is promised as placed. */
   promised: number;
@@ -158,6 +160,8 @@ const ORDERS: DemoOrder[] = [
   { key: 'large-total', customer: 'Mira Studio', lines: [cast('gold_18k', 'polished', '1.5', 5)], paid: true, partner: NORTHCAST, progress: 'production', promised: 4 },
   // Pay later, not billed, in production.
   { key: 'not-billed', customer: 'Brightline', lines: [print('resin_standard', 'raw', '1', 40)], partner: LAYERLINE, progress: 'production', promised: 6 },
+  // Offered to its workshop, not answered yet.
+  { key: 'offered', customer: 'Mira Studio', lines: [cast('silver_925', 'polished', '1', 8)], paid: true, partner: NORTHCAST, accepts: false, progress: 'production', promised: 6 },
   // Shipped yesterday on pay-later terms, invoiced, not due yet.
   { key: 'invoiced', customer: 'Orbit Dental', lines: [print('nylon_pa12', 'raw', '1.5', 10)], partner: LAYERLINE, progress: 'shipped', promised: 0 },
   // Shipped over a month ago on 30 days: the invoice is overdue, to collect.
@@ -425,7 +429,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
       for (const line of (await deps.orders.get(tenantId, id)).lines) {
         if (!line.group_id) continue;
         await deps.jobs.offer(staff, line.group_id, partner.id);
-        await deps.jobs.accept(partnerAuth, line.group_id);
+        if (order.accepts !== false) await deps.jobs.accept(partnerAuth, line.group_id);
       }
     }
     if (FINISHED.includes(order.progress)) {
@@ -480,6 +484,13 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
         where: { groupId: { in: groupIds }, status: { in: ['offered', 'accepted'] } },
         data: { dueOn: asDate(workingDaysBefore(timeline.promisedOn, context.bufferDays, context.clock.calendar)) },
       });
+      // An offer left unanswered stays open for 30 days, so the offer expiry job doesn't lapse it a day after seeding.
+      if (order.accepts === false) {
+        await tx.jobAssignment.updateMany({
+          where: { groupId: { in: groupIds }, status: 'offered' },
+          data: { expiresAt: new Date(Date.now() + 30 * DAY_MS) },
+        });
+      }
       const invoice = await tx.invoice.findFirst({ where: { orderId: id, status: 'open' } });
       const terms = await tx.customerPaymentTerms.findUnique({ where: { customerId } });
       if (invoice && timeline.shippedAt && terms) {

@@ -40,9 +40,10 @@ const KEYS = {
 };
 
 interface Order {
+  id: string;
   number: number;
   customer: { name: string };
-  lines: object[];
+  lines: { partner: { status: string; expires_at: string | null } | null }[];
   payment: { state: string };
 }
 
@@ -82,7 +83,7 @@ describe('demo orders seed', () => {
     moves: app.get(MovesService),
   });
 
-  // 19 orders, each quoted, placed, paid, handed to its workshop and moved through every step through the
+  // 20 orders, each quoted, placed, paid, handed to its workshop and moved through every step through the
   // services, on top of the whole demo: far more work than one request, so it gets more than the usual 20 s.
   it('fills every tab and every needs-you reason, once', async () => {
     const tenant = await createTestTenant(prisma);
@@ -99,15 +100,15 @@ describe('demo orders seed', () => {
     await seedPayments({ prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) }, tenant.id, KEYS);
 
     const first = await seedDemoOrders(deps(), tenant.id, owner.id);
-    expect(first).toMatchObject({ customers: 6, orders: 19, notInvoiced: 0 });
+    expect(first).toMatchObject({ customers: 6, orders: 20, notInvoiced: 0 });
 
     const token = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     const get = (path: string) => request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${token}`).expect(200);
     const counts = (await get('/orders/counts')).body as { all: number; states: Record<string, number>; needs_you: Record<string, number> };
     expectDocumented(orderCountsResponseSchema, counts);
     expect(counts).toEqual({
-      all: 19,
-      states: { awaiting_payment: 2, in_production: 7, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
+      all: 20,
+      states: { awaiting_payment: 2, in_production: 8, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
       needs_you: { total: 10, late: 2, to_ship: 4, to_collect: 3, due_soon: 2 },
     });
     expect(first.counts).toEqual(counts);
@@ -122,7 +123,16 @@ describe('demo orders seed', () => {
     expect(orders.some((order) => order.lines.length === 3)).toBe(true);
     expect(orders.some((order) => order.customer.name.length === 40)).toBe(true);
     // Numbered from 1001 oldest first, as `-placed_at` lists them newest first.
-    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 19 }, (_, index) => 1019 - index));
+    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 20 }, (_, index) => 1020 - index));
+
+    // One line offered to its workshop and not answered yet, open for 30 days from the seed.
+    const offeredId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:offered' } })).id);
+    const offered = orders.find((order) => order.id === offeredId)!;
+    const partner = offered.lines[0].partner!;
+    expect(partner.status).toBe('offered');
+    const days = (Date.parse(partner.expires_at!) - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(29);
+    expect(days).toBeLessThan(31);
 
     const second = await seedDemoOrders(deps(), tenant.id, owner.id);
     expect(second).toMatchObject({ customers: 0, orders: 0, notInvoiced: 0 });
