@@ -176,6 +176,24 @@ describe('API docs', () => {
         expect(statuses(doc.paths[path].post)).not.toContain('409');
       }
     });
+
+    it('declares Idempotency-Key as an optional header on tenant POSTs only', () => {
+      const headers = (operation: OperationObject | undefined) =>
+        ((operation?.parameters ?? []) as { name: string; in: string; required?: boolean; schema?: object }[]).filter((parameter) => parameter.in === 'header');
+      for (const path of ['/roles', '/files', '/notifications/{id}/read']) {
+        expect(headers(doc.paths[path].post)).toEqual([
+          {
+            name: 'Idempotency-Key',
+            in: 'header',
+            required: false,
+            schema: { type: 'string', minLength: 1, maxLength: 255, pattern: '^[\\x21-\\x7E]{1,255}$' },
+          },
+        ]);
+      }
+      expect(headers(doc.paths['/auth/login'].post)).toEqual([]);
+      expect(headers(doc.paths['/platform/diagnostics/error'].post)).toEqual([]);
+      expect(headers(doc.paths['/users'].get)).toEqual([]);
+    });
   });
 
   it('shows no request body for a route that reads one but documents no schema', async () => {

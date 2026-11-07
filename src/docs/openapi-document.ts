@@ -2,7 +2,7 @@ import { INestApplication, RequestMethod } from '@nestjs/common';
 import { HTTP_CODE_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { MetadataScanner, ModulesContainer } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import type { OpenAPIObject, OperationObject, ResponsesObject, SchemaObject } from '@nestjs/swagger';
+import type { OpenAPIObject, OperationObject, ParameterObject, ResponsesObject, SchemaObject } from '@nestjs/swagger';
 import { z } from 'zod';
 import { ConfigService } from '../config/config.service';
 import { ROUTE_MARKER } from '../modules/identity/route-markers';
@@ -119,6 +119,14 @@ function accessLine(marker: RouteMarker | undefined): string {
   }
 }
 
+/** The header IdempotencyInterceptor reads, as its KEY_PATTERN checks it. */
+const IDEMPOTENCY_KEY_HEADER: ParameterObject = {
+  name: 'Idempotency-Key',
+  in: 'header',
+  required: false,
+  schema: { type: 'string', minLength: 1, maxLength: 255, pattern: '^[\\x21-\\x7E]{1,255}$' },
+};
+
 /** IdempotencyInterceptor covers POSTs made with a tenant token: tenant routes, not public or platform ones. */
 function isTenantPost(route: DocumentedRoute): boolean {
   const { marker } = route;
@@ -157,7 +165,8 @@ function fillOperation(operation: OperationObject, route: DocumentedRoute, ctx: 
   }
 
   // Path parameters as Nest generated them. Query parameters come only from
-  // `query`; headers read internally (such as Host) are not part of the API.
+  // `query`; headers read internally (such as Host) are not part of the API,
+  // but the idempotency key a client sends is.
   const pathParameters = (operation.parameters ?? []).filter((parameter) => 'in' in parameter && parameter.in === 'path');
   // A parameter only the guard reads, such as a portal route's customerId, has no @Param for Nest to see.
   for (const match of route.path.matchAll(/\{(\w+)\}/g)) {
@@ -173,7 +182,7 @@ function fillOperation(operation: OperationObject, route: DocumentedRoute, ctx: 
     required: !z.safeParse(field, undefined).success,
     schema: zodToOpenApi(field),
   }));
-  operation.parameters = [...pathParameters, ...queryParameters];
+  operation.parameters = [...pathParameters, ...queryParameters, ...(idempotent ? [IDEMPOTENCY_KEY_HEADER] : [])];
 
   const responses: ResponsesObject = {
     [route.status]: doc?.response
