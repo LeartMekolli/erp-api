@@ -4,13 +4,18 @@ import type { File, FileVersion, Measure } from '../../generated/prisma/client';
 // The shapes below are what clients receive: the docs show them and the e2e
 // tests check real responses against them. Nothing parses with them at runtime.
 
+/** A removed file's bytes are deleted, and no route finds it. */
+export const FILE_STATUSES = ['active', 'removed'] as const;
+/** An upload's path: pending, completing, uploaded, then measuring and measured, or failed. */
+export const VERSION_STATUSES = ['pending', 'completing', 'uploaded', 'measuring', 'measured', 'failed'] as const;
+
 export const fileResponseSchema = z.strictObject({
   id: z.uuid(),
   kind: z.string(),
   name: z.string(),
   declared_unit: z.string().nullable(),
   owner: z.strictObject({ type: z.string(), id: z.string() }).nullable(),
-  status: z.string(),
+  status: z.enum(FILE_STATUSES),
   created_at: z.string(),
 });
 export type FileResponse = z.infer<typeof fileResponseSchema>;
@@ -23,7 +28,7 @@ export const versionResponseSchema = z.strictObject({
   /** A number in JSON: FILE_MAX_BYTES keeps it far below 2^53. */
   size: z.number().int(),
   checksum: z.string().nullable(),
-  status: z.string(),
+  status: z.enum(VERSION_STATUSES),
   created_at: z.string(),
   completed_at: z.string().nullable(),
 });
@@ -70,7 +75,7 @@ export function toFileResponse(file: File): FileResponse {
     name: file.name,
     declared_unit: file.declaredUnit,
     owner: file.ownerType !== null && file.ownerId !== null ? { type: file.ownerType, id: file.ownerId } : null,
-    status: file.status,
+    status: file.status as FileResponse['status'],
     created_at: file.createdAt.toISOString(),
   };
 }
@@ -83,7 +88,7 @@ export function toVersionResponse(version: FileVersion): VersionResponse {
     content_type: version.contentType,
     size: Number(version.size),
     checksum: version.checksum,
-    status: version.status,
+    status: version.status as VersionResponse['status'],
     created_at: version.createdAt.toISOString(),
     completed_at: version.completedAt?.toISOString() ?? null,
   };
