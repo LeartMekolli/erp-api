@@ -77,6 +77,11 @@ export class CourierAccountService {
     };
   }
 
+  /** Whether the workspace has an account, so labels can be bought; its keys stay sealed. */
+  async configured(tx: Prisma.TransactionClient): Promise<boolean> {
+    return (await tx.courierAccount.count()) > 0;
+  }
+
   /** For a request that holds a transaction. 409 when the workspace has no account. */
   async keys(tx: Prisma.TransactionClient): Promise<CourierAccountKeys> {
     const account = await this.find(tx);

@@ -2,6 +2,7 @@ import { Controller, Get } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../../database/prisma.service';
 import { ApiDoc } from '../../docs/api-doc';
+import { CourierAccountService } from '../couriers/courier-account.service';
 import { CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { TENANT_PERMISSIONS } from '../identity/permissions';
@@ -20,6 +21,8 @@ export const meResponseSchema = z.strictObject({
     name: z.string(),
     default_currency: z.string(),
     timezone: z.string(),
+    /** Whether the workspace has a courier account, so labels can be bought when shipping. */
+    labels_available: z.boolean(),
   }),
   roles: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),
   permissions: z.array(z.enum(TENANT_PERMISSIONS)),
@@ -35,20 +38,24 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
  */
 @Controller('me')
 export class MeController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly courierAccounts: CourierAccountService,
+  ) {}
 
   @ApiDoc({
     summary: "The caller's own kind, user, workspace, roles, permissions and memberships.",
     description:
       '`kind` says where the caller works (staff, partner or customer), whatever memberships they have left. ' +
-      "`workspace` gives the name, currency and time zone screens show dates and money in.",
+      "`workspace` gives the name, currency and time zone screens show dates and money in, and whether labels can " +
+      'be bought when shipping (`labels_available`), never anything of the courier account.',
     response: meResponseSchema,
     errors: [401],
   })
   @Authenticated()
   @Get()
   async me(@CurrentUser() auth: TenantAuth): Promise<MeResponse> {
-    const { user, tenant } = await this.prisma.inTenant(auth.tenantId, async (tx) => ({
+    const { user, tenant, labelsAvailable } = await this.prisma.inTenant(auth.tenantId, async (tx) => ({
       user: await tx.user.findUniqueOrThrow({
         where: { id: auth.userId },
         include: {
@@ -60,6 +67,7 @@ export class MeController {
         where: { id: auth.tenantId },
         select: { id: true, slug: true, name: true, defaultCurrency: true, timezone: true },
       }),
+      labelsAvailable: await this.courierAccounts.configured(tx),
     }));
 
     return {
@@ -71,6 +79,7 @@ export class MeController {
         name: tenant.name,
         default_currency: tenant.defaultCurrency,
         timezone: tenant.timezone,
+        labels_available: labelsAvailable,
       },
       roles: user.roles.map(({ role }) => role).sort((a, b) => a.name.localeCompare(b.name)),
       // As the guard resolved them for this request.
