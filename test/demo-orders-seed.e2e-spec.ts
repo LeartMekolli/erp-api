@@ -110,6 +110,8 @@ describe('demo orders seed', () => {
       all: 20,
       states: { awaiting_payment: 2, in_production: 8, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
       needs_you: { total: 10, late: 2, to_ship: 4, to_collect: 3, due_soon: 2 },
+      // The awaiting payment tile shows an amount: something is owed on the demo's orders to collect.
+      to_collect_amounts: [{ currency: 'EUR', amount: expect.stringMatching(/^[1-9]\d*\.\d{2}$/) }],
     });
     expect(first.counts).toEqual(counts);
 

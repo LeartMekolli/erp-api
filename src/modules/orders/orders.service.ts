@@ -30,6 +30,7 @@ import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
+import { owedByCurrency } from '../payments/owed';
 import { INVOICE_STATUSES, PAYMENT_STATES, paidAndRefunded } from '../payments/payment-state';
 import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
@@ -718,7 +719,10 @@ export class OrdersService {
       const countNeeding = (reasons: readonly NeedsReason[]) => tx.order.count({ where: { AND: [where, needsWhere(reasons, day)] } });
       const needs_you = { total: await countNeeding(NEEDS_REASONS) } as OrderCountsResponse['needs_you'];
       for (const reason of NEEDS_REASONS) needs_you[reason] = await countNeeding([reason]);
-      return { all: await tx.order.count({ where }), states, needs_you };
+      // Every order the tile counts, not a page of them (Orders list extras spec, goal 2).
+      const toCollect = await tx.order.findMany({ where: { AND: [where, needsWhere(['to_collect'], day)] }, select: { id: true } });
+      const to_collect_amounts = await owedByCurrency(tx, toCollect.map((order) => order.id));
+      return { all: await tx.order.count({ where }), states, needs_you, to_collect_amounts };
     });
   }
 

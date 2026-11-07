@@ -97,6 +97,8 @@ export class OrdersController {
       "Takes the list's `customer_id`, `payment_state`, `promised_after`, `promised_before` and `q`, with the same " +
       'meaning; `state`, `needs`, paging and `sort` pick a tab or a page, and are a 400 here. `all` counts every ' +
       'order the filters pick; `states` and `needs_you` count only orders whose state is computed. ' +
+      '`to_collect_amounts` is what is still owed on the orders `needs_you.to_collect` counts, per currency: the open ' +
+      'invoice less issued credit notes, or the order total before billing, less what was paid. ' +
       '`needs_you.total` counts an order matching several reasons once, so it can be less than their sum.',
     query: orderCountsQuerySchema,
     response: orderCountsResponseSchema,

@@ -252,6 +252,12 @@ export const orderCountsResponseSchema = z.strictObject({
     'total' | (typeof NEEDS_REASONS)[number],
     typeof count
   >),
+  /**
+   * What is still owed on the orders `needs_you.to_collect` counts, per currency, sorted by it: the open
+   * invoice less issued credit notes, or the order total before billing, less what was paid. A currency
+   * owing nothing is left out.
+   */
+  to_collect_amounts: z.array(z.strictObject({ currency: z.string(), amount: z.string().describe('With two decimals.') })),
 });
 export type OrderCountsResponse = z.infer<typeof orderCountsResponseSchema>;
 

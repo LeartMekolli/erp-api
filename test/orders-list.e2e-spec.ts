@@ -12,6 +12,7 @@ import type { AiTool } from '../src/modules/ai/tools/tool';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { orderCountsResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
+import { openOnInvoice } from '../src/modules/payments/credit-notes.service';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
@@ -22,7 +23,9 @@ interface Order {
   state: string;
   promised_on: string;
   placed_at: string;
-  lines: { group_id: string }[];
+  lines: { id: string; group_id: string }[];
+  total: string;
+  currency: string;
   payment: { state: string };
 }
 interface Page {
@@ -83,7 +86,7 @@ describe('orders: the staff list', () => {
       return (await staff.post('/orders', { customer_id: customerId, lines: [{ quote_id: quote }], address, shipping_method: 'courier' }).expect(201))
         .body as Order;
     };
-    return { id: tenant.id, staff, luna, sol, place };
+    return { id: tenant.id, ownerId: owner.id, staff, luna, sol, place };
   }
   type Tenant = Awaited<ReturnType<typeof freshTenant>>;
 
@@ -123,7 +126,10 @@ describe('orders: the staff list', () => {
     all: number;
     states: Record<string, number>;
     needs_you: Record<'total' | 'late' | 'to_ship' | 'to_collect' | 'due_soon', number>;
+    to_collect_amounts: { currency: string; amount: string }[];
   }
+  /** Adds two-decimal amounts exactly, in cents. */
+  const plus = (...amounts: string[]) => (amounts.reduce((sum, amount) => sum + Math.round(Number(amount) * 100), 0) / 100).toFixed(2);
   /** `GET /orders/counts?<query>`, checked against its documented shape. */
   const counts = async (query: string, by: Tenant = w) => {
     const response = await by.staff.get(`/orders/counts?${query}`).expect(200);
@@ -318,6 +324,8 @@ describe('orders: the staff list', () => {
         states: { awaiting_payment: 1, in_production: 2, ready: 1, shipped: 1, delivered: 0, cancelled: 1 },
         // Every promise is in 2030: nothing late or due soon. Ready is to ship; waiting and overdue are to collect.
         needs_you: { total: 3, late: 0, to_ship: 1, to_collect: 2, due_soon: 0 },
+        // The waiting order's total, and the overdue invoice's 10.00.
+        to_collect_amounts: [{ currency: o.waiting.currency, amount: plus(o.waiting.total, '10.00') }],
       });
       for (const reason of ['late', 'to_ship', 'to_collect', 'due_soon'] as const) {
         expect([reason, shown.needs_you[reason]]).toEqual([reason, (await ids(`needs=${reason}`)).length]);
@@ -333,6 +341,7 @@ describe('orders: the staff list', () => {
         all: 5,
         states: { awaiting_payment: 0, in_production: 2, ready: 1, shipped: 1, delivered: 0, cancelled: 1 },
         needs_you: { total: 2, late: 0, to_ship: 1, to_collect: 1, due_soon: 0 },
+        to_collect_amounts: [{ currency: 'EUR', amount: '10.00' }],
       });
       expect((await counts('q=1003')).all).toBe(1);
       expect((await counts(`customer_id=${w.sol}`)).states.awaiting_payment).toBe(1);
@@ -366,6 +375,105 @@ describe('orders: the staff list', () => {
         const response = await w.staff.get(`/orders/counts?${query}`);
         expect([query, response.status]).toEqual([query, 400]);
       }
+    });
+
+    describe('what is still to collect', () => {
+      /** An invoice as the provider made it; no provider is connected here. */
+      const invoiceFor = (tx: Prisma.TransactionClient, order: Order, total: string, status: string, dueOn: string) =>
+        tx.invoice.create({
+          data: {
+            orderId: order.id,
+            providerInvoiceId: `in_${order.id.replaceAll('-', '')}`,
+            url: `https://invoices.example.test/${order.id}`,
+            linesAmount: total,
+            shipping: '0.00',
+            tax: '0.00',
+            total,
+            currency: 'EUR',
+            dueOn: new Date(`${dueOn}T00:00:00Z`),
+            status,
+          },
+        });
+      /** A payment received for the order, as the ledger posts one. */
+      const paid = (tenant: Tenant, order: Order, amount: string) =>
+        prisma.inTenant(tenant.id, (tx) =>
+          tx.ledgerJournal.create({
+            data: {
+              kind: 'payment_received',
+              occurredAt: new Date(),
+              currency: order.currency,
+              orderId: order.id,
+              memo: '',
+              lines: {
+                create: [
+                  { account: 'stripe_balance', amount },
+                  { account: 'customer_receivable', amount: `-${amount}` },
+                ],
+              },
+            },
+          }),
+        );
+
+      it('sums what is still owed per currency, as an overdue reminder does (Review Focus 3)', async () => {
+        const m = await freshTenant();
+        const unbilled = await m.place(m.sol);
+        const partPaid = await m.place(m.sol);
+        const fullyPaid = await m.place(m.sol);
+        const dollars = await m.place(m.sol);
+        const billed = await m.place(m.luna);
+        await finish(m, billed);
+        await m.staff.post(`/orders/${billed.id}/ship`, {}).expect(200);
+        await fake(m, billed.id, (tx) => invoiceFor(tx, billed, '10.00', 'open', '2000-01-01'));
+        await paid(m, partPaid, '3.00');
+        await paid(m, fullyPaid, fullyPaid.total);
+        await paid(m, billed, '3.00');
+        // Credit notes come from claims: an issued one counts, a pending one doesn't yet.
+        await prisma.inTenant(m.id, async (tx) => {
+          const invoice = await tx.invoice.findFirstOrThrow({ where: { orderId: billed.id } });
+          const claim = await tx.claim.create({
+            data: {
+              orderId: billed.id,
+              number: 1,
+              reason: 'defect',
+              description: 'Cracked shank.',
+              openedByUserId: m.ownerId,
+              openedByKind: 'staff',
+              lines: { create: [{ orderLineId: billed.lines[0].id, pieces: 1 }] },
+            },
+            include: { lines: true },
+          });
+          const note = { orderId: billed.id, invoiceId: invoice.id, claimLineId: claim.lines[0].id };
+          await tx.creditNote.create({ data: { ...note, amount: '2.00', status: 'issued', providerCreditNoteId: `cn_${claim.id.replaceAll('-', '')}` } });
+          await tx.creditNote.create({ data: { ...note, amount: '1.00', status: 'pending' } });
+        });
+        await prisma.inTenant(m.id, (tx) => tx.order.update({ where: { id: dollars.id }, data: { currency: 'USD' } }));
+
+        const reminderSays = await prisma.inTenant(m.id, async (tx) =>
+          openOnInvoice(tx, await tx.invoice.findFirstOrThrow({ where: { orderId: billed.id } })),
+        );
+        expect(reminderSays.toFixed(2)).toBe('5.00');
+        const shown = await counts('', m);
+        expect(shown.needs_you.to_collect).toBe(5);
+        // Unbilled at its total, part paid less 3.00, fully paid at 0, billed at what the reminder says.
+        expect(shown.to_collect_amounts).toEqual([
+          { currency: 'EUR', amount: plus(unbilled.total, partPaid.total, '-3.00', '5.00') },
+          { currency: 'USD', amount: dollars.total },
+        ]);
+        // Each customer's own.
+        expect((await counts(`customer_id=${m.luna}`, m)).to_collect_amounts).toEqual([{ currency: 'EUR', amount: '5.00' }]);
+      });
+
+      it('uses the order total when its invoice is void (Review Focus 4)', async () => {
+        const m = await freshTenant();
+        const waiting = await m.place(m.sol);
+        await prisma.inTenant(m.id, (tx) => invoiceFor(tx, waiting, '99.00', 'void', '2030-01-01'));
+        expect((await counts('', m)).to_collect_amounts).toEqual([{ currency: waiting.currency, amount: waiting.total }]);
+      });
+
+      it('is empty when nothing is to collect', async () => {
+        // The other workspace's only order is in production.
+        expect((await counts('', other)).to_collect_amounts).toEqual([]);
+      });
     });
   });
 
