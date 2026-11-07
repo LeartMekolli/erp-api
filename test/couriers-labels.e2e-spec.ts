@@ -355,7 +355,6 @@ describe('couriers: labels and tracking', () => {
       return (response.body as { results: Result[] }).results;
     };
     const stateOf = async (w: Workspace, id: string) => ((await w.staff.get(`/orders/${id}`).expect(200)).body as Order).state;
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
     it("ships each order as the single route does, in the request's order", async () => {
       const w = await workspace();
@@ -440,12 +439,17 @@ describe('couriers: labels and tracking', () => {
       const buy = fake.buy.bind(fake);
       let pending = 0;
       let highest = 0;
+      // Purchases wait at a gate that opens once 5 are waiting: a 6th starting early would be seen, whatever
+      // the timing. Should fewer than 5 ever arrive, it opens after 5 seconds and `highest` says so.
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const fallback = setTimeout(() => open(), 5_000);
       jest.spyOn(fake, 'buy').mockImplementation(async (...args) => {
         pending += 1;
         highest = Math.max(highest, pending);
+        if (pending === 5) open();
         try {
-          // Long enough that the 5 first purchases overlap, as real ones at about 3 seconds do.
-          await wait(300);
+          await gate;
           return await buy(...args);
         } finally {
           pending -= 1;
@@ -456,6 +460,7 @@ describe('couriers: labels and tracking', () => {
         w,
         orders.map((order) => ({ order_id: order.id, label: {} })),
       );
+      clearTimeout(fallback);
       expect(results.map((one) => one.result)).toEqual(Array(7).fill('shipped'));
       expect(highest).toBe(5);
       for (const order of orders) expect(await w.shipments(order.id)).toEqual([expect.objectContaining({ status: 'bought' })]);
