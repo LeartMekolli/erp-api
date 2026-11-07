@@ -52,6 +52,8 @@ export const openClaimSchema = z.strictObject({
 export type OpenClaim = z.infer<typeof openClaimSchema>;
 
 export const claimListQuerySchema = paginationQuerySchema.extend({
+  /** One order's claims, for the order page (Order detail spec, goal 5). */
+  order_id: z.uuid().optional(),
   state: z.enum(CLAIM_STATES).optional(),
   /** Claims with a line decided at this fault. */
   fault: z.enum(CLAIM_FAULTS).optional(),
@@ -169,6 +171,7 @@ export class ClaimsService implements OnModuleInit {
   /** Every claim, newest first, filtered. */
   list(tenantId: string, query: ClaimListQuery): Promise<Page<ClaimResponse>> {
     const where: Prisma.ClaimWhereInput[] = [];
+    if (query.order_id) where.push({ orderId: query.order_id });
     if (query.state) where.push(stateWhere(query.state));
     if (query.fault) where.push({ lines: { some: { fault: query.fault } } });
     if (query.partner_id) where.push({ lines: { some: { partnerId: query.partner_id } } });
