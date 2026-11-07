@@ -70,6 +70,7 @@ describe('idempotency keys', () => {
 
     const conflict = await createRole(owner.token, { name: 'Other', permissions: [] }, key).expect(409);
     expect(conflict.body.detail).toBe('Idempotency key reused with a different request');
+    expect(conflict.body.code).toBe('idempotency_key_reused');
     expect(await rolesNamed(owner.tenantId, 'Other')).toBe(0);
   });
 
@@ -89,6 +90,9 @@ describe('idempotency keys', () => {
       [201, 201],
       [201, 409],
     ]).toContainEqual(statuses);
+    for (const response of responses.filter((one) => one.status === 409)) {
+      expect(response.body.code).toBe('idempotency_in_progress');
+    }
     expect(await rolesNamed(owner.tenantId, 'Racer')).toBe(1);
   });
 
@@ -135,6 +139,7 @@ describe('idempotency keys', () => {
 
     const busy = await createRole(owner.token, body, key).expect(409);
     expect(busy.body.detail).toBe('A request with this key is in progress');
+    expect(busy.body.code).toBe('idempotency_in_progress');
 
     await prisma.inTenant(owner.tenantId, (tx) =>
       tx.idempotencyKey.updateMany({ where: { key }, data: { createdAt: new Date(Date.now() - 61_000) } }),
