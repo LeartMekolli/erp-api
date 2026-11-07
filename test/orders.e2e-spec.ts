@@ -26,6 +26,9 @@ interface Line {
   state: string;
   group_id: string;
   partner: { id: string; name: string } | null;
+  options: { group: { key: string; name: string }; value: { key: string; name: string } }[];
+  size: object | null;
+  design_file: { file_id: string; file_version_id: string; name: string } | null;
 }
 interface Order {
   id: string;
@@ -148,7 +151,8 @@ describe('orders: placing an order', () => {
       await staff.put(`/customers/${customer}/payment-terms`, { terms: 'pay_later' }).expect(200);
     }
     // Luna's own design: a customer may only quote with its own files.
-    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
+    const designFile = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
+    const design = designFile.versionId;
     const timezone = (await prisma.inTenant(tenant.id, (tx) => tx.tenant.findUniqueOrThrow({ where: { id: tenant.id } }))).timezone;
 
     const configuration = (extra: object = {}) => ({
@@ -178,6 +182,7 @@ describe('orders: placing an order', () => {
       metalworks,
       luna,
       sol,
+      designFile,
       timezone,
       staffQuote,
       lunaQuote,
@@ -279,6 +284,32 @@ describe('orders: placing an order', () => {
       tx.auditEntry.count({ where: { action: 'order.changed', subjectType: 'order', subjectId: body.id } }),
     );
     expect(audited).toBe(1);
+  });
+
+  it('saves what each line was ordered with, by name, and keeps it when the catalog changes', async () => {
+    const tenant = await freshTenant();
+    const rename = (name: string) => tenant.staff.patch(`/catalog/option-values/${tenant.cast.v.silver}`, { name }).expect(200);
+    await rename('Sterling silver');
+
+    const placed = await order(tenant, [(await tenant.lunaQuote()).id]).expect(201);
+    expectDocumented(orderResponseSchema, placed.body);
+    const id = (placed.body as Order).id;
+    const ordered = {
+      // In the product's option group order, by the names they had when the order was placed.
+      options: [
+        { group: { key: 'material', name: 'material' }, value: { key: 'silver_925', name: 'Sterling silver' } },
+        { group: { key: 'finish', name: 'finish' }, value: { key: 'polished', name: 'polished' } },
+      ],
+      size: { scale: '1.5' },
+      design_file: { file_id: tenant.designFile.fileId, file_version_id: tenant.designFile.versionId, name: 'part.stl' },
+    };
+    expect((placed.body as Order).lines[0]).toMatchObject(ordered);
+
+    // Renaming the value later leaves the placed order as it was.
+    await rename('Silver');
+    const read = await tenant.staff.get(`/orders/${id}`).expect(200);
+    expectDocumented(orderResponseSchema, read.body);
+    expect((read.body as Order).lines[0]).toMatchObject(ordered);
   });
 
   it("starts a line at the workshop the customer picked, as that workshop's job at once", async () => {

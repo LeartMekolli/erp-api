@@ -3,6 +3,7 @@ import { TRACKING_STATUSES } from '../couriers/courier-provider';
 import { INVOICE_STATUSES, PAYMENT_STATES, PAYMENT_TERMS } from '../payments/payment-state';
 import { quoteRefusalSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 import { customerViewResponseSchema } from '../workflow/work-order-response';
+import { linePicksSchema } from './line-picks';
 import { NEEDS_REASONS } from './needs';
 
 // What clients receive for orders and their setup; checked against real responses in the e2e tests.
@@ -135,6 +136,15 @@ export const customerOrderPaymentResponseSchema = orderPaymentResponseSchema.pic
 });
 export type CustomerOrderPaymentResponse = z.infer<typeof customerOrderPaymentResponseSchema>;
 
+/** What a line or part was ordered with, as it was named when the order was placed (Order detail spec, goal 1). */
+export const linePicksResponseSchema = z.strictObject({
+  options: linePicksSchema.shape.options,
+  size: linePicksSchema.shape.size,
+  /** The quote's file, else the product's own; null when neither. */
+  design_file: linePicksSchema.shape.design_file.unwrap().omit({ customer_owned: true }).nullable(),
+});
+export type LinePicksResponse = z.infer<typeof linePicksResponseSchema>;
+
 export const orderLineResponseSchema = z.strictObject({
   id: z.uuid(),
   /** From 0, in the order the lines were placed. */
@@ -143,6 +153,7 @@ export const orderLineResponseSchema = z.strictObject({
   quantity: z.number().int(),
   unit_price: z.string(),
   total: z.string(),
+  ...linePicksResponseSchema.shape,
   /** Derived from the line's pieces. */
   state: z.enum(LINE_STATES),
   /** The work order group the line is made as. */
@@ -163,6 +174,8 @@ export const orderLineResponseSchema = z.strictObject({
       quantity: z.number().int(),
       unit_price: z.string(),
       total: z.string(),
+      /** The options of the assembly's groups the part has, its own size, and its own pinned file. */
+      ...linePicksResponseSchema.shape,
       state: z.enum(LINE_STATES),
       group_id: z.uuid().nullable(),
       partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
@@ -231,7 +244,10 @@ export const portalShippingMethodsResponseSchema = z.strictObject({
 });
 export type PortalShippingMethodsResponse = z.infer<typeof portalShippingMethodsResponseSchema>;
 
-/** A line as its customer sees it: no partner and no work order group, with the stages the customer may see. */
+/**
+ * A line as its customer sees it: no partner and no work order group, with the stages the customer may
+ * see; its design file only when it is the customer's own (Order detail spec, goal 6).
+ */
 export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ group_id: true, partner: true }).extend({
   progress: customerViewResponseSchema,
   /** What an assembly is made of, and how far each part is; never a part's price or who makes it. */
@@ -240,6 +256,8 @@ export const customerOrderLineResponseSchema = orderLineResponseSchema.omit({ gr
       position: z.number().int(),
       product: z.strictObject({ id: z.uuid(), name: z.string() }),
       quantity: z.number().int(),
+      options: linePicksResponseSchema.shape.options,
+      size: linePicksResponseSchema.shape.size,
       state: z.enum(LINE_STATES),
       progress: customerViewResponseSchema,
     }),
