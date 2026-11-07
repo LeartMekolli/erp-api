@@ -28,6 +28,20 @@ First target industry: made-to-order 3D objects (printed and cast parts), decide
 - Branch names are `<what we're fixing>/<one or two words for what the change does>`, e.g. `test-isolation/drop-workarounds`. Never end a branch name with `/master`, and never use a bare task number as the second part.
 - Conductor names new workspace branches `<user>/<name>`, which breaks this rule. Agents don't rename branches themselves. Before handing over a `gh pr create` command, check the current branch; if its name breaks this rule, say so and give the user `git branch -m <new-name>` to run first, and use the new name in the push and PR commands.
 
+## Seeds and database resets
+
+- Every spec and plan says whether the seed (`src/cli/seed*.ts`) changes, or states that it doesn't. Check it whenever a change adds or changes a table, a column, a response field the demo should show, or a flow the demo orders go through. A new state or field the frontend shows gets at least one demo record that has it.
+- The seed is idempotent and skips records that exist, so a seed change never reaches a database that was already seeded. Existing rows are brought up to date by the migration (a backfill in its SQL), or, when the user agrees, left as they are until a reset. Never by code that reads old and new shapes.
+- When a local database still needs a reset to show a change (a seed change, or a migration that can't backfill), say so at the end of the task and hand the user the commands, never run them:
+
+  ```sh
+  docker compose down -v && docker compose up -d
+  npx prisma migrate deploy
+  npm run seed
+  ```
+
+- Staging is never reset or seeded by these steps. A change that would need it is a question for the user.
+
 ## Commit messages
 
 Agents suggest commit messages; the user commits. Keep them minimal and written the way a person would write them.
