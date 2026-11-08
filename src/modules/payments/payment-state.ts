@@ -62,7 +62,7 @@ export function billableTotals(
 }
 
 /** Where money arrives and leaves: a payment debits one of them, a refund credits one. */
-const CASH_ACCOUNTS: ReadonlySet<string> = new Set(['stripe_balance', 'outside_stripe']);
+export const CASH_ACCOUNTS: ReadonlySet<string> = new Set(['stripe_balance', 'outside_stripe']);
 
 /**
  * What was paid and refunded, from an order's `payment_received` and `refund` journals: the

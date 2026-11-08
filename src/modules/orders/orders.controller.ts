@@ -7,10 +7,10 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { orderCountsResponseSchema, orderResponseSchema } from './order-response';
-import type { OrderCountsResponse, OrderResponse } from './order-response';
-import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipOrderSchema } from './orders.service';
-import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipOrder } from './orders.service';
+import { bulkShipResponseSchema, orderCountsResponseSchema, orderResponseSchema } from './order-response';
+import type { BulkShipResponse, OrderCountsResponse, OrderResponse } from './order-response';
+import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipManySchema, shipOrderSchema } from './orders.service';
+import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipMany, ShipOrder } from './orders.service';
 import { staffPlaceOrderSchema } from './place-order';
 import type { StaffPlaceOrder } from './place-order';
 
@@ -47,6 +47,26 @@ export class OrdersController {
   }
 
   @ApiDoc({
+    summary: "Ship up to 25 orders in one request, each as shipping one order does, and answer each one's result.",
+    description:
+      'Each entry is an order and the options shipping it alone takes (`courier` and `tracking`, or `label`). Up to 5 ' +
+      'ship at the same time while you wait. One failing never stops or undoes another: its `error` is what shipping ' +
+      'it alone would have answered, with its status, its `code` when it has one, and its detail; an order not found ' +
+      'is a failed 404. A malformed request, more than 25 entries or an order listed twice is a 400, and nothing ' +
+      'ships. A replayed answer includes its failed entries: to try those again, send them in a new request with a ' +
+      'new key.',
+    body: shipManySchema,
+    response: bulkShipResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('order.ship')
+  @Post('ship')
+  @HttpCode(200)
+  shipMany(@CurrentUser() auth: TenantAuth, @Body(new ZodValidationPipe(shipManySchema)) body: ShipMany): Promise<BulkShipResponse> {
+    return this.orders.shipMany(auth, body);
+  }
+
+  @ApiDoc({
     summary: 'Orders, filtered, searched and sorted, a page at a time.',
     description:
       '`state` and `payment_state` take one or more values, comma-separated (`state=ready,in_production`); an unknown ' +
@@ -77,6 +97,8 @@ export class OrdersController {
       "Takes the list's `customer_id`, `payment_state`, `promised_after`, `promised_before` and `q`, with the same " +
       'meaning; `state`, `needs`, paging and `sort` pick a tab or a page, and are a 400 here. `all` counts every ' +
       'order the filters pick; `states` and `needs_you` count only orders whose state is computed. ' +
+      '`to_collect_amounts` is what is still owed on the orders `needs_you.to_collect` counts, per currency: the open ' +
+      'invoice less issued credit notes, or the order total before billing, less what was paid. ' +
       '`needs_you.total` counts an order matching several reasons once, so it can be less than their sum.',
     query: orderCountsQuerySchema,
     response: orderCountsResponseSchema,

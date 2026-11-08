@@ -10,6 +10,8 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { mapWithLimit } from '../../common/concurrency/map-with-limit';
+import { toApiError } from '../../common/errors/api-error';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import type { CursorPayload } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
@@ -28,6 +30,7 @@ import { customerRefusal } from '../customers/customer-refusals';
 import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
+import { owedByCurrency } from '../payments/owed';
 import { INVOICE_STATUSES, PAYMENT_STATES, paidAndRefunded } from '../payments/payment-state';
 import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
@@ -40,6 +43,7 @@ import type { BusinessCalendar } from './dates';
 import { ORDER_STATES, labelRequestSchema } from './order-response';
 import type {
   Address,
+  BulkShipResponse,
   CustomerOrderLineResponse,
   CustomerOrderResponse,
   LabelRequest,
@@ -204,16 +208,29 @@ export const courierTrackingSchema = z.strictObject({
   tracking: z.string().trim().min(1).max(200).optional(),
 });
 
-export const shipOrderSchema = courierTrackingSchema
-  .extend({
-    /** Buy the label from the workspace's courier service now; its carrier and tracking are the order's. */
-    label: labelRequestSchema.optional(),
-  })
-  .refine((body) => !body.label || (body.courier === undefined && body.tracking === undefined), {
-    message: 'a bought label names its own courier and tracking',
-    path: ['label'],
-  });
+const shipOptions = courierTrackingSchema.extend({
+  /** Buy the label from the workspace's courier service now; its carrier and tracking are the order's. */
+  label: labelRequestSchema.optional(),
+});
+const labelNamesItsOwn = (body: z.infer<typeof shipOptions>) =>
+  !body.label || (body.courier === undefined && body.tracking === undefined);
+const LABEL_NAMES_ITS_OWN = { message: 'a bought label names its own courier and tracking', path: ['label'] };
+
+export const shipOrderSchema = shipOptions.refine(labelNamesItsOwn, LABEL_NAMES_ITS_OWN);
 export type ShipOrder = z.infer<typeof shipOrderSchema>;
+
+/** Shipping several orders at once: each entry is one order and the options shipping it alone takes. */
+export const shipManySchema = z.strictObject({
+  orders: z
+    .array(shipOptions.extend({ order_id: z.uuid() }).refine(labelNamesItsOwn, LABEL_NAMES_ITS_OWN))
+    .min(1)
+    .max(25)
+    .refine((orders) => new Set(orders.map((entry) => entry.order_id)).size === orders.length, 'an order is listed twice'),
+});
+export type ShipMany = z.infer<typeof shipManySchema>;
+
+/** How many orders of a batch ship at the same time (Orders list extras spec, goal 1). */
+const SHIP_AT_ONCE = 5;
 
 /** Shown in a notification for a courier or tracking number staff didn't give. */
 const NOT_GIVEN = '—';
@@ -558,6 +575,27 @@ export class OrdersService {
     return shipped;
   }
 
+  /**
+   * Ships each order as `ship` does, a few at a time (Orders list extras spec, goal 1). Each succeeds or
+   * fails on its own; a failure is answered as shipping that order alone would have answered it.
+   */
+  async shipMany(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, body: ShipMany): Promise<BulkShipResponse> {
+    const results = await mapWithLimit(body.orders, SHIP_AT_ONCE, async ({ order_id, ...options }): Promise<BulkShipResponse['results'][number]> => {
+      try {
+        return { order_id, result: 'shipped', order: await this.ship(auth, order_id, options) };
+      } catch (error) {
+        if (!(error instanceof HttpException)) this.logger.error({ err: error, orderId: order_id }, 'shipping an order of a batch failed');
+        const problem = toApiError(error);
+        return {
+          order_id,
+          result: 'failed',
+          error: { status: problem.status, code: problem.code ?? null, detail: problem.detail ?? problem.title },
+        };
+      }
+    });
+    return { results };
+  }
+
   /** Marks a shipped order delivered, and tells the customer. An order not shipped, or delivered already, is a 409. */
   async deliver(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, id: string): Promise<OrderResponse> {
     const delivered = await this.prisma.inTenant(auth.tenantId, async (tx) => {
@@ -681,7 +719,10 @@ export class OrdersService {
       const countNeeding = (reasons: readonly NeedsReason[]) => tx.order.count({ where: { AND: [where, needsWhere(reasons, day)] } });
       const needs_you = { total: await countNeeding(NEEDS_REASONS) } as OrderCountsResponse['needs_you'];
       for (const reason of NEEDS_REASONS) needs_you[reason] = await countNeeding([reason]);
-      return { all: await tx.order.count({ where }), states, needs_you };
+      // Every order the tile counts, not a page of them (Orders list extras spec, goal 2).
+      const toCollect = await tx.order.findMany({ where: { AND: [where, needsWhere(['to_collect'], day)] }, select: { id: true } });
+      const to_collect_amounts = await owedByCurrency(tx, toCollect.map((order) => order.id));
+      return { all: await tx.order.count({ where }), states, needs_you, to_collect_amounts };
     });
   }
 

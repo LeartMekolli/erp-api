@@ -11,6 +11,12 @@ import { meResponseSchema } from '../src/modules/users/me.controller';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
+const COURIER_ACCOUNT = {
+  api_key: 'EZTKtest_me_key_456',
+  webhook_secret: 'whsec_me_test',
+  from_address: { name: 'Sol Studio', line1: 'Main street 2', city: 'Munich', postal_code: '80331', country: 'DE' },
+};
+
 describe('current identity and settings', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -23,6 +29,7 @@ describe('current identity and settings', () => {
   let otherOwnerToken: string;
   let platformToken: string;
   let platformAdminId: string;
+  const createdTenants: string[] = [];
 
   const get = (path: string, token: string) =>
     request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${token}`);
@@ -54,7 +61,7 @@ describe('current identity and settings', () => {
   });
 
   afterAll(async () => {
-    await deleteTestTenants(prisma, [tenant.id, other.id]);
+    await deleteTestTenants(prisma, [tenant.id, other.id, ...createdTenants]);
     await prisma.platformAdmin.delete({ where: { id: platformAdminId } });
     await app.close();
   });
@@ -109,6 +116,7 @@ describe('current identity and settings', () => {
         name: row.name,
         default_currency: row.defaultCurrency,
         timezone: row.timezone,
+        labels_available: false,
       };
 
       for (const token of [ownerToken, memberToken]) {
@@ -121,6 +129,35 @@ describe('current identity and settings', () => {
       expect(elsewhere.workspace.id).toBe(other.id);
     });
 
+    it('says whether labels can be bought, to anyone signed in, and nothing else of the courier account', async () => {
+      // A workspace of its own, so the others keep no courier account.
+      const labelled = await createTestTenant(prisma);
+      createdTenants.push(labelled.id);
+      const tokenOf = async (roles: ('owner' | 'member')[], kind?: string) => {
+        const user = await createTestUser(prisma, labelled.id, { roles });
+        if (kind) await prisma.inTenant(labelled.id, (tx) => tx.user.update({ where: { id: user.id }, data: { kind } }));
+        return (await tokens.issueForUser(labelled.id, user.id)).accessToken;
+      };
+      const labelledOwner = await tokenOf(['owner']);
+      const people = [labelledOwner, await tokenOf(['member']), await tokenOf([], 'customer'), await tokenOf([], 'partner')];
+      const labelsFor = async (token: string) => {
+        const response = await get('/me', token).expect(200);
+        expectDocumented(meResponseSchema, response.body);
+        return response.body as { workspace: { labels_available: boolean } };
+      };
+
+      for (const token of people) expect((await labelsFor(token)).workspace.labels_available).toBe(false);
+      await put('/couriers/account', labelledOwner, COURIER_ACCOUNT).expect(200);
+      for (const token of people) {
+        const body = await labelsFor(token);
+        expect(body.workspace.labels_available).toBe(true);
+        expect(JSON.stringify(body)).not.toContain(COURIER_ACCOUNT.api_key);
+        expect(JSON.stringify(body)).not.toContain(COURIER_ACCOUNT.webhook_secret);
+      }
+      // Each workspace's own.
+      expect((await labelsFor(ownerToken)).workspace.labels_available).toBe(false);
+    });
+
     it('refuses a platform token', async () => {
       await get('/me', platformToken).expect(403);
     });
@@ -131,6 +168,60 @@ describe('current identity and settings', () => {
       // The unknown query key is dropped, not applied as a filter.
       expect((response.body as { data: unknown[] }).data.length).toBeGreaterThan(1);
       await get(`/users/by-email/${encodeURIComponent(owner.email)}`, ownerToken).expect(404);
+    });
+  });
+
+  describe('PATCH /me', () => {
+    const patch = (token: string | null, body: unknown) => {
+      const req = request(app.getHttpServer()).patch('/me');
+      return (token ? req.set('Authorization', `Bearer ${token}`) : req).send(body as object);
+    };
+    /** A member of their own, so other tests' users keep their locale. */
+    const freshMember = async () => {
+      const user = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+      return { id: user.id, token: (await tokens.issueForUser(tenant.id, user.id)).accessToken };
+    };
+    const audited = (userId: string) =>
+      prisma.inTenant(tenant.id, (tx) => tx.auditEntry.findMany({ where: { action: 'user.locale_changed', subjectId: userId } }));
+
+    it('changes my language and answers /me', async () => {
+      const me = await freshMember();
+      const response = await patch(me.token, { locale: 'de-at' }).expect(200);
+      expectDocumented(meResponseSchema, response.body);
+      expect((response.body as { user: { id: string; locale: string } }).user).toMatchObject({ id: me.id, locale: 'de-AT' });
+      expect(((await get('/me', me.token).expect(200)).body as { user: { locale: string } }).user.locale).toBe('de-AT');
+      expect(await audited(me.id)).toEqual([
+        expect.objectContaining({
+          actorType: 'user',
+          actorId: me.id,
+          subjectType: 'user',
+          subjectId: me.id,
+          before: { locale: 'en' },
+          after: { locale: 'de-AT' },
+        }),
+      ]);
+    });
+
+    it("records nothing when the language doesn't change", async () => {
+      const me = await freshMember();
+      await patch(me.token, { locale: 'fr' }).expect(200);
+      const again = await patch(me.token, { locale: 'FR' }).expect(200);
+      expect((again.body as { user: { locale: string } }).user.locale).toBe('fr');
+      expect(await audited(me.id)).toHaveLength(1);
+    });
+
+    it('changes nothing else', async () => {
+      const me = await freshMember();
+      for (const body of [{ name: 'X' }, {}, { locale: 'xx-!!' }, { locale: 'de', name: 'X' }]) {
+        await patch(me.token, body).expect(400);
+      }
+      expect(((await get('/me', me.token).expect(200)).body as { user: { locale: string; name: string } }).user).toMatchObject({
+        locale: 'en',
+        name: 'Test User',
+      });
+      await patch(platformToken, { locale: 'de' }).expect(403);
+      await patch(null, { locale: 'de' }).expect(401);
+      expect(await audited(me.id)).toEqual([]);
     });
   });
 
