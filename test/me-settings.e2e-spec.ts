@@ -133,7 +133,7 @@ describe('current identity and settings', () => {
       // A workspace of its own, so the others keep no courier account.
       const labelled = await createTestTenant(prisma);
       createdTenants.push(labelled.id);
-      const tokenOf = async (roles: string[], kind?: string) => {
+      const tokenOf = async (roles: ('owner' | 'member')[], kind?: string) => {
         const user = await createTestUser(prisma, labelled.id, { roles });
         if (kind) await prisma.inTenant(labelled.id, (tx) => tx.user.update({ where: { id: user.id }, data: { kind } }));
         return (await tokens.issueForUser(labelled.id, user.id)).accessToken;
