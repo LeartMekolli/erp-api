@@ -197,8 +197,8 @@ describe('workflow: scrap, replacement and rework', () => {
     }).expect(200);
 
     const at = async (key: string) => (await group(tenant, groupId)).steps.find((step) => step.key === key);
-    expect(await at('casting')).toEqual({ key: 'casting', name: 'Casting', count: 3, in_rework: 3 });
-    expect(await at('polishing')).toEqual({ key: 'polishing', name: 'Polishing', count: 7, in_rework: 0 });
+    expect(await at('casting')).toMatchObject({ key: 'casting', name: 'Casting', count: 3, in_rework: 3 });
+    expect(await at('polishing')).toMatchObject({ key: 'polishing', name: 'Polishing', count: 7, in_rework: 0 });
 
     // Still in rework after casting again: it failed at polishing.
     await pass(tenant, failed, 'casting').expect(200);
@@ -210,7 +210,7 @@ describe('workflow: scrap, replacement and rework', () => {
     await pass(tenant, [failed[0]], 'casting').expect(200);
 
     await pass(tenant, failed, 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).expect(200);
-    expect(await at('final_qc')).toEqual({ key: 'final_qc', name: 'Final QC', count: 3, in_rework: 0 });
+    expect(await at('final_qc')).toMatchObject({ key: 'final_qc', name: 'Final QC', count: 3, in_rework: 0 });
     expect(await at('polishing')).toMatchObject({ count: 7, in_rework: 0 });
   });
 });

@@ -58,7 +58,7 @@ export class WorkOrdersController {
   }
 
   @ApiDoc({
-    summary: "A group of pieces: its workflow version, and how many pieces are at each step of its path.",
+    summary: "A group of pieces: its workflow version, how many pieces are at each step of its path, and each step's checks.",
     response: groupResponseSchema,
     errors: [400, 404],
   })

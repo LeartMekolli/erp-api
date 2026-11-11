@@ -1,4 +1,5 @@
-import { customerView, groupProgress, groupReady, inRework } from './progress';
+import { customerView, groupProgress, groupReady, inRework, stepTotals } from './progress';
+import type { MoveFacts } from './progress';
 
 const pass = (fromStepId: string) => ({ kind: 'pass', outcome: null, fromStepId });
 const fail = (fromStepId: string, outcome: 'rework' | 'scrap' | 'continue') => ({ kind: 'fail', outcome, fromStepId });
@@ -81,6 +82,38 @@ describe('group progress', () => {
         { key: 'packing', name: 'Packing', count: 0, in_rework: 0 },
       ],
     });
+  });
+});
+
+describe('step totals', () => {
+  const move = (id: string, kind: string, fromStepId: string | null, extra: Partial<MoveFacts> = {}): MoveFacts => ({
+    id,
+    kind,
+    outcome: null,
+    fromStepId,
+    defectId: null,
+    inspected: true,
+    ...extra,
+  });
+
+  it('counts moves at each step of the path, never corrections or other steps', () => {
+    const totals = stepTotals(
+      ['polishing', 'packing'],
+      [
+        move('1', 'pass', 'polishing'),
+        move('2', 'fail', 'polishing', { outcome: 'rework', defectId: 'scratch' }),
+        move('3', 'fail', 'polishing', { outcome: 'rework', defectId: 'scratch' }),
+        move('4', 'pass', 'polishing', { inspected: false }),
+        move('5', 'correction', 'polishing'),
+        move('6', 'pass', 'elsewhere'),
+      ],
+    );
+    expect(totals.get('polishing')).toEqual({ passed: 2, failed: 2, not_inspected: 1, defectCounts: new Map([['scratch', 2]]), latestCheckId: '3' });
+    expect(totals.get('packing')).toEqual({ passed: 0, failed: 0, not_inspected: 0, defectCounts: new Map(), latestCheckId: null });
+  });
+
+  it('takes the latest by id whatever order the moves come in', () => {
+    expect(stepTotals(['a'], [move('9', 'pass', 'a'), move('2', 'fail', 'a')]).get('a')?.latestCheckId).toBe('9');
   });
 });
 

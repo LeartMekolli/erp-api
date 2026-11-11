@@ -127,7 +127,32 @@ export const groupResponseSchema = z.strictObject({
   /** How many good pieces the group delivers. */
   quantity: z.number().int(),
   pieces: z.strictObject({ active: z.number().int(), finished: z.number().int(), scrapped: z.number().int() }),
-  /** The path, with how many active pieces are at each step, and how many of those are being redone. */
-  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int(), in_rework: z.number().int() })),
+  /**
+   * The path, with how many active pieces are at each step, how many of those are being redone, and the
+   * step's checks. `passed` and `failed` count moves, not pieces, so a piece that fails and then passes
+   * counts once in each; `not_inspected` is the part of `passed` left out of a sample.
+   */
+  steps: z.array(
+    z.strictObject({
+      key: z.string(),
+      name: z.string(),
+      count: z.number().int(),
+      in_rework: z.number().int(),
+      passed: z.number().int(),
+      failed: z.number().int(),
+      not_inspected: z.number().int(),
+      /** The defects of the step's fails, most frequent first, then by name. */
+      defects: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int() })),
+      /** The latest inspected pass or fail at the step; null before the first. */
+      latest_check: z
+        .strictObject({
+          actor: transitionResponseSchema.shape.actor,
+          partner: transitionResponseSchema.shape.partner,
+          created_at: z.iso.datetime(),
+          photos: transitionResponseSchema.shape.photos,
+        })
+        .nullable(),
+    }),
+  ),
 });
 export type GroupResponse = z.infer<typeof groupResponseSchema>;

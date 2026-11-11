@@ -9,7 +9,12 @@ import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { pageSchema } from '../src/common/pagination/page';
-import { moveResponseSchema, workOrderDetailResponseSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
+import {
+  groupResponseSchema,
+  moveResponseSchema,
+  workOrderDetailResponseSchema,
+  workOrderListItemSchema,
+} from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -281,6 +286,41 @@ describe('workflow: moving pieces through their steps', () => {
     });
     expect(byId.get(pieces[1].id)).toMatchObject({ status: 'scrapped', in_rework: false, last_move: { outcome: 'scrap' } });
     expect(byId.get(pieces[2].id)).toMatchObject({ in_rework: false, last_move: { kind: 'pass', from_step: { key: 'casting' } } });
+  });
+
+  it("adds up each step's checks on the group", async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant);
+    await toPolishing(tenant, pieces);
+    const { scratch } = tenant.setup.workflow.defects;
+    await move(tenant, {
+      work_order_ids: ids(pieces.slice(0, 3)),
+      at_step: 'polishing',
+      kind: 'fail',
+      comment: 'Seen under the lamp',
+      defect_id: scratch,
+    }).expect(200);
+    await pass(tenant, pieces.slice(3), 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).expect(200);
+
+    const groupId = ((await detail(tenant, pieces[0])) as unknown as { group_id: string }).group_id;
+    const response = await tenant.owner.get(`/workflow/groups/${groupId}`).expect(200);
+    expectDocumented(groupResponseSchema, response.body);
+    const group = response.body as { steps: { key: string }[] };
+    const polishing = group.steps.find((step) => step.key === 'polishing');
+    expect(polishing).toMatchObject({
+      passed: 7,
+      failed: 3,
+      not_inspected: 0,
+      defects: [{ key: 'scratch', name: 'Scratch', count: 3 }],
+      latest_check: { actor: { id: tenant.ownerId }, partner: null, photos: [] },
+    });
+    expect(group.steps.find((step) => step.key === 'packing')).toMatchObject({
+      passed: 0,
+      failed: 0,
+      not_inspected: 0,
+      defects: [],
+      latest_check: null,
+    });
   });
 
   it('moves nothing when a piece is elsewhere, on another version, unknown or not of this workspace', async () => {

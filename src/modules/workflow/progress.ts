@@ -57,6 +57,52 @@ export function groupProgress(
   };
 }
 
+/** The part of a move a step's quality totals read. */
+export interface MoveFacts extends TransitionFacts {
+  id: string;
+  defectId: string | null;
+  inspected: boolean;
+}
+
+export interface StepTotals {
+  passed: number;
+  failed: number;
+  /** The passes among `passed` of pieces left out of the step's sample. */
+  not_inspected: number;
+  defectCounts: Map<string, number>;
+  /** The latest inspected pass or fail at the step, by id; an uninspected pass is not a check. */
+  latestCheckId: string | null;
+}
+
+/**
+ * Each step's checks, from every move of a group: passes and fails made at it, moves not pieces, so a
+ * piece that fails and then passes counts once in each. Corrections count in neither.
+ */
+export function stepTotals(stepIds: string[], moves: MoveFacts[]): Map<string, StepTotals> {
+  const totals = new Map<string, StepTotals>(
+    stepIds.map((stepId) => [stepId, { passed: 0, failed: 0, not_inspected: 0, defectCounts: new Map(), latestCheckId: null }]),
+  );
+  for (const move of moves) {
+    const step = move.fromStepId === null ? undefined : totals.get(move.fromStepId);
+    if (!step || (move.kind !== 'pass' && move.kind !== 'fail')) {
+      continue;
+    }
+    if (move.kind === 'pass') {
+      step.passed += 1;
+      step.not_inspected += move.inspected ? 0 : 1;
+    } else {
+      step.failed += 1;
+      if (move.defectId !== null) {
+        step.defectCounts.set(move.defectId, (step.defectCounts.get(move.defectId) ?? 0) + 1);
+      }
+    }
+    if (move.inspected && (step.latestCheckId === null || move.id > step.latestCheckId)) {
+      step.latestCheckId = move.id;
+    }
+  }
+  return totals;
+}
+
 /**
  * What a customer sees of a group (D19, goal 10): per live piece, the customer name of the visible stage
  * it is at or last passed, and plain flags. Never defects, answers, photos, comments or hidden steps.

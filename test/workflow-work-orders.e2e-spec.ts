@@ -115,7 +115,7 @@ describe('workflow: starting work orders from a quote', () => {
       pieces: { active: 10, finished: 0, scrapped: 0 },
     });
     // Polished silver isn't plated, so plating is not on its path; final QC and packing always are.
-    expect(group.steps).toEqual([
+    expect(group.steps).toMatchObject([
       { key: 'print_pattern', name: 'Print pattern', count: 10, in_rework: 0 },
       { key: 'casting_tree', name: 'Casting tree', count: 0, in_rework: 0 },
       { key: 'casting', name: 'Casting', count: 0, in_rework: 0 },

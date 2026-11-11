@@ -19,8 +19,8 @@ import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
-import { customerView, groupProgress, inRework } from './progress';
-import type { TransitionFacts } from './progress';
+import { customerView, groupProgress, inRework, stepTotals } from './progress';
+import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
 import { ensureDraw, toInspect } from './sampling';
 import { barredStepIds } from './step-skills';
 import type { StepConfig } from './workflow-config';
@@ -493,6 +493,7 @@ export class WorkOrdersService {
       path.map((stepId) => byId.get(stepId)!),
       pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
     );
+    const totals = stepTotals(path, [...histories.values()].flat());
     return {
       id: group.id,
       workflow: { id: group.workflowVersion.workflow.id, name: group.workflowVersion.workflow.name, version: group.workflowVersion.number },
@@ -500,8 +501,62 @@ export class WorkOrdersService {
       product_id: group.productId,
       customer_id: group.customerId,
       quantity: group.quantity,
-      ...progress,
+      pieces: progress.pieces,
+      steps: await this.withChecks(tx, path, progress.steps, totals),
     };
+  }
+
+  /**
+   * Each step of the path with its checks: at most two more queries, for the defects' names and the
+   * latest checks, and none when the group has no checks yet.
+   */
+  private async withChecks(
+    tx: Prisma.TransactionClient,
+    path: string[],
+    steps: GroupProgress['steps'],
+    totals: Map<string, StepTotals>,
+  ): Promise<GroupResponse['steps']> {
+    const all = [...totals.values()];
+    const defectIds = [...new Set(all.flatMap((step) => [...step.defectCounts.keys()]))];
+    const latestIds = all.flatMap((step) => (step.latestCheckId === null ? [] : [step.latestCheckId]));
+    const defects =
+      defectIds.length > 0 ? await tx.defect.findMany({ where: { id: { in: defectIds } }, select: { id: true, key: true, name: true } }) : [];
+    const checks =
+      latestIds.length > 0
+        ? await tx.transition.findMany({
+            where: { id: { in: latestIds } },
+            select: {
+              id: true,
+              createdAt: true,
+              actor: nameRef,
+              partner: nameRef,
+              photos: { orderBy: { id: 'asc' }, include: { fileVersion: { select: { fileId: true } } } },
+            },
+          })
+        : [];
+    const defectById = new Map(defects.map((defect) => [defect.id, defect]));
+    const checkById = new Map(checks.map((check) => [check.id, check]));
+    return steps.map((step, index) => {
+      const total = totals.get(path[index])!;
+      const check = total.latestCheckId === null ? undefined : checkById.get(total.latestCheckId);
+      return {
+        ...step,
+        passed: total.passed,
+        failed: total.failed,
+        not_inspected: total.not_inspected,
+        defects: [...total.defectCounts]
+          .map(([id, count]) => ({ key: defectById.get(id)!.key, name: defectById.get(id)!.name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+        latest_check: check
+          ? {
+              actor: check.actor,
+              partner: check.partner,
+              created_at: check.createdAt.toISOString(),
+              photos: check.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
+            }
+          : null,
+      };
+    });
   }
 
   /**
@@ -516,10 +571,10 @@ export class WorkOrdersService {
     });
     const transitions = await tx.transition.findMany({
       where: { workOrder: { groupId } },
-      select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
+      select: { id: true, workOrderId: true, kind: true, outcome: true, fromStepId: true, defectId: true, inspected: true },
       orderBy: { id: 'asc' },
     });
-    const histories = new Map<string, TransitionFacts[]>();
+    const histories = new Map<string, MoveFacts[]>();
     for (const row of transitions) {
       const history = histories.get(row.workOrderId);
       if (history) {
