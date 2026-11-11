@@ -19,7 +19,7 @@ import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
-import { customerView, groupProgress } from './progress';
+import { customerView, groupProgress, inRework } from './progress';
 import type { TransitionFacts } from './progress';
 import { ensureDraw, toInspect } from './sampling';
 import { barredStepIds } from './step-skills';
@@ -28,6 +28,7 @@ import { WORK_ORDER_STATUSES } from './work-order-response';
 import type {
   CustomerViewResponse,
   GroupResponse,
+  LastMove,
   TransitionListItem,
   TransitionResponse,
   WorkOrderDetailResponse,
@@ -401,11 +402,13 @@ export class WorkOrdersService {
       const data = rows.slice(0, query.limit);
       const last = data.at(-1);
       const inspect = await toInspect(tx, data);
+      const moves = await this.moveSummaries(tx, data);
       return {
         data: data.map((row) => ({
           ...toWorkOrder(row),
           to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
+          ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id, rank: last.group.queueRank }, secret) : null,
       };
@@ -528,6 +531,63 @@ export class WorkOrdersService {
     return { pieces, histories };
   }
 
+  /**
+   * Whether each piece is being redone, and its last move, in two queries whatever the page size: the
+   * pieces' move facts in move order, then their last moves with names. Only an active piece is in rework;
+   * a scrapped or cancelled one can keep a rework open in its history.
+   */
+  private async moveSummaries(
+    tx: Prisma.TransactionClient,
+    pieces: { id: string; status: string }[],
+  ): Promise<Map<string, { in_rework: boolean; last_move: LastMove | null }>> {
+    const facts = await tx.transition.findMany({
+      where: { workOrderId: { in: pieces.map((piece) => piece.id) } },
+      select: { id: true, workOrderId: true, kind: true, outcome: true, fromStepId: true },
+      orderBy: { id: 'asc' },
+    });
+    const histories = new Map<string, (TransitionFacts & { id: string })[]>();
+    for (const row of facts) {
+      const history = histories.get(row.workOrderId);
+      if (history) {
+        history.push(row);
+      } else {
+        histories.set(row.workOrderId, [row]);
+      }
+    }
+    const lastIds = [...histories.values()].map((history) => history.at(-1)!.id);
+    const lasts =
+      lastIds.length > 0
+        ? await tx.transition.findMany({
+            where: { id: { in: lastIds } },
+            select: { id: true, kind: true, outcome: true, createdAt: true, fromStep: stepRef, defect: stepRef, actor: nameRef, partner: nameRef },
+          })
+        : [];
+    const byId = new Map(lasts.map((row) => [row.id, row]));
+    return new Map(
+      pieces.map((piece) => {
+        const history = histories.get(piece.id) ?? [];
+        const last = history.length > 0 ? byId.get(history.at(-1)!.id) : undefined;
+        return [
+          piece.id,
+          {
+            in_rework: piece.status === 'active' && inRework(history) !== null,
+            last_move: last
+              ? {
+                  kind: last.kind as LastMove['kind'],
+                  outcome: last.outcome as LastMove['outcome'],
+                  from_step: last.fromStep,
+                  defect: last.defect,
+                  actor: last.actor,
+                  partner: last.partner,
+                  created_at: last.createdAt.toISOString(),
+                }
+              : null,
+          },
+        ];
+      }),
+    );
+  }
+
   private versionSteps(tx: Prisma.TransactionClient, versionId: string): Promise<WorkflowStepRow[]> {
     return tx.workflowStep.findMany({ where: { versionId }, include: { stepType: true }, orderBy: { position: 'asc' } });
   }
@@ -539,13 +599,14 @@ export const pieceInclude = {
 } as const;
 
 const stepRef = { select: { id: true, key: true, name: true } } as const;
+const nameRef = { select: { id: true, name: true } } as const;
 
 export const transitionInclude = {
   fromStep: stepRef,
   toStep: stepRef,
-  defect: { select: { id: true, key: true, name: true } },
-  actor: { select: { id: true, name: true } },
-  partner: { select: { id: true, name: true } },
+  defect: stepRef,
+  actor: nameRef,
+  partner: nameRef,
   answers: { orderBy: { id: 'asc' } },
   photos: { orderBy: { id: 'asc' }, include: { fileVersion: { select: { fileId: true } } } },
 } as const satisfies Prisma.TransitionInclude;

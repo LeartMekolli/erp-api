@@ -28,14 +28,6 @@ export type WorkOrderResponse = z.infer<typeof workOrderResponseSchema>;
  */
 const toInspectSchema = z.boolean().nullable();
 
-/** A piece in a work list, for the staff member reading it. */
-export const workOrderListItemSchema = workOrderResponseSchema.extend({
-  to_inspect: toInspectSchema,
-  /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
-  may_work: z.boolean(),
-});
-export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
-
 export const transitionResponseSchema = z.strictObject({
   id: z.uuid(),
   kind: z.enum(['pass', 'fail', 'correction']),
@@ -62,6 +54,30 @@ export const transitionResponseSchema = z.strictObject({
   created_at: z.iso.datetime(),
 });
 export type TransitionResponse = z.infer<typeof transitionResponseSchema>;
+
+/** The latest move of a piece, in move order, without its answers and photos. */
+export const lastMoveSchema = transitionResponseSchema.pick({
+  kind: true,
+  outcome: true,
+  from_step: true,
+  defect: true,
+  actor: true,
+  partner: true,
+  created_at: true,
+});
+export type LastMove = z.infer<typeof lastMoveSchema>;
+
+/** A piece in a work list, for the staff member reading it. */
+export const workOrderListItemSchema = workOrderResponseSchema.extend({
+  to_inspect: toInspectSchema,
+  /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
+  may_work: z.boolean(),
+  /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */
+  in_rework: z.boolean(),
+  /** Null until the piece first moves. */
+  last_move: lastMoveSchema.nullable(),
+});
+export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
 
 /** A row of the QC history, with the piece it moved. */
 export const transitionListItemSchema = transitionResponseSchema.extend({

@@ -8,7 +8,8 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { moveResponseSchema, workOrderDetailResponseSchema } from '../src/modules/workflow/work-order-response';
+import { pageSchema } from '../src/common/pagination/page';
+import { moveResponseSchema, workOrderDetailResponseSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -254,6 +255,32 @@ describe('workflow: moving pieces through their steps', () => {
     const other = await freshTenant();
     await fail([pieces[6]], { defect_id: other.setup.workflow.defects.scratch }).expect(400);
     expect(await stepOf(tenant, pieces[6])).toBe('polishing');
+  });
+
+  it('says on each listed piece whether it is being redone and what last happened', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant, 4);
+    await toPolishing(tenant, pieces);
+    const { scratch } = tenant.setup.workflow.defects;
+    const fail = (some: Piece[], extra: object = {}) =>
+      move(tenant, { work_order_ids: ids(some), at_step: 'polishing', kind: 'fail', comment: 'Seen under the lamp', defect_id: scratch, ...extra });
+    await fail([pieces[0], pieces[1]]).expect(200);
+    // Failed for rework, then scrapped: the rework is never closed in its history.
+    await fail([pieces[1]], { outcome: 'scrap', override_reason: 'Beyond saving' }).expect(200);
+
+    const groupId = ((await detail(tenant, pieces[0])) as unknown as { group_id: string }).group_id;
+    const listed = await tenant.owner.get(`/workflow/work-orders?group_id=${groupId}&limit=100`).expect(200);
+    expectDocumented(pageSchema(workOrderListItemSchema), listed.body);
+    const byId = new Map(
+      (listed.body as { data: (Piece & { in_rework: boolean; last_move: Transition | null })[] }).data.map((row) => [row.id, row]),
+    );
+
+    expect(byId.get(pieces[0].id)).toMatchObject({
+      in_rework: true,
+      last_move: { kind: 'fail', outcome: 'rework', from_step: { key: 'polishing' }, defect: { key: 'scratch' }, actor: { id: tenant.ownerId }, partner: null },
+    });
+    expect(byId.get(pieces[1].id)).toMatchObject({ status: 'scrapped', in_rework: false, last_move: { outcome: 'scrap' } });
+    expect(byId.get(pieces[2].id)).toMatchObject({ in_rework: false, last_move: { kind: 'pass', from_step: { key: 'casting' } } });
   });
 
   it('moves nothing when a piece is elsewhere, on another version, unknown or not of this workspace', async () => {

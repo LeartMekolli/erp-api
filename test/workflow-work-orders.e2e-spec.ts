@@ -33,6 +33,8 @@ interface WorkOrder {
   label: string;
   status: string;
   step: { key: string } | null;
+  in_rework?: boolean;
+  last_move?: object | null;
 }
 
 describe('workflow: starting work orders from a quote', () => {
@@ -127,6 +129,8 @@ describe('workflow: starting work orders from a quote', () => {
     const data = (listed.body as { data: WorkOrder[] }).data;
     expect(data.map((piece) => piece.label)).toEqual(Array.from({ length: 10 }, (_, index) => `${index + 1}/10`));
     expect(data.every((piece) => piece.status === 'active' && piece.step?.key === 'print_pattern')).toBe(true);
+    // Nothing has moved yet: no rework, no last move.
+    expect(data.map((piece) => [piece.in_rework, piece.last_move])).toEqual(data.map(() => [false, null]));
 
     const one = await tenant.owner.get(`/workflow/work-orders/${data[2].id}`).expect(200);
     expectDocumented(workOrderDetailResponseSchema, one.body);
