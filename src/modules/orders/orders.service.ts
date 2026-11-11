@@ -31,7 +31,7 @@ import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { creditExposure, overLimit } from '../payments/credit';
 import { owedByCurrency } from '../payments/owed';
-import { INVOICE_STATUSES, PAYMENT_STATES, paidAndRefunded } from '../payments/payment-state';
+import { INVOICE_STATUSES, PAYMENT_STATES, REFUND_COUNTED, paidAndRefunded } from '../payments/payment-state';
 import type { PaymentState, PaymentTerms } from '../payments/payment-state';
 import type { QuoteRefusal, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService } from '../pricing/quotes.service';
@@ -1289,6 +1289,12 @@ export class OrdersService {
       where: { orderId: { in: ids }, kind: { in: ['payment_received', 'refund'] } },
       select: { orderId: true, kind: true, lines: { select: { account: true, amount: true } } },
     });
+    // Refunds succeeded or still being made, the limit `RefundsService.paidLeft` enforces.
+    const refunding = await tx.refund.groupBy({
+      by: ['orderId'],
+      where: { orderId: { in: ids }, status: { in: [...REFUND_COUNTED] } },
+      _sum: { amount: true },
+    });
     // Who placed each order, and who let one start past the credit limit, in one read.
     const peopleIds = orders.flatMap((order) => [order.placedByUserId, ...(order.releasedByUserId ? [order.releasedByUserId] : [])]);
     const people = await tx.user.findMany({ where: { id: { in: [...new Set(peopleIds)] } }, select: { id: true, name: true } });
@@ -1390,6 +1396,7 @@ export class OrdersService {
           released: releaser && order.releaseReason ? { by: releaser, reason: order.releaseReason } : null,
           paid: paid.toFixed(2),
           refunded: refunded.toFixed(2),
+          refundable: Prisma.Decimal.max(0, paid.sub(refunding.find((row) => row.orderId === order.id)?._sum.amount ?? 0)).toFixed(2),
           // A waiting order's checkout, or else an open invoice's page, where it is paid too.
           pay_url:
             openCheckouts.find((checkout) => checkout.orderId === order.id)?.url ?? (invoice?.status === 'open' ? invoice.url : null),

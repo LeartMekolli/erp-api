@@ -267,7 +267,11 @@ describe('payments: refunds', () => {
     const [refund] = await settled(tenant, order.id);
     expect(refund).toMatchObject({ status: 'succeeded', reason: 'Customer withdrew' });
     expect(refund.amount.toFixed(2)).toBe('50.00');
-    expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'partly_refunded', refunded: '50.00' });
+    expect((await staffView(tenant, order.id)).payment).toMatchObject({
+      state: 'partly_refunded',
+      refunded: '50.00',
+      refundable: d(order.total).minus('50.00').toFixed(2),
+    });
   });
 
   it('refunds no more than was paid: of two cancels at once, the one passing it is refused (Review Focus 4)', async () => {
@@ -329,6 +333,7 @@ describe('payments: refunds', () => {
     const tenant = await freshTenant();
     const order = await paidOrder(tenant);
     fake.holdNextRefund();
+    expect((await staffView(tenant, order.id)).payment).toMatchObject({ refundable: order.total });
 
     await cancel(tenant, order.id, { reason: 'Customer withdrew', refund: { amount: order.total } }).expect(200);
 
@@ -338,7 +343,8 @@ describe('payments: refunds', () => {
     });
     expect(pending.status).toBe('pending');
     expect((await journals(tenant, order.id)).filter((journal) => journal.kind === 'refund')).toEqual([]);
-    expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'paid', refunded: '0.00' });
+    // Still being refunded: nothing in the ledger yet, but nothing left to refund either.
+    expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'paid', refunded: '0.00', refundable: '0.00' });
 
     fake.settleRefund(pending.providerRefundId!, 'succeeded');
     await sendEvent(app, tenant.id, event('refund.updated', pending.providerRefundId!));
@@ -346,7 +352,7 @@ describe('payments: refunds', () => {
 
     expect((await refunds(tenant, order.id))[0].status).toBe('succeeded');
     expect((await journals(tenant, order.id)).filter((journal) => journal.kind === 'refund')).toHaveLength(2);
-    expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'refunded', refunded: order.total });
+    expect((await staffView(tenant, order.id)).payment).toMatchObject({ state: 'refunded', refunded: order.total, refundable: '0.00' });
     expect(await raised(tenant, 'refund.made', order.id)).toBe(1);
     await expectStoredStates(prisma, app, tenant.id, tenant.staff);
   });

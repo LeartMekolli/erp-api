@@ -119,6 +119,8 @@ export const orderPaymentResponseSchema = z.strictObject({
   paid: money,
   /** Refunds that succeeded. */
   refunded: money,
+  /** What was paid and is neither refunded nor being refunded: the most a refund may be now. */
+  refundable: money,
   /** Where the customer pays while the order waits for payment. */
   pay_url: z.string().nullable(),
   invoice: invoiceSchema.nullable(),

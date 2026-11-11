@@ -179,6 +179,7 @@ describe('payments: terms and the payment state of an order', () => {
         released: null,
         paid: '0.00',
         refunded: '0.00',
+        refundable: '0.00',
         pay_url: null,
         invoice: null,
       },
