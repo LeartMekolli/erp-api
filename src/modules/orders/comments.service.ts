@@ -8,8 +8,8 @@ import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { CustomerAuth, PartnerAuth, TenantAuth } from '../identity/auth-context';
-import { COMMENT_MAX_ATTACHMENTS, COMMENT_MAX_LENGTH } from './order-response';
-import type { CustomerOrderCommentResponse, OrderCommentResponse } from './order-response';
+import { COMMENT_MAX_ATTACHMENTS, COMMENT_MAX_LENGTH, COMMENT_VISIBILITIES } from './order-response';
+import type { CommentVisibility, CustomerOrderCommentResponse, OrderCommentResponse } from './order-response';
 import type { PartnerJobCommentResponse } from '../partners/partner-response';
 
 type Tx = Prisma.TransactionClient;
@@ -17,12 +17,16 @@ type Tx = Prisma.TransactionClient;
 const body = z.string().trim().min(1).max(COMMENT_MAX_LENGTH);
 const attachments = z.array(z.uuid()).max(COMMENT_MAX_ATTACHMENTS).optional();
 
-/** Staff write on the order or a line; `for_partner` sends a line's comment to the partner holding it. */
+/**
+ * Staff write on the order or a line, for staff only unless `visibility` says otherwise: comments can't be
+ * edited or deleted, so one reaches the customer or a partner only when addressed to it. `partner` is the
+ * partner holding the line.
+ */
 export const staffCommentSchema = z
-  .strictObject({ body, line_id: z.uuid().optional(), for_partner: z.boolean().optional(), attachments })
-  .refine((comment) => !comment.for_partner || comment.line_id !== undefined, {
+  .strictObject({ body, line_id: z.uuid().optional(), visibility: z.enum(COMMENT_VISIBILITIES).default('staff'), attachments })
+  .refine((comment) => comment.visibility !== 'partner' || comment.line_id !== undefined, {
     message: 'A comment for the partner needs a line',
-    path: ['for_partner'],
+    path: ['visibility'],
   });
 export type StaffComment = z.infer<typeof staffCommentSchema>;
 
@@ -47,7 +51,7 @@ interface Draft {
   partnerId?: string;
   body: string;
   lineId?: string;
-  forPartner?: boolean;
+  visibility: CommentVisibility;
   attachments?: string[];
   /** The only files the author may attach: a customer's own. Staff attach any file of the workspace. */
   ownedByCustomer?: string;
@@ -62,7 +66,8 @@ type Comment = Prisma.OrderCommentGetPayload<{ include: typeof WITH }>;
 /**
  * Comments on orders (Orders spec, goal 13). Three audiences read the same rows through their own filter,
  * so a reader never sees more than its filter lets through: staff everything; the customer what staff wrote
- * for it and what its people wrote; a partner only what staff marked for it on a job it holds now, and its own.
+ * for it and what its people wrote; a partner only what staff wrote for it on a job it holds now, and its own.
+ * A staff comment with no `visibility` is read by staff alone.
  */
 @Injectable()
 export class CommentsService {
@@ -82,7 +87,7 @@ export class CommentsService {
       authorKind: 'staff',
       body: input.body,
       lineId: input.line_id,
-      forPartner: input.for_partner ?? false,
+      visibility: input.visibility,
       attachments: input.attachments,
     };
     return this.post(auth.tenantId, (tx) => this.staffScope(tx, orderId), draft, staffView);
@@ -102,6 +107,7 @@ export class CommentsService {
       authorKind: 'customer',
       body: input.body,
       lineId: input.line_id,
+      visibility: 'customer',
       attachments: input.attachments,
       ownedByCustomer: auth.customerId,
     };
@@ -117,7 +123,7 @@ export class CommentsService {
   }
 
   partnerPost(auth: PartnerAuth, groupId: string, input: PartnerComment): Promise<PartnerJobCommentResponse> {
-    const draft: Draft = { authorUserId: auth.userId, authorKind: 'partner', partnerId: auth.partnerId, body: input.body };
+    const draft: Draft = { authorUserId: auth.userId, authorKind: 'partner', partnerId: auth.partnerId, body: input.body, visibility: 'partner' };
     return this.post(auth.tenantId, (tx) => this.partnerScope(tx, auth, groupId), draft, partnerView);
   }
 
@@ -157,7 +163,7 @@ export class CommentsService {
           authorUserId: draft.authorUserId,
           authorKind: draft.authorKind,
           partnerId: draft.partnerId ?? null,
-          forPartner: draft.forPartner ?? false,
+          visibility: draft.visibility,
           body: draft.body,
           attachments: { create: files.map((fileVersionId, position) => ({ fileVersionId, position })) },
         },
@@ -190,7 +196,7 @@ export class CommentsService {
 
   private async customerScope(tx: Tx, customerId: string, orderId: string): Promise<Scope> {
     await this.requireOrder(tx, { id: orderId, customerId });
-    return { orderId, where: { OR: [{ authorKind: 'staff', forPartner: false }, { authorKind: 'customer' }] } };
+    return { orderId, where: { visibility: 'customer' } };
   }
 
   /** The partner's accepted job, found through the line it is made as; its comments are on that line only. */
@@ -204,7 +210,7 @@ export class CommentsService {
     }
     return {
       ...found,
-      where: { lineId: found.lineId, OR: [{ authorKind: 'staff', forPartner: true }, { authorKind: 'partner', partnerId: auth.partnerId }] },
+      where: { lineId: found.lineId, OR: [{ authorKind: 'staff', visibility: 'partner' }, { authorKind: 'partner', partnerId: auth.partnerId }] },
     };
   }
 
@@ -249,7 +255,7 @@ function staffView(comment: Comment): OrderCommentResponse {
     id: comment.id,
     line_id: comment.lineId,
     author: { kind: comment.authorKind as OrderCommentResponse['author']['kind'], id: comment.authorUserId, name: comment.author.name },
-    for_partner: comment.forPartner,
+    visibility: comment.visibility as CommentVisibility,
     body: comment.body,
     attachments: filesOf(comment),
     created_at: comment.createdAt.toISOString(),

@@ -26,7 +26,7 @@ interface StaffComment {
   id: string;
   line_id: string | null;
   author: { kind: string; id: string; name: string };
-  for_partner: boolean;
+  visibility: string;
   body: string;
   attachments: { file_version_id: string; name: string }[];
 }
@@ -195,13 +195,13 @@ describe('orders: comments', () => {
     expect(asked.body).toMatchObject({ line_id: null, author: { kind: 'customer', name: 'Ben' }, body: 'Can the clasp be gold?', attachments: [] });
 
     const answered = await tenant.staff
-      .post(staffPath(tenant), { body: 'Yes, see the sketch', line_id: tenant.order.lines[0].id, attachments: [file] })
+      .post(staffPath(tenant), { body: 'Yes, see the sketch', line_id: tenant.order.lines[0].id, visibility: 'customer', attachments: [file] })
       .expect(201);
     expectDocumented(orderCommentResponseSchema, answered.body);
     expect(answered.body).toMatchObject({
       line_id: tenant.order.lines[0].id,
       author: { kind: 'staff', id: tenant.owner, name: 'Ana' },
-      for_partner: false,
+      visibility: 'customer',
       body: 'Yes, see the sketch',
       attachments: [{ file_version_id: file, name: 'part.stl' }],
     });
@@ -220,8 +220,8 @@ describe('orders: comments', () => {
         ['customer', 'Ben', 'Can the clasp be gold?'],
         ['staff', 'Ana', 'Yes, see the sketch'],
       ]);
-      // The customer never sees the staff-only flag.
-      expect(customerSees.text).not.toContain('for_partner');
+      // The customer never sees who else reads a comment.
+      expect(customerSees.text).not.toContain('visibility');
     }
 
     // A page at a time.
@@ -238,9 +238,9 @@ describe('orders: comments', () => {
     const tenant = await freshTenant();
     const [zero, one] = tenant.order.lines;
     const post = (body: object) => tenant.staff.post(staffPath(tenant), body).expect(201);
-    await post({ body: 'Polish the back harder', line_id: zero.id, for_partner: true });
-    await post({ body: 'Delivery date moved for Luna', line_id: zero.id });
-    await post({ body: 'Pack in the grey box', line_id: one.id, for_partner: true });
+    await post({ body: 'Polish the back harder', line_id: zero.id, visibility: 'partner' });
+    await post({ body: 'Delivery date moved for Luna', line_id: zero.id, visibility: 'customer' });
+    await post({ body: 'Pack in the grey box', line_id: one.id, visibility: 'partner' });
 
     // CastCo reads the first only, and answers.
     let seen = await tenant.castco.person.get(jobPath(tenant, tenant.castco)).expect(200);
@@ -255,7 +255,7 @@ describe('orders: comments', () => {
     seen = await tenant.castco.person.get(jobPath(tenant, tenant.castco)).expect(200);
     expect(list<PartnerComment>(seen).map((comment) => comment.body)).toEqual(['Polish the back harder', 'Will do']);
     // Never the customer, the order, another line or a comment it wasn't sent.
-    for (const secret of ['Luna', tenant.order.id, tenant.order.lines[0].id, 'Delivery date', 'grey box', 'for_partner']) {
+    for (const secret of ['Luna', tenant.order.id, tenant.order.lines[0].id, 'Delivery date', 'grey box', 'visibility']) {
       expect({ secret, found: seen.text.includes(secret) }).toEqual({ secret, found: false });
     }
 
@@ -277,8 +277,8 @@ describe('orders: comments', () => {
   it('keeps partner comments and comments for the partner from the customer', async () => {
     const tenant = await freshTenant();
     const zero = tenant.order.lines[0];
-    await tenant.staff.post(staffPath(tenant), { body: 'Polish the back harder', line_id: zero.id, for_partner: true }).expect(201);
-    await tenant.staff.post(staffPath(tenant), { body: 'Your order is in production' }).expect(201);
+    await tenant.staff.post(staffPath(tenant), { body: 'Polish the back harder', line_id: zero.id, visibility: 'partner' }).expect(201);
+    await tenant.staff.post(staffPath(tenant), { body: 'Your order is in production', visibility: 'customer' }).expect(201);
     await tenant.castco.person.post(jobPath(tenant, tenant.castco), { body: 'Casting tomorrow' }).expect(201);
     await tenant.buyer.post(customerPath(tenant), { body: 'Thank you' }).expect(201);
 
@@ -288,16 +288,35 @@ describe('orders: comments', () => {
       expect({ secret, found: customerSees.text.includes(secret) }).toEqual({ secret, found: false });
     }
 
-    // Staff read everything, with who wrote it and whether the partner sees it.
+    // Staff read everything, with who wrote it and who else reads it.
     const staffSees = list<StaffComment>(await tenant.staff.get(staffPath(tenant)).expect(200));
-    expect(staffSees.map((comment) => [comment.author.kind, comment.for_partner, comment.body])).toEqual([
-      ['staff', true, 'Polish the back harder'],
-      ['staff', false, 'Your order is in production'],
-      ['partner', false, 'Casting tomorrow'],
-      ['customer', false, 'Thank you'],
+    expect(staffSees.map((comment) => [comment.author.kind, comment.visibility, comment.body])).toEqual([
+      ['staff', 'partner', 'Polish the back harder'],
+      ['staff', 'customer', 'Your order is in production'],
+      ['partner', 'partner', 'Casting tomorrow'],
+      ['customer', 'customer', 'Thank you'],
     ]);
     // A partner's comment is on the line it holds.
     expect(staffSees[2]).toMatchObject({ line_id: zero.id, author: { name: 'Carl' } });
+  });
+
+  it('keeps a staff-only comment and its file from the customer and the partner', async () => {
+    const tenant = await freshTenant();
+    const zero = tenant.order.lines[0];
+    const file = await upload(tenant);
+    const note = (await tenant.staff.post(staffPath(tenant), { body: 'Difficult customer', line_id: zero.id, attachments: [file] }).expect(201))
+      .body as StaffComment;
+    expect(note.visibility).toBe('staff');
+    expectDocumented(orderCommentResponseSchema, note);
+
+    expect(list<StaffComment>(await tenant.staff.get(staffPath(tenant)).expect(200)).map((comment) => comment.body)).toEqual(['Difficult customer']);
+    expect(list<CustomerComment>(await tenant.buyer.get(customerPath(tenant)).expect(200))).toEqual([]);
+    expect(list<PartnerComment>(await tenant.castco.person.get(jobPath(tenant, tenant.castco)).expect(200))).toEqual([]);
+
+    const link = (path: string) => `${path}/${note.id}/attachments/${file}/url`;
+    await tenant.staff.get(link(staffPath(tenant))).expect(200);
+    await tenant.buyer.get(link(customerPath(tenant))).expect(404);
+    await tenant.castco.person.get(link(jobPath(tenant, tenant.castco))).expect(404);
   });
 
   it('refuses attachments the author may not use, and links to ones the reader may not see', async () => {
@@ -321,7 +340,7 @@ describe('orders: comments', () => {
 
     const mine = (await tenant.buyer.post(customerPath(tenant), { body: 'My sketch', attachments: [lunas] }).expect(201)).body as CustomerComment;
     const forPartner = (
-      await tenant.staff.post(staffPath(tenant), { body: 'Match this', line_id: zero.id, for_partner: true, attachments: [workspaces] }).expect(201)
+      await tenant.staff.post(staffPath(tenant), { body: 'Match this', line_id: zero.id, visibility: 'partner', attachments: [workspaces] }).expect(201)
     ).body as StaffComment;
     const link = (path: string, comment: string, file: string) => `${path}/${comment}/attachments/${file}/url`;
 
@@ -353,8 +372,11 @@ describe('orders: comments', () => {
     await tenant.solBuyer.get(customerPath(tenant, tenant.sol)).expect(404);
     await tenant.solBuyer.post(customerPath(tenant), comment).expect(404);
 
-    // The partner flag belongs to staff, and to a comment on a line.
-    await tenant.buyer.post(customerPath(tenant), { ...comment, line_id: zero.id, for_partner: true }).expect(400);
+    // Only staff choose who reads a comment, and a comment for the partner is on a line.
+    await tenant.buyer.post(customerPath(tenant), { ...comment, line_id: zero.id, visibility: 'partner' }).expect(400);
+    const noLine = await tenant.staff.post(staffPath(tenant), { ...comment, visibility: 'partner' }).expect(400);
+    expect((noLine.body as { errors: { path: string }[] }).errors[0].path).toBe('visibility');
+    // The old flag is gone.
     await tenant.staff.post(staffPath(tenant), { ...comment, for_partner: true }).expect(400);
     // A line of another order.
     await tenant.staff.post(staffPath(tenant), { ...comment, line_id: other.lines[0].id }).expect(400);

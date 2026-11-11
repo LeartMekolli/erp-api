@@ -23,7 +23,7 @@ export class OrderCommentsController {
   constructor(private readonly comments: CommentsService) {}
 
   @ApiDoc({
-    summary: "An order's comments, oldest first, a page at a time, with who wrote each and whether the partner reads it.",
+    summary: "An order's comments, oldest first, a page at a time, with who wrote each and who else reads it.",
     query: paginationQuerySchema,
     response: pageSchema(orderCommentResponseSchema),
     errors: [400, 404],
@@ -41,8 +41,8 @@ export class OrderCommentsController {
   @ApiDoc({
     summary: 'Comment on an order or one of its lines, with files attached.',
     description:
-      "The customer reads it, unless `for_partner` sends it to the partner holding the line instead: that needs a `line_id`, and the " +
-      "customer never sees it. A `line_id` of another order is a 400. Any uploaded file of the workspace can be attached, " +
+      '`visibility` says who reads it besides staff: nobody by default, `customer`, or `partner`, the partner holding the line, ' +
+      'which needs a `line_id`. A `line_id` of another order is a 400. Any uploaded file of the workspace can be attached, ' +
       'at most 10; one not found, or not uploaded yet, is a 404 naming it. Comments cannot be edited or deleted.',
     body: staffCommentSchema,
     response: orderCommentResponseSchema,
@@ -75,7 +75,7 @@ export class OrderCommentsController {
   }
 }
 
-/** The customer's side of an order's comments: never a partner's, and none sent to a partner. */
+/** The customer's side of an order's comments: its own people's and what staff wrote for it, nothing else. */
 @Controller('portal/customers/:customerId/orders/:id/comments')
 export class PortalOrderCommentsController {
   constructor(private readonly comments: CommentsService) {}

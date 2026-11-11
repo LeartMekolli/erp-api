@@ -2260,8 +2260,8 @@ model CustomerPriority {
 }
 
 // A comment on an order or one of its lines, by staff, the customer's people or the partner holding the
-// line (Orders spec, goal 13). Who reads it is decided by `authorKind` and `forPartner`, never by the
-// reader's own choice. No edit or delete in this version.
+// line (Orders spec, goal 13). Who reads it is decided by `visibility`, never by the reader's own choice.
+// No edit or delete in this version.
 model OrderComment {
   id           String   @id @default(uuid(7)) @db.Uuid
   tenantId     String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
@@ -2273,8 +2273,9 @@ model OrderComment {
   authorKind   String   @map("author_kind")
   // Set exactly when the author is a partner.
   partnerId    String?  @map("partner_id") @db.Uuid
-  // Staff only, and only on a line: the partner holding the line reads it.
-  forPartner   Boolean  @default(false) @map("for_partner")
+  // customer | partner | staff: who reads it besides staff. A customer's or partner's own comment is its
+  // author kind; `partner` is on a line, read by the partner holding it.
+  visibility   String
   body         String
   createdAt    DateTime @default(now()) @map("created_at")
 

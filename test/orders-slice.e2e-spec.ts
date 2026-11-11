@@ -269,8 +269,8 @@ describe('orders: the walkthrough', () => {
     const bodies = async (client: typeof staff, path: string) =>
       ((await client.get(path).expect(200)).body as { data: { body: string }[] }).data.map((comment) => comment.body);
     await ben.post(`${portal}/orders/${fourth.id}/comments`, { body: 'Can this be ready early?' }).expect(201);
-    await staff.post(`/orders/${fourth.id}/comments`, { body: 'We will try', line_id: fourthLine.id }).expect(201);
-    await staff.post(`/orders/${fourth.id}/comments`, { body: 'Polish the back harder', line_id: fourthLine.id, for_partner: true }).expect(201);
+    await staff.post(`/orders/${fourth.id}/comments`, { body: 'We will try', line_id: fourthLine.id, visibility: 'customer' }).expect(201);
+    await staff.post(`/orders/${fourth.id}/comments`, { body: 'Polish the back harder', line_id: fourthLine.id, visibility: 'partner' }).expect(201);
     expect(await bodies(staff, `/orders/${fourth.id}/comments`)).toEqual(['Can this be ready early?', 'We will try', 'Polish the back harder']);
     expect(await bodies(ben, `${portal}/orders/${fourth.id}/comments`)).toEqual(['Can this be ready early?', 'We will try']);
     const noraSees = await nora.get(`${job}/comments`).expect(200);
