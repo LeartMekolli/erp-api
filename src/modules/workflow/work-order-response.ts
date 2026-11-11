@@ -41,8 +41,20 @@ export const transitionResponseSchema = z.strictObject({
   /** Why the defect's default outcome or rework target was not followed. */
   override_reason: z.string().nullable(),
   comment: z.string().nullable(),
-  /** As given; yes/no answers read "true" or "false". */
-  answers: z.array(z.strictObject({ item: z.string(), value: z.string(), note: z.string().nullable(), passing: z.boolean() })),
+  /**
+   * As given; yes/no answers read "true" or "false". `label` is the item's name on the step, or its key once
+   * the item is gone; `value_label` is the chosen option's name for a choice, null otherwise.
+   */
+  answers: z.array(
+    z.strictObject({
+      item: z.string(),
+      label: z.string(),
+      value: z.string(),
+      value_label: z.string().nullable(),
+      note: z.string().nullable(),
+      passing: z.boolean(),
+    }),
+  ),
   photo_file_version_ids: z.array(z.uuid()),
   /** The same photos with their files, for `GET /files/{file_id}/versions/{file_version_id}/url`. */
   photos: z.array(z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() })),

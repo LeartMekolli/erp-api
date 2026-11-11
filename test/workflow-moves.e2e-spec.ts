@@ -34,7 +34,7 @@ interface Transition {
   defect: { key: string; name: string } | null;
   override_reason: string | null;
   comment: string | null;
-  answers: { item: string; value: string | boolean; note: string | null; passing: boolean }[];
+  answers: { item: string; label: string; value: string | boolean; value_label: string | null; note: string | null; passing: boolean }[];
   photo_file_version_ids: string[];
   actor: { id: string; name: string };
 }
@@ -162,10 +162,26 @@ describe('workflow: moving pieces through their steps', () => {
       defect: null,
       override_reason: null,
       comment: null,
-      answers: [{ item: 'surface', value: 'ok', note: 'Even shine', passing: true }],
+      answers: [{ item: 'surface', label: 'Surface', value: 'ok', value_label: 'Smooth', note: 'Even shine', passing: true }],
       photo_file_version_ids: [],
       actor: { id: tenant.ownerId },
     });
+  });
+
+  it('names an answer by its key once the item is no longer on the step', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant, 1);
+    await toPolishing(tenant, pieces);
+    await pass(tenant, pieces, 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).expect(200);
+
+    await prisma.inTenant(tenant.id, async (tx) => {
+      const step = await tx.workflowStep.findFirstOrThrow({ where: { key: 'polishing' }, select: { config: true } });
+      await tx.workflowStep.updateMany({ where: { key: 'polishing' }, data: { config: { ...(step.config as Prisma.JsonObject), checklist: [] } } });
+    });
+
+    expect((await lastMove(tenant, pieces[0]))?.answers).toEqual([
+      { item: 'surface', label: 'surface', value: 'ok', value_label: null, note: null, passing: true },
+    ]);
   });
 
   it('refuses a pass the QC gate does not allow, and moves nothing', async () => {
@@ -204,7 +220,7 @@ describe('workflow: moving pieces through their steps', () => {
     expect(await lastMove(tenant, pieces[1])).toMatchObject({
       from_step: { key: 'final_qc' },
       to_step: { key: 'packing' },
-      answers: [{ item: 'weight', value: '5.0', note: null, passing: true }],
+      answers: [{ item: 'weight', label: 'Weight', value: '5.0', value_label: null, note: null, passing: true }],
       photo_file_version_ids: [shot],
     });
   });
@@ -231,7 +247,7 @@ describe('workflow: moving pieces through their steps', () => {
       defect: { key: 'scratch', name: 'Scratch' },
       override_reason: null,
       comment: 'Seen under the lamp',
-      answers: [{ item: 'surface', value: 'pitted', note: null, passing: false }],
+      answers: [{ item: 'surface', label: 'Surface', value: 'pitted', value_label: 'Pitted', note: null, passing: false }],
     });
     expect((await lastMove(tenant, pieces[3]))?.to_step?.key).toBe('polishing');
     expect((await lastMove(tenant, pieces[3]))?.kind).toBe('pass');
