@@ -9,6 +9,7 @@ import { KnowledgeModule } from '../modules/ai/knowledge/knowledge.module';
 import { AuditModule } from '../modules/audit/audit.module';
 import { CourierAccountService } from '../modules/couriers/courier-account.service';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
+import { CommentsService } from '../modules/orders/comments.service';
 import { OrderStatesService } from '../modules/orders/order-states.service';
 import { OrdersService } from '../modules/orders/orders.service';
 import { JobsService } from '../modules/partners/jobs.service';
@@ -222,6 +223,7 @@ void runCli(async (app) => {
       invoices: app.get(InvoicesService),
       jobs: app.get(JobsService),
       moves: app.get(MovesService),
+      comments: app.get(CommentsService),
     },
     demo.id,
     uploader.id,

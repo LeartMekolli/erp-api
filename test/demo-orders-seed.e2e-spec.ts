@@ -16,6 +16,7 @@ import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
 import { CourierAccountService } from '../src/modules/couriers/courier-account.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { CommentsService } from '../src/modules/orders/comments.service';
 import { orderCountsResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { OrdersService } from '../src/modules/orders/orders.service';
@@ -43,7 +44,7 @@ interface Order {
   id: string;
   number: number;
   customer: { name: string };
-  lines: { partner: { status: string; expires_at: string | null } | null }[];
+  lines: { group_id: string | null; partner: { status: string; expires_at: string | null } | null }[];
   payment: { state: string };
 }
 
@@ -81,9 +82,10 @@ describe('demo orders seed', () => {
     invoices: app.get(InvoicesService),
     jobs: app.get(JobsService),
     moves: app.get(MovesService),
+    comments: app.get(CommentsService),
   });
 
-  // 20 orders, each quoted, placed, paid, handed to its workshop and moved through every step through the
+  // 21 orders, each quoted, placed, paid, handed to its workshop and moved through every step through the
   // services, on top of the whole demo: far more work than one request, so it gets more than the usual 20 s.
   it('fills every tab and every needs-you reason, once', async () => {
     const tenant = await createTestTenant(prisma);
@@ -100,15 +102,15 @@ describe('demo orders seed', () => {
     await seedPayments({ prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) }, tenant.id, KEYS);
 
     const first = await seedDemoOrders(deps(), tenant.id, owner.id);
-    expect(first).toMatchObject({ customers: 6, orders: 20, notInvoiced: 0 });
+    expect(first).toMatchObject({ customers: 6, orders: 21, notInvoiced: 0 });
 
     const token = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     const get = (path: string) => request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${token}`).expect(200);
     const counts = (await get('/orders/counts')).body as { all: number; states: Record<string, number>; needs_you: Record<string, number> };
     expectDocumented(orderCountsResponseSchema, counts);
     expect(counts).toEqual({
-      all: 20,
-      states: { awaiting_payment: 2, in_production: 8, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
+      all: 21,
+      states: { awaiting_payment: 2, in_production: 9, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
       needs_you: { total: 10, late: 2, to_ship: 4, to_collect: 3, due_soon: 2 },
       // The awaiting payment tile shows an amount: something is owed on the demo's orders to collect.
       to_collect_amounts: [{ currency: 'EUR', amount: expect.stringMatching(/^[1-9]\d*\.\d{2}$/) }],
@@ -125,7 +127,22 @@ describe('demo orders seed', () => {
     expect(orders.some((order) => order.lines.length === 3)).toBe(true);
     expect(orders.some((order) => order.customer.name.length === 40)).toBe(true);
     // Numbered from 1001 oldest first, as `-placed_at` lists them newest first.
-    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 20 }, (_, index) => 1020 - index));
+    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 21 }, (_, index) => 1021 - index));
+
+    // One order with quality problems: a scrapped piece, two being redone, and a comment for each reader.
+    const qualityId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:quality-issues' } })).id);
+    const quality = orders.find((order) => order.id === qualityId)!;
+    const groupId = quality.lines[0].group_id!;
+    const group = (await get(`/workflow/groups/${groupId}`)).body as {
+      steps: { key: string; failed: number; passed: number; defects: { key: string }[] }[];
+      pieces: { scrapped: number };
+    };
+    expect(group.pieces.scrapped).toBe(1);
+    expect(group.steps.find((step) => step.key === 'polishing')).toMatchObject({ failed: 2, passed: 7, defects: [{ key: 'scratch' }] });
+    const pieces = (await get(`/workflow/work-orders?group_id=${groupId}&limit=100`)).body as { data: { in_rework: boolean }[] };
+    expect(pieces.data.filter((piece) => piece.in_rework)).toHaveLength(2);
+    const said = (await get(`/orders/${qualityId}/comments`)).body as { data: { visibility: string }[] };
+    expect(said.data.map((comment) => comment.visibility).sort()).toEqual(['customer', 'partner', 'staff']);
 
     // One line offered to its workshop and not answered yet, open for 30 days from the seed.
     const offeredId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:offered' } })).id);
