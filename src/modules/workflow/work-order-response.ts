@@ -89,8 +89,8 @@ export const workOrderDetailResponseSchema = workOrderResponseSchema.extend({
   to_inspect: toInspectSchema,
   /** Every step the piece goes through, in order. */
   path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
-  /** The instructions for the piece's current step. */
-  sop_file_version_id: z.uuid().nullable(),
+  /** The instructions for the piece's current step, for `GET /files/{file_id}/versions/{file_version_id}/url`. */
+  sop: z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() }).nullable(),
   /** Every move of the piece, oldest first. */
   history: z.array(transitionResponseSchema),
 });

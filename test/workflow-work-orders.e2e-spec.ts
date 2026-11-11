@@ -139,7 +139,7 @@ describe('workflow: starting work orders from a quote', () => {
       group_id: group.id,
       step: { key: 'print_pattern' },
       replaces_id: null,
-      sop_file_version_id: null,
+      sop: null,
       path: ['print_pattern', 'casting_tree', 'casting', 'polishing', 'final_qc', 'packing'].map((key) => ({ key })),
     });
 
@@ -149,6 +149,20 @@ describe('workflow: starting work orders from a quote', () => {
     expect(row.quoteId).toBe(quoteId);
     expect(await pieces(tenant, 'step_key=print_pattern&limit=50')).toHaveLength(10);
     expect(await pieces(tenant, 'step_key=casting')).toHaveLength(0);
+  });
+
+  it("gives a piece the file of its step's instructions, to download", async () => {
+    const tenant = await freshTenant();
+    const group = (await tenant.owner.post('/workflow/groups', { quote_id: await quote(tenant, 'polished', 2) }).expect(201)).body as Group;
+    const { fileId } = await prisma.inTenant(tenant.id, async (tx) => {
+      await tx.workflowStep.updateMany({ where: { key: 'print_pattern' }, data: { sopFileVersionId: tenant.setup.versionId } });
+      return tx.fileVersion.findUniqueOrThrow({ where: { id: tenant.setup.versionId }, select: { fileId: true } });
+    });
+
+    const [first] = ((await tenant.owner.get(`/workflow/work-orders?group_id=${group.id}`).expect(200)).body as { data: WorkOrder[] }).data;
+    const one = await tenant.owner.get(`/workflow/work-orders/${first.id}`).expect(200);
+    expectDocumented(workOrderDetailResponseSchema, one.body);
+    expect(one.body).toMatchObject({ step: { key: 'print_pattern' }, sop: { file_id: fileId, file_version_id: tenant.setup.versionId } });
   });
 
   it('puts plating on the path of a gold-plated order', async () => {

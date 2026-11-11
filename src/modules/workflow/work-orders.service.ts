@@ -467,11 +467,13 @@ export class WorkOrdersService {
         include: transitionInclude,
         orderBy: { id: 'asc' },
       });
+      const sopId = row.currentStepId ? (byId.get(row.currentStepId)?.sopFileVersionId ?? null) : null;
+      const sop = sopId ? await tx.fileVersion.findUniqueOrThrow({ where: { id: sopId }, select: { id: true, fileId: true } }) : null;
       return {
         ...toWorkOrder(row),
         to_inspect: (await toInspect(tx, [row])).get(row.id) ?? null,
         path: path.map((stepId) => ({ key: byId.get(stepId)!.key, name: byId.get(stepId)!.name })),
-        sop_file_version_id: row.currentStepId ? (byId.get(row.currentStepId)?.sopFileVersionId ?? null) : null,
+        sop: sop ? { file_id: sop.fileId, file_version_id: sop.id } : null,
         history: history.map(toTransition),
       };
     });
