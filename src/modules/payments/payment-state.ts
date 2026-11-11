@@ -21,6 +21,9 @@ export type PaymentState = (typeof PAYMENT_STATES)[number];
 
 export const INVOICE_STATUSES = ['open', 'paid', 'void'] as const;
 
+/** Refunds that count against what is left to refund: those that succeeded and those still being made. */
+export const REFUND_COUNTED = ['pending', 'succeeded'] as const;
+
 export interface PaymentFacts {
   terms: PaymentTerms;
   cancelled: boolean;

@@ -58,7 +58,7 @@ export class WorkOrdersController {
   }
 
   @ApiDoc({
-    summary: "A group of pieces: its workflow version, and how many pieces are at each step of its path.",
+    summary: "A group of pieces: its workflow version, how many pieces are at each step of its path, and each step's checks.",
     response: groupResponseSchema,
     errors: [400, 404],
   })
@@ -92,7 +92,8 @@ export class WorkOrdersController {
       "A customer whose priority band is first in line has its pieces listed first, higher bands before lower ones. " +
       'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
-      '`workable=true` keeps only those pieces.',
+      '`workable=true` keeps only those pieces. `in_rework` says whether an active piece is being redone after a failed ' +
+      'check, and `last_move` is what last happened to it.',
     query: workOrderQuerySchema,
     response: pageSchema(workOrderListItemSchema),
     errors: [400],

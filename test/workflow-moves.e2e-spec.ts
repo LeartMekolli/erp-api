@@ -8,7 +8,13 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { moveResponseSchema, workOrderDetailResponseSchema } from '../src/modules/workflow/work-order-response';
+import { pageSchema } from '../src/common/pagination/page';
+import {
+  groupResponseSchema,
+  moveResponseSchema,
+  workOrderDetailResponseSchema,
+  workOrderListItemSchema,
+} from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -28,7 +34,7 @@ interface Transition {
   defect: { key: string; name: string } | null;
   override_reason: string | null;
   comment: string | null;
-  answers: { item: string; value: string | boolean; note: string | null; passing: boolean }[];
+  answers: { item: string; label: string; value: string | boolean; value_label: string | null; note: string | null; passing: boolean }[];
   photo_file_version_ids: string[];
   actor: { id: string; name: string };
 }
@@ -156,10 +162,26 @@ describe('workflow: moving pieces through their steps', () => {
       defect: null,
       override_reason: null,
       comment: null,
-      answers: [{ item: 'surface', value: 'ok', note: 'Even shine', passing: true }],
+      answers: [{ item: 'surface', label: 'Surface', value: 'ok', value_label: 'Smooth', note: 'Even shine', passing: true }],
       photo_file_version_ids: [],
       actor: { id: tenant.ownerId },
     });
+  });
+
+  it('names an answer by its key once the item is no longer on the step', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant, 1);
+    await toPolishing(tenant, pieces);
+    await pass(tenant, pieces, 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).expect(200);
+
+    await prisma.inTenant(tenant.id, async (tx) => {
+      const step = await tx.workflowStep.findFirstOrThrow({ where: { key: 'polishing' }, select: { config: true } });
+      await tx.workflowStep.updateMany({ where: { key: 'polishing' }, data: { config: { ...(step.config as Prisma.JsonObject), checklist: [] } } });
+    });
+
+    expect((await lastMove(tenant, pieces[0]))?.answers).toEqual([
+      { item: 'surface', label: 'surface', value: 'ok', value_label: null, note: null, passing: true },
+    ]);
   });
 
   it('refuses a pass the QC gate does not allow, and moves nothing', async () => {
@@ -198,7 +220,7 @@ describe('workflow: moving pieces through their steps', () => {
     expect(await lastMove(tenant, pieces[1])).toMatchObject({
       from_step: { key: 'final_qc' },
       to_step: { key: 'packing' },
-      answers: [{ item: 'weight', value: '5.0', note: null, passing: true }],
+      answers: [{ item: 'weight', label: 'Weight', value: '5.0', value_label: null, note: null, passing: true }],
       photo_file_version_ids: [shot],
     });
   });
@@ -225,7 +247,7 @@ describe('workflow: moving pieces through their steps', () => {
       defect: { key: 'scratch', name: 'Scratch' },
       override_reason: null,
       comment: 'Seen under the lamp',
-      answers: [{ item: 'surface', value: 'pitted', note: null, passing: false }],
+      answers: [{ item: 'surface', label: 'Surface', value: 'pitted', value_label: 'Pitted', note: null, passing: false }],
     });
     expect((await lastMove(tenant, pieces[3]))?.to_step?.key).toBe('polishing');
     expect((await lastMove(tenant, pieces[3]))?.kind).toBe('pass');
@@ -254,6 +276,67 @@ describe('workflow: moving pieces through their steps', () => {
     const other = await freshTenant();
     await fail([pieces[6]], { defect_id: other.setup.workflow.defects.scratch }).expect(400);
     expect(await stepOf(tenant, pieces[6])).toBe('polishing');
+  });
+
+  it('says on each listed piece whether it is being redone and what last happened', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant, 4);
+    await toPolishing(tenant, pieces);
+    const { scratch } = tenant.setup.workflow.defects;
+    const fail = (some: Piece[], extra: object = {}) =>
+      move(tenant, { work_order_ids: ids(some), at_step: 'polishing', kind: 'fail', comment: 'Seen under the lamp', defect_id: scratch, ...extra });
+    await fail([pieces[0], pieces[1]]).expect(200);
+    // Failed for rework, then scrapped: the rework is never closed in its history.
+    await fail([pieces[1]], { outcome: 'scrap', override_reason: 'Beyond saving' }).expect(200);
+
+    const groupId = ((await detail(tenant, pieces[0])) as unknown as { group_id: string }).group_id;
+    const listed = await tenant.owner.get(`/workflow/work-orders?group_id=${groupId}&limit=100`).expect(200);
+    expectDocumented(pageSchema(workOrderListItemSchema), listed.body);
+    const byId = new Map(
+      (listed.body as { data: (Piece & { in_rework: boolean; last_move: Transition | null })[] }).data.map((row) => [row.id, row]),
+    );
+
+    expect(byId.get(pieces[0].id)).toMatchObject({
+      in_rework: true,
+      last_move: { kind: 'fail', outcome: 'rework', from_step: { key: 'polishing' }, defect: { key: 'scratch' }, actor: { id: tenant.ownerId }, partner: null },
+    });
+    expect(byId.get(pieces[1].id)).toMatchObject({ status: 'scrapped', in_rework: false, last_move: { outcome: 'scrap' } });
+    expect(byId.get(pieces[2].id)).toMatchObject({ in_rework: false, last_move: { kind: 'pass', from_step: { key: 'casting' } } });
+  });
+
+  it("adds up each step's checks on the group", async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant);
+    await toPolishing(tenant, pieces);
+    const { scratch } = tenant.setup.workflow.defects;
+    await move(tenant, {
+      work_order_ids: ids(pieces.slice(0, 3)),
+      at_step: 'polishing',
+      kind: 'fail',
+      comment: 'Seen under the lamp',
+      defect_id: scratch,
+    }).expect(200);
+    await pass(tenant, pieces.slice(3), 'polishing', { answers: [{ item: 'surface', value: 'ok' }] }).expect(200);
+
+    const groupId = ((await detail(tenant, pieces[0])) as unknown as { group_id: string }).group_id;
+    const response = await tenant.owner.get(`/workflow/groups/${groupId}`).expect(200);
+    expectDocumented(groupResponseSchema, response.body);
+    const group = response.body as { steps: { key: string }[] };
+    const polishing = group.steps.find((step) => step.key === 'polishing');
+    expect(polishing).toMatchObject({
+      passed: 7,
+      failed: 3,
+      not_inspected: 0,
+      defects: [{ key: 'scratch', name: 'Scratch', count: 3 }],
+      latest_check: { actor: { id: tenant.ownerId }, partner: null, photos: [] },
+    });
+    expect(group.steps.find((step) => step.key === 'packing')).toMatchObject({
+      passed: 0,
+      failed: 0,
+      not_inspected: 0,
+      defects: [],
+      latest_check: null,
+    });
   });
 
   it('moves nothing when a piece is elsewhere, on another version, unknown or not of this workspace', async () => {

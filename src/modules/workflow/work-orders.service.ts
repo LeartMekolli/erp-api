@@ -19,8 +19,8 @@ import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
-import { customerView, groupProgress } from './progress';
-import type { TransitionFacts } from './progress';
+import { customerView, groupProgress, inRework, stepTotals } from './progress';
+import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
 import { ensureDraw, toInspect } from './sampling';
 import { barredStepIds } from './step-skills';
 import type { StepConfig } from './workflow-config';
@@ -28,6 +28,7 @@ import { WORK_ORDER_STATUSES } from './work-order-response';
 import type {
   CustomerViewResponse,
   GroupResponse,
+  LastMove,
   TransitionListItem,
   TransitionResponse,
   WorkOrderDetailResponse,
@@ -401,11 +402,13 @@ export class WorkOrdersService {
       const data = rows.slice(0, query.limit);
       const last = data.at(-1);
       const inspect = await toInspect(tx, data);
+      const moves = await this.moveSummaries(tx, data);
       return {
         data: data.map((row) => ({
           ...toWorkOrder(row),
           to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
+          ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id, rank: last.group.queueRank }, secret) : null,
       };
@@ -464,11 +467,13 @@ export class WorkOrdersService {
         include: transitionInclude,
         orderBy: { id: 'asc' },
       });
+      const sopId = row.currentStepId ? (byId.get(row.currentStepId)?.sopFileVersionId ?? null) : null;
+      const sop = sopId ? await tx.fileVersion.findUniqueOrThrow({ where: { id: sopId }, select: { id: true, fileId: true } }) : null;
       return {
         ...toWorkOrder(row),
         to_inspect: (await toInspect(tx, [row])).get(row.id) ?? null,
         path: path.map((stepId) => ({ key: byId.get(stepId)!.key, name: byId.get(stepId)!.name })),
-        sop_file_version_id: row.currentStepId ? (byId.get(row.currentStepId)?.sopFileVersionId ?? null) : null,
+        sop: sop ? { file_id: sop.fileId, file_version_id: sop.id } : null,
         history: history.map(toTransition),
       };
     });
@@ -490,6 +495,7 @@ export class WorkOrdersService {
       path.map((stepId) => byId.get(stepId)!),
       pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
     );
+    const totals = stepTotals(path, [...histories.values()].flat());
     return {
       id: group.id,
       workflow: { id: group.workflowVersion.workflow.id, name: group.workflowVersion.workflow.name, version: group.workflowVersion.number },
@@ -497,8 +503,62 @@ export class WorkOrdersService {
       product_id: group.productId,
       customer_id: group.customerId,
       quantity: group.quantity,
-      ...progress,
+      pieces: progress.pieces,
+      steps: await this.withChecks(tx, path, progress.steps, totals),
     };
+  }
+
+  /**
+   * Each step of the path with its checks: at most two more queries, for the defects' names and the
+   * latest checks, and none when the group has no checks yet.
+   */
+  private async withChecks(
+    tx: Prisma.TransactionClient,
+    path: string[],
+    steps: GroupProgress['steps'],
+    totals: Map<string, StepTotals>,
+  ): Promise<GroupResponse['steps']> {
+    const all = [...totals.values()];
+    const defectIds = [...new Set(all.flatMap((step) => [...step.defectCounts.keys()]))];
+    const latestIds = all.flatMap((step) => (step.latestCheckId === null ? [] : [step.latestCheckId]));
+    const defects =
+      defectIds.length > 0 ? await tx.defect.findMany({ where: { id: { in: defectIds } }, select: { id: true, key: true, name: true } }) : [];
+    const checks =
+      latestIds.length > 0
+        ? await tx.transition.findMany({
+            where: { id: { in: latestIds } },
+            select: {
+              id: true,
+              createdAt: true,
+              actor: nameRef,
+              partner: nameRef,
+              photos: { orderBy: { id: 'asc' }, include: { fileVersion: { select: { fileId: true } } } },
+            },
+          })
+        : [];
+    const defectById = new Map(defects.map((defect) => [defect.id, defect]));
+    const checkById = new Map(checks.map((check) => [check.id, check]));
+    return steps.map((step, index) => {
+      const total = totals.get(path[index])!;
+      const check = total.latestCheckId === null ? undefined : checkById.get(total.latestCheckId);
+      return {
+        ...step,
+        passed: total.passed,
+        failed: total.failed,
+        not_inspected: total.not_inspected,
+        defects: [...total.defectCounts]
+          .map(([id, count]) => ({ key: defectById.get(id)!.key, name: defectById.get(id)!.name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+        latest_check: check
+          ? {
+              actor: check.actor,
+              partner: check.partner,
+              created_at: check.createdAt.toISOString(),
+              photos: check.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
+            }
+          : null,
+      };
+    });
   }
 
   /**
@@ -513,10 +573,10 @@ export class WorkOrdersService {
     });
     const transitions = await tx.transition.findMany({
       where: { workOrder: { groupId } },
-      select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
+      select: { id: true, workOrderId: true, kind: true, outcome: true, fromStepId: true, defectId: true, inspected: true },
       orderBy: { id: 'asc' },
     });
-    const histories = new Map<string, TransitionFacts[]>();
+    const histories = new Map<string, MoveFacts[]>();
     for (const row of transitions) {
       const history = histories.get(row.workOrderId);
       if (history) {
@@ -526,6 +586,63 @@ export class WorkOrdersService {
       }
     }
     return { pieces, histories };
+  }
+
+  /**
+   * Whether each piece is being redone, and its last move, in two queries whatever the page size: the
+   * pieces' move facts in move order, then their last moves with names. Only an active piece is in rework;
+   * a scrapped or cancelled one can keep a rework open in its history.
+   */
+  private async moveSummaries(
+    tx: Prisma.TransactionClient,
+    pieces: { id: string; status: string }[],
+  ): Promise<Map<string, { in_rework: boolean; last_move: LastMove | null }>> {
+    const facts = await tx.transition.findMany({
+      where: { workOrderId: { in: pieces.map((piece) => piece.id) } },
+      select: { id: true, workOrderId: true, kind: true, outcome: true, fromStepId: true },
+      orderBy: { id: 'asc' },
+    });
+    const histories = new Map<string, (TransitionFacts & { id: string })[]>();
+    for (const row of facts) {
+      const history = histories.get(row.workOrderId);
+      if (history) {
+        history.push(row);
+      } else {
+        histories.set(row.workOrderId, [row]);
+      }
+    }
+    const lastIds = [...histories.values()].map((history) => history.at(-1)!.id);
+    const lasts =
+      lastIds.length > 0
+        ? await tx.transition.findMany({
+            where: { id: { in: lastIds } },
+            select: { id: true, kind: true, outcome: true, createdAt: true, fromStep: stepRef, defect: stepRef, actor: nameRef, partner: nameRef },
+          })
+        : [];
+    const byId = new Map(lasts.map((row) => [row.id, row]));
+    return new Map(
+      pieces.map((piece) => {
+        const history = histories.get(piece.id) ?? [];
+        const last = history.length > 0 ? byId.get(history.at(-1)!.id) : undefined;
+        return [
+          piece.id,
+          {
+            in_rework: piece.status === 'active' && inRework(history) !== null,
+            last_move: last
+              ? {
+                  kind: last.kind as LastMove['kind'],
+                  outcome: last.outcome as LastMove['outcome'],
+                  from_step: last.fromStep,
+                  defect: last.defect,
+                  actor: last.actor,
+                  partner: last.partner,
+                  created_at: last.createdAt.toISOString(),
+                }
+              : null,
+          },
+        ];
+      }),
+    );
   }
 
   private versionSteps(tx: Prisma.TransactionClient, versionId: string): Promise<WorkflowStepRow[]> {
@@ -539,30 +656,50 @@ export const pieceInclude = {
 } as const;
 
 const stepRef = { select: { id: true, key: true, name: true } } as const;
+const nameRef = { select: { id: true, name: true } } as const;
 
 export const transitionInclude = {
-  fromStep: stepRef,
+  // With its config, to name the answers: a version's steps are never changed, so it is what staff answered.
+  fromStep: { select: { id: true, key: true, name: true, config: true } },
   toStep: stepRef,
-  defect: { select: { id: true, key: true, name: true } },
-  actor: { select: { id: true, name: true } },
-  partner: { select: { id: true, name: true } },
+  defect: stepRef,
+  actor: nameRef,
+  partner: nameRef,
   answers: { orderBy: { id: 'asc' } },
   photos: { orderBy: { id: 'asc' }, include: { fileVersion: { select: { fileId: true } } } },
 } as const satisfies Prisma.TransitionInclude;
 
 type TransitionRow = Prisma.TransitionGetPayload<{ include: typeof transitionInclude }>;
 
+/**
+ * An answer with the names the step gave its item and, for a choice, the chosen option. An item no longer
+ * on the step is named by its key.
+ */
+function readableAnswer(answer: TransitionRow['answers'][number], checklist: StepConfig['checklist'] | undefined): TransitionResponse['answers'][number] {
+  const item = checklist?.find((one) => one.key === answer.itemKey);
+  const option = item?.kind === 'choice' ? item.options.find((one) => one.key === answer.value) : undefined;
+  return {
+    item: answer.itemKey,
+    label: item?.label ?? answer.itemKey,
+    value: answer.value,
+    value_label: option?.label ?? null,
+    note: answer.note,
+    passing: answer.passing,
+  };
+}
+
 export function toTransition(row: TransitionRow): TransitionResponse {
+  const checklist = row.fromStep ? (row.fromStep.config as StepConfig).checklist : undefined;
   return {
     id: row.id,
     kind: row.kind as TransitionResponse['kind'],
     outcome: row.outcome as TransitionResponse['outcome'],
-    from_step: row.fromStep,
+    from_step: row.fromStep ? { id: row.fromStep.id, key: row.fromStep.key, name: row.fromStep.name } : null,
     to_step: row.toStep,
     defect: row.defect,
     override_reason: row.overrideReason,
     comment: row.comment,
-    answers: row.answers.map((answer) => ({ item: answer.itemKey, value: answer.value, note: answer.note, passing: answer.passing })),
+    answers: row.answers.map((answer) => readableAnswer(answer, checklist)),
     photo_file_version_ids: row.photos.map((photo) => photo.fileVersionId),
     photos: row.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
     actor: row.actor,

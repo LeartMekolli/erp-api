@@ -158,7 +158,7 @@ describe('workflow: the done-when walkthrough', () => {
       history: { kind: string; to_step: { key: string } | null }[];
     };
     expect(corrected.history.slice(-2).map((row) => `${row.kind}>${row.to_step?.key}`)).toEqual(['pass>packing', 'correction>final_qc']);
-    expect(await at('final_qc')).toEqual({ key: 'final_qc', name: 'Final QC', count: 1, in_rework: 0 });
+    expect(await at('final_qc')).toMatchObject({ key: 'final_qc', name: 'Final QC', count: 1, in_rework: 0 });
 
     // 8. An edited workflow is a new version: this group stays on version 1, a new group gets version 2.
     await setup.workflow.setSteps();

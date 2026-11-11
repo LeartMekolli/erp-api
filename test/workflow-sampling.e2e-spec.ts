@@ -11,6 +11,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { sampling } from '../src/modules/workflow/sampling';
 import {
+  groupResponseSchema,
   moveResponseSchema,
   transitionListItemSchema,
   workOrderDetailResponseSchema,
@@ -235,6 +236,17 @@ describe('workflow: a step inspects a random sample', () => {
       .get(`/workflow/transitions?group_id=${pieces[0]!.group_id}&step_key=inspection&inspected=true&limit=100`)
       .expect(200);
     expect((inspectedRows.body as { data: Transition[] }).data).toHaveLength(3);
+
+    // The step's totals count the 7 uninspected passes, but its latest check is still the last inspected one.
+    const group = await tenant.staff.get(`/workflow/groups/${pieces[0]!.group_id}`).expect(200);
+    expectDocumented(groupResponseSchema, group.body);
+    const latestInspected = (inspectedRows.body as { data: { created_at: string }[] }).data[0]!;
+    expect((group.body as { steps: { key: string }[] }).steps.find((step) => step.key === 'inspection')).toMatchObject({
+      passed: 10,
+      failed: 0,
+      not_inspected: 7,
+      latest_check: { created_at: latestInspected.created_at },
+    });
   });
 
   it('turns sampling off for the batch after any fail', async () => {

@@ -28,14 +28,6 @@ export type WorkOrderResponse = z.infer<typeof workOrderResponseSchema>;
  */
 const toInspectSchema = z.boolean().nullable();
 
-/** A piece in a work list, for the staff member reading it. */
-export const workOrderListItemSchema = workOrderResponseSchema.extend({
-  to_inspect: toInspectSchema,
-  /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
-  may_work: z.boolean(),
-});
-export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
-
 export const transitionResponseSchema = z.strictObject({
   id: z.uuid(),
   kind: z.enum(['pass', 'fail', 'correction']),
@@ -49,8 +41,20 @@ export const transitionResponseSchema = z.strictObject({
   /** Why the defect's default outcome or rework target was not followed. */
   override_reason: z.string().nullable(),
   comment: z.string().nullable(),
-  /** As given; yes/no answers read "true" or "false". */
-  answers: z.array(z.strictObject({ item: z.string(), value: z.string(), note: z.string().nullable(), passing: z.boolean() })),
+  /**
+   * As given; yes/no answers read "true" or "false". `label` is the item's name on the step, or its key once
+   * the item is gone; `value_label` is the chosen option's name for a choice, null otherwise.
+   */
+  answers: z.array(
+    z.strictObject({
+      item: z.string(),
+      label: z.string(),
+      value: z.string(),
+      value_label: z.string().nullable(),
+      note: z.string().nullable(),
+      passing: z.boolean(),
+    }),
+  ),
   photo_file_version_ids: z.array(z.uuid()),
   /** The same photos with their files, for `GET /files/{file_id}/versions/{file_version_id}/url`. */
   photos: z.array(z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() })),
@@ -63,6 +67,30 @@ export const transitionResponseSchema = z.strictObject({
 });
 export type TransitionResponse = z.infer<typeof transitionResponseSchema>;
 
+/** The latest move of a piece, in move order, without its answers and photos. */
+export const lastMoveSchema = transitionResponseSchema.pick({
+  kind: true,
+  outcome: true,
+  from_step: true,
+  defect: true,
+  actor: true,
+  partner: true,
+  created_at: true,
+});
+export type LastMove = z.infer<typeof lastMoveSchema>;
+
+/** A piece in a work list, for the staff member reading it. */
+export const workOrderListItemSchema = workOrderResponseSchema.extend({
+  to_inspect: toInspectSchema,
+  /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
+  may_work: z.boolean(),
+  /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */
+  in_rework: z.boolean(),
+  /** Null until the piece first moves. */
+  last_move: lastMoveSchema.nullable(),
+});
+export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
+
 /** A row of the QC history, with the piece it moved. */
 export const transitionListItemSchema = transitionResponseSchema.extend({
   work_order: z.strictObject({ id: z.uuid(), label: z.string() }),
@@ -73,8 +101,8 @@ export const workOrderDetailResponseSchema = workOrderResponseSchema.extend({
   to_inspect: toInspectSchema,
   /** Every step the piece goes through, in order. */
   path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
-  /** The instructions for the piece's current step. */
-  sop_file_version_id: z.uuid().nullable(),
+  /** The instructions for the piece's current step, for `GET /files/{file_id}/versions/{file_version_id}/url`. */
+  sop: z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() }).nullable(),
   /** Every move of the piece, oldest first. */
   history: z.array(transitionResponseSchema),
 });
@@ -111,7 +139,32 @@ export const groupResponseSchema = z.strictObject({
   /** How many good pieces the group delivers. */
   quantity: z.number().int(),
   pieces: z.strictObject({ active: z.number().int(), finished: z.number().int(), scrapped: z.number().int() }),
-  /** The path, with how many active pieces are at each step, and how many of those are being redone. */
-  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int(), in_rework: z.number().int() })),
+  /**
+   * The path, with how many active pieces are at each step, how many of those are being redone, and the
+   * step's checks. `passed` and `failed` count moves, not pieces, so a piece that fails and then passes
+   * counts once in each; `not_inspected` is the part of `passed` left out of a sample.
+   */
+  steps: z.array(
+    z.strictObject({
+      key: z.string(),
+      name: z.string(),
+      count: z.number().int(),
+      in_rework: z.number().int(),
+      passed: z.number().int(),
+      failed: z.number().int(),
+      not_inspected: z.number().int(),
+      /** The defects of the step's fails, most frequent first, then by name. */
+      defects: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int() })),
+      /** The latest inspected pass or fail at the step; null before the first. */
+      latest_check: z
+        .strictObject({
+          actor: transitionResponseSchema.shape.actor,
+          partner: transitionResponseSchema.shape.partner,
+          created_at: z.iso.datetime(),
+          photos: transitionResponseSchema.shape.photos,
+        })
+        .nullable(),
+    }),
+  ),
 });
 export type GroupResponse = z.infer<typeof groupResponseSchema>;

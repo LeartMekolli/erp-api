@@ -2,6 +2,7 @@ import type { PrismaService } from '../database/prisma.service';
 import type { Prisma } from '../generated/prisma/client';
 import type { PartnerAuth, TenantAuth } from '../modules/identity/auth-context';
 import type { TenantPermission } from '../modules/identity/permissions';
+import type { CommentsService } from '../modules/orders/comments.service';
 import { localDate, promisedDate, startOfLocalDay, workingDaysAfter, workingDaysBefore } from '../modules/orders/dates';
 import type { BusinessCalendar } from '../modules/orders/dates';
 import type { Address, OrderCountsResponse } from '../modules/orders/order-response';
@@ -14,7 +15,7 @@ import type { PaidByHandService } from '../modules/payments/paid-by-hand.service
 import type { RefundsService } from '../modules/payments/refunds.service';
 import type { QuotesService } from '../modules/pricing/quotes.service';
 import { SettingsService } from '../modules/settings/settings.service';
-import type { MovesService } from '../modules/workflow/moves.service';
+import type { MoveBody, MovesService } from '../modules/workflow/moves.service';
 import type { ChecklistItem, StepConfig } from '../modules/workflow/workflow-config';
 
 // Demo orders for the demo workspace's Orders screen, on top of its customers, partners, catalog, pricing,
@@ -124,12 +125,16 @@ interface DemoOrder {
   hoursAgo?: number;
   /** Lines cancelled with the refund suggested for them, the rest left in production. */
   cancelLines?: number[];
+  /** Its first line's pieces fail checks on the way: one scrapped at casting, two sent back at polishing. */
+  quality?: true;
 }
 
 /** The situations the Orders screen is tested with; the comment is what staff see. */
 const ORDERS: DemoOrder[] = [
   // Late, in production.
   { key: 'late-in-production', customer: 'Fieldnote Studio', lines: [cast('silver_925', 'polished', '1', 12)], paid: true, partner: NORTHCAST, progress: 'production', promised: -2 },
+  // In production with failures: a scrapped piece, two being redone, and a comment for each reader.
+  { key: 'quality-issues', customer: 'Fieldnote Studio', lines: [cast('silver_925', 'polished', '1', 10)], paid: true, partner: NORTHCAST, progress: 'production', promised: 7, quality: true },
   // Late and ready: late, to ship.
   { key: 'late-ready', customer: 'Luna Jewels', lines: [pendant('silver_925', 'polished', 'M', 24)], paid: true, partner: NORTHCAST, progress: 'ready', promised: -1 },
   // Ready, promised tomorrow, on the live-rate method so a label can be bought with its defaults; pay later, not billed.
@@ -206,6 +211,7 @@ export interface DemoOrdersDeps {
   invoices: InvoicesService;
   jobs: JobsService;
   moves: MovesService;
+  comments: CommentsService;
 }
 
 export interface DemoOrdersSeed {
@@ -308,6 +314,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
       where: { organisationType: 'partner', organisationId: { in: partners.map((partner) => partner.id) }, role: 'owner' },
       select: { organisationId: true, userId: true },
     });
+    const defects = await tx.defect.findMany({ where: { key: { in: ['crack', 'scratch'] } }, select: { id: true, key: true } });
     const existing = await tx.order.findMany({
       where: { channel: 'staff', channelOrderId: { in: ORDERS.map((order) => `demo:${order.key}`) } },
       select: { channelOrderId: true },
@@ -326,6 +333,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
       partners: new Map(partners.map((row) => [row.name, { id: row.id, ownerId: owners.find((owner) => owner.organisationId === row.id)?.userId }])),
       // The placeholder design: the custom products are quoted on it, and final QC's photo is it.
       designId: products.find((row) => row.key === 'pendant_part')?.fileVersionId ?? null,
+      defects: new Map(defects.map((row) => [row.key, row.id])),
       paymentAccount: (await tx.paymentAccount.findFirst({ select: { tenantId: true } })) !== null,
       existing: new Set(existing.map((row) => row.channelOrderId)),
     };
@@ -335,6 +343,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     ...ORDERS.flatMap((order) => order.lines.flatMap((line) => (context.products.has(line.product) ? [] : [line.product]))),
     ...[NORTHCAST, LAYERLINE].filter((name) => !context.partners.get(name)?.ownerId),
     ...(context.designId ? [] : ['the placeholder design']),
+    ...['crack', 'scratch'].filter((key) => !context.defects.has(key)).map((key) => `the ${key} defect`),
   ];
   if (missing.length > 0) {
     throw new Error(`Demo orders need the rest of the demo first; missing: ${[...new Set(missing)].join(', ')}`);
@@ -377,6 +386,31 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
       });
     }
     throw new Error(`The pieces of group ${groupId} did not finish`);
+  };
+
+  /**
+   * Takes the group's pieces as far as polishing with failures on the way: the first cracks at casting and
+   * is scrapped (its replacement starts again at the first step), the next two are scratched at polishing
+   * and sent back to be polished again, and the other seven pass.
+   */
+  const failSome = async (groupId: string) => {
+    const ids = (
+      await prisma.inTenant(tenantId, (tx) => tx.workOrder.findMany({ where: { groupId }, orderBy: { id: 'asc' }, select: { id: true } }))
+    ).map((piece) => piece.id);
+    const move = (workOrderIds: string[], atStep: string, extra: Partial<MoveBody> = {}) =>
+      deps.moves.move(staff, { work_order_ids: workOrderIds, at_step: atStep, kind: 'pass', inspected: true, ...extra });
+    await move(ids, 'print_pattern');
+    await move(ids, 'casting_tree');
+    await move(ids.slice(0, 1), 'casting', { kind: 'fail', defect_id: context.defects.get('crack')!, comment: COMMENT });
+    await move(ids.slice(1), 'casting');
+    await move(ids.slice(1, 3), 'polishing', {
+      kind: 'fail',
+      defect_id: context.defects.get('scratch')!,
+      comment: COMMENT,
+      photo_file_version_ids: [designId],
+      answers: [{ item: 'surface', value: 'pitted' }],
+    });
+    await move(ids.slice(3), 'polishing', { answers: [{ item: 'surface', value: 'ok' }] });
   };
 
   const plan = ORDERS.filter((order) => !context.existing.has(`demo:${order.key}`))
@@ -431,6 +465,15 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
         await deps.jobs.offer(staff, line.group_id, partner.id);
         if (order.accepts !== false) await deps.jobs.accept(partnerAuth, line.group_id);
       }
+    }
+    if (order.quality) {
+      await failSome(placed.lines[0].group_id!);
+      // One comment for each reader: the customer, the partner holding the line, and staff alone.
+      const say = (body: string, visibility: 'customer' | 'partner' | 'staff', lineId?: string) =>
+        deps.comments.staffPost({ tenantId, userId: staffUserId }, id, { body, visibility, ...(lineId ? { line_id: lineId } : {}) });
+      await say('We have had to remake one piece, the order is still on time.', 'customer');
+      await say('Please check the polish on the next batch.', 'partner', placed.lines[0].id);
+      await say('Keep an eye on this line, two pieces are being redone.', 'staff');
     }
     if (FINISHED.includes(order.progress)) {
       for (const line of placed.lines) {

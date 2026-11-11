@@ -13,7 +13,7 @@ import { registerEventHandler } from './payment-events.service';
 import { PAYMENT_PROVIDER } from './payment-provider';
 import type { PaymentProvider, ProviderKeys } from './payment-provider';
 import type { RefundSuggestionResponse } from './payment-response';
-import { paidAndRefunded } from './payment-state';
+import { REFUND_COUNTED, paidAndRefunded } from './payment-state';
 import { suggestRefund } from './refund-suggestion';
 
 type Tx = Prisma.TransactionClient;
@@ -60,7 +60,7 @@ export class RefundsService implements OnModuleInit {
       where: { orderId, kind: 'payment_received' },
       select: { kind: true, lines: { select: { account: true, amount: true } } },
     });
-    const refunding = await tx.refund.aggregate({ _sum: { amount: true }, where: { orderId, status: { in: ['pending', 'succeeded'] } } });
+    const refunding = await tx.refund.aggregate({ _sum: { amount: true }, where: { orderId, status: { in: [...REFUND_COUNTED] } } });
     return paidAndRefunded(journals).paid.sub(refunding._sum.amount ?? 0);
   }
 
