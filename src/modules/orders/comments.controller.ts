@@ -41,12 +41,13 @@ export class OrderCommentsController {
   @ApiDoc({
     summary: 'Comment on an order or one of its lines, with files attached.',
     description:
-      '`visibility` says who reads it besides staff: nobody by default, `customer`, or `partner`, the partner holding the line, ' +
-      'which needs a `line_id`. A `line_id` of another order is a 400. Any uploaded file of the workspace can be attached, ' +
-      'at most 10; one not found, or not uploaded yet, is a 404 naming it. Comments cannot be edited or deleted.',
+      '`visibility` says who reads it besides staff: nobody by default, `customer`, or `partner`, the partner that has accepted the line, ' +
+      'which needs a `line_id`. A `partner` comment stays that partner\'s when the line changes hands; on a line no partner has accepted ' +
+      'yet it is a 409 with `code` `line_not_accepted`. A `line_id` of another order is a 400. Any uploaded file of the workspace can be ' +
+      'attached, at most 10; one not found, or not uploaded yet, is a 404 naming it. Comments cannot be edited or deleted.',
     body: staffCommentSchema,
     response: orderCommentResponseSchema,
-    errors: [400, 404],
+    errors: [400, 404, 409],
   })
   @RequirePermission('order.write')
   @Post()

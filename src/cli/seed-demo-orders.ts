@@ -468,7 +468,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     }
     if (order.quality) {
       await failSome(placed.lines[0].group_id!);
-      // One comment for each reader: the customer, the partner holding the line, and staff alone.
+      // One comment for each reader: the customer, the partner that has accepted the line, and staff alone.
       const say = (body: string, visibility: 'customer' | 'partner' | 'staff', lineId?: string) =>
         deps.comments.staffPost({ tenantId, userId: staffUserId }, id, { body, visibility, ...(lineId ? { line_id: lineId } : {}) });
       await say('We have had to remake one piece, the order is still on time.', 'customer');

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { toPage } from '../../common/pagination/page';
@@ -20,7 +20,7 @@ const attachments = z.array(z.uuid()).max(COMMENT_MAX_ATTACHMENTS).optional();
 /**
  * Staff write on the order or a line, for staff only unless `visibility` says otherwise: comments can't be
  * edited or deleted, so one reaches the customer or a partner only when addressed to it. `partner` is the
- * partner holding the line.
+ * partner that has accepted the line, and stays that partner's when the line changes hands.
  */
 export const staffCommentSchema = z
   .strictObject({ body, line_id: z.uuid().optional(), visibility: z.enum(COMMENT_VISIBILITIES).default('staff'), attachments })
@@ -59,6 +59,7 @@ interface Draft {
 
 const WITH = {
   author: { select: { name: true } },
+  partner: { select: { id: true, name: true } },
   attachments: { orderBy: { position: 'asc' }, include: { fileVersion: { select: { originalName: true } } } },
 } satisfies Prisma.OrderCommentInclude;
 type Comment = Prisma.OrderCommentGetPayload<{ include: typeof WITH }>;
@@ -66,7 +67,7 @@ type Comment = Prisma.OrderCommentGetPayload<{ include: typeof WITH }>;
 /**
  * Comments on orders (Orders spec, goal 13). Three audiences read the same rows through their own filter,
  * so a reader never sees more than its filter lets through: staff everything; the customer what staff wrote
- * for it and what its people wrote; a partner only what staff wrote for it on a job it holds now, and its own.
+ * for it and what its people wrote; a partner, on a job it holds now, only what staff wrote to it and its own.
  * A staff comment with no `visibility` is read by staff alone.
  */
 @Injectable()
@@ -152,8 +153,12 @@ export class CommentsService {
     return this.prisma.inTenant(tenantId, async (tx) => {
       const found = await scope(tx);
       const lineId = found.lineId ?? draft.lineId;
+      let partnerId = draft.partnerId;
       if (lineId && !found.lineId) {
-        await this.requireLine(tx, found.orderId, lineId);
+        const groupId = await this.requireLine(tx, found.orderId, lineId);
+        if (draft.authorKind === 'staff' && draft.visibility === 'partner') {
+          partnerId = await this.holder(tx, groupId);
+        }
       }
       const files = await this.requireFiles(tx, [...new Set(draft.attachments ?? [])], draft.ownedByCustomer);
       const created = await tx.orderComment.create({
@@ -162,7 +167,7 @@ export class CommentsService {
           lineId: lineId ?? null,
           authorUserId: draft.authorUserId,
           authorKind: draft.authorKind,
-          partnerId: draft.partnerId ?? null,
+          partnerId: partnerId ?? null,
           visibility: draft.visibility,
           body: draft.body,
           attachments: { create: files.map((fileVersionId, position) => ({ fileVersionId, position })) },
@@ -208,10 +213,8 @@ export class CommentsService {
     if (!found) {
       throw new NotFoundException('Job not found');
     }
-    return {
-      ...found,
-      where: { lineId: found.lineId, OR: [{ authorKind: 'staff', visibility: 'partner' }, { authorKind: 'partner', partnerId: auth.partnerId }] },
-    };
+    // A comment names a partner only when that partner wrote it or staff wrote to it.
+    return { ...found, where: { lineId: found.lineId, partnerId: auth.partnerId } };
   }
 
   private async requireOrder(tx: Tx, where: Prisma.OrderWhereInput): Promise<void> {
@@ -220,13 +223,23 @@ export class CommentsService {
     }
   }
 
-  /** A line, or a sub-line of one, of this order. */
-  private async requireLine(tx: Tx, orderId: string, lineId: string): Promise<void> {
-    const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
-    const part = line ? null : await tx.orderLinePart.findFirst({ where: { id: lineId, line: { orderId } }, select: { id: true } });
+  /** A line, or a sub-line of one, of this order; answers the group it is made as, if any. */
+  private async requireLine(tx: Tx, orderId: string, lineId: string): Promise<string | null> {
+    const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { groupId: true } });
+    const part = line ? null : await tx.orderLinePart.findFirst({ where: { id: lineId, line: { orderId } }, select: { groupId: true } });
     if (!line && !part) {
       throw new BadRequestException({ message: 'Line not found on this order', errors: [{ path: 'line_id', message: 'not a line of this order' }] });
     }
+    return (line ?? part)!.groupId;
+  }
+
+  /** The partner that has accepted the job a line is made as: the one a comment for the partner is to. */
+  private async holder(tx: Tx, groupId: string | null): Promise<string> {
+    const held = groupId ? await tx.jobAssignment.findFirst({ where: { groupId, status: 'accepted' }, select: { partnerId: true } }) : null;
+    if (!held) {
+      throw new ConflictException({ code: 'line_not_accepted', message: 'No partner has accepted this line yet' });
+    }
+    return held.partnerId;
   }
 
   /** Uploaded versions the author may attach, in order; the first one it may not is `attachments.N`. */
@@ -256,6 +269,7 @@ function staffView(comment: Comment): OrderCommentResponse {
     line_id: comment.lineId,
     author: { kind: comment.authorKind as OrderCommentResponse['author']['kind'], id: comment.authorUserId, name: comment.author.name },
     visibility: comment.visibility as CommentVisibility,
+    partner: comment.partner,
     body: comment.body,
     attachments: filesOf(comment),
     created_at: comment.createdAt.toISOString(),

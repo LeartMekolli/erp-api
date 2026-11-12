@@ -348,7 +348,7 @@ export type PriceChangedResponse = z.infer<typeof priceChangedResponseSchema>;
 export const COMMENT_MAX_LENGTH = 5000;
 export const COMMENT_MAX_ATTACHMENTS = 10;
 
-/** Who reads a comment besides staff: the customer, the partner holding its line, or nobody. */
+/** Who reads a comment besides staff: the customer, the partner that had accepted its line when written, or nobody. */
 export const COMMENT_VISIBILITIES = ['customer', 'partner', 'staff'] as const;
 export type CommentVisibility = (typeof COMMENT_VISIBILITIES)[number];
 
@@ -362,6 +362,8 @@ export const orderCommentResponseSchema = z.strictObject({
   author: z.strictObject({ kind: z.enum(['staff', 'customer', 'partner']), id: z.uuid(), name: z.string() }),
   /** Who reads it besides staff. A customer's own comment is `customer`, a partner's own is `partner`. */
   visibility: z.enum(COMMENT_VISIBILITIES),
+  /** The partner a `partner` comment is to or from; null for any other. */
+  partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
   body: z.string(),
   attachments: z.array(commentAttachmentResponseSchema),
   created_at: z.string(),

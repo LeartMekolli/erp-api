@@ -27,6 +27,7 @@ interface StaffComment {
   line_id: string | null;
   author: { kind: string; id: string; name: string };
   visibility: string;
+  partner: { id: string; name: string } | null;
   body: string;
   attachments: { file_version_id: string; name: string }[];
 }
@@ -46,8 +47,8 @@ interface PartnerComment {
 
 /**
  * Comments on orders (Orders spec, goal 13; Orders 2 plan, Task 7): staff and the customer's people write
- * on an order or a line, with attachments; a partner holding a line reads only the comments staff mark for
- * it and writes text of its own. Never the customer, the order, other lines, or a comment not marked for it.
+ * on an order or a line, with attachments; a partner holding a line reads only the comments staff wrote to
+ * it there and writes text of its own. Never the customer, the order, other lines, or a comment to anyone else.
  */
 describe('orders: comments', () => {
   let app: INestApplication;
@@ -238,9 +239,14 @@ describe('orders: comments', () => {
     const tenant = await freshTenant();
     const [zero, one] = tenant.order.lines;
     const post = (body: object) => tenant.staff.post(staffPath(tenant), body).expect(201);
-    await post({ body: 'Polish the back harder', line_id: zero.id, visibility: 'partner' });
+    const sent = (await post({ body: 'Polish the back harder', line_id: zero.id, visibility: 'partner' })).body as StaffComment;
+    expectDocumented(orderCommentResponseSchema, sent);
+    expect(sent.partner).toEqual({ id: tenant.castco.id, name: 'CastCo' });
     await post({ body: 'Delivery date moved for Luna', line_id: zero.id, visibility: 'customer' });
-    await post({ body: 'Pack in the grey box', line_id: one.id, visibility: 'partner' });
+    // Line 1 is only offered to MetalWorks: no partner to write to yet, and nothing is saved.
+    const notAccepted = await tenant.staff.post(staffPath(tenant), { body: 'Pack in the grey box', line_id: one.id, visibility: 'partner' }).expect(409);
+    expect(notAccepted.body).toMatchObject({ code: 'line_not_accepted' });
+    expect(list<StaffComment>(await tenant.staff.get(staffPath(tenant)).expect(200))).toHaveLength(2);
 
     // CastCo reads the first only, and answers.
     let seen = await tenant.castco.person.get(jobPath(tenant, tenant.castco)).expect(200);
@@ -265,13 +271,19 @@ describe('orders: comments', () => {
     // Another partner's job is not found either.
     await tenant.metalworks.person.get(jobPath(tenant, tenant.castco)).expect(404);
 
-    // Once line 0 moves to MetalWorks, CastCo has no job to read or write on; MetalWorks sees what staff sent,
-    // not CastCo's own words.
+    // Once line 0 moves to MetalWorks, CastCo has no job to read or write on. MetalWorks reads only what staff
+    // write to it from then on: neither what was sent to CastCo nor CastCo's own words.
     await tenant.staff.post(`/partners/jobs/${zero.group_id}/reassign`, { partner_id: tenant.metalworks.id }).expect(201);
     await tenant.castco.person.get(jobPath(tenant, tenant.castco)).expect(404);
     await tenant.castco.person.post(jobPath(tenant, tenant.castco), { body: 'Still here?' }).expect(404);
+    expect(list<PartnerComment>(await tenant.metalworks.person.get(jobPath(tenant, tenant.metalworks)).expect(200))).toEqual([]);
+    const handedOver = (await post({ body: 'Start from the cast tree', line_id: zero.id, visibility: 'partner' })).body as StaffComment;
+    expect(handedOver.partner).toEqual({ id: tenant.metalworks.id, name: 'MetalWorks' });
     const moved = await tenant.metalworks.person.get(jobPath(tenant, tenant.metalworks)).expect(200);
-    expect(list<PartnerComment>(moved).map((comment) => comment.body)).toEqual(['Polish the back harder']);
+    expect(list<PartnerComment>(moved).map((comment) => comment.body)).toEqual(['Start from the cast tree']);
+    for (const secret of ['Polish the back', 'Will do']) {
+      expect({ secret, found: moved.text.includes(secret) }).toEqual({ secret, found: false });
+    }
   });
 
   it('keeps partner comments and comments for the partner from the customer', async () => {
@@ -296,8 +308,9 @@ describe('orders: comments', () => {
       ['partner', 'partner', 'Casting tomorrow'],
       ['customer', 'customer', 'Thank you'],
     ]);
-    // A partner's comment is on the line it holds.
+    // A partner's comment is on the line it holds; staff see which partner each comment is to or from.
     expect(staffSees[2]).toMatchObject({ line_id: zero.id, author: { name: 'Carl' } });
+    expect(staffSees.map((comment) => comment.partner?.name ?? null)).toEqual(['CastCo', null, 'CastCo', null]);
   });
 
   it('keeps a staff-only comment and its file from the customer and the partner', async () => {
