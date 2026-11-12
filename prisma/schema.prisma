@@ -2271,10 +2271,11 @@ model OrderComment {
   authorUserId String   @map("author_user_id") @db.Uuid
   // staff | customer | partner
   authorKind   String   @map("author_kind")
-  // Set exactly when the author is a partner.
+  // Set exactly when `visibility` is `partner`: the partner that wrote it, or the one staff wrote to,
+  // which had accepted the line then.
   partnerId    String?  @map("partner_id") @db.Uuid
   // customer | partner | staff: who reads it besides staff. A customer's or partner's own comment is its
-  // author kind; `partner` is on a line, read by the partner holding it.
+  // author kind; `partner` is on a line, read by `partnerId` while it holds the line.
   visibility   String
   body         String
   createdAt    DateTime @default(now()) @map("created_at")

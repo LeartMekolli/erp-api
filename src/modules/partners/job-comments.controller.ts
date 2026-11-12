@@ -25,7 +25,8 @@ export class JobCommentsController {
 
   @ApiDoc({
     summary: "The comments on one of the partner's jobs, oldest first, a page at a time.",
-    description: 'Only for a job the partner has accepted and still holds; else a 404.',
+    description:
+      'Only for a job the partner has accepted and still holds; else a 404. What staff wrote to a partner that held the job before is never shown.',
     query: paginationQuerySchema,
     response: pageSchema(partnerJobCommentResponseSchema),
     errors: [400, 404],
