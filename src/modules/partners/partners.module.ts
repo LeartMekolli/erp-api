@@ -11,6 +11,8 @@ import { WorkflowModule } from '../workflow/workflow.module';
 import { CapacitySnapshotHandler } from './capacity-snapshot.handler';
 import { EligibilityService } from './eligibility.service';
 import { JobCommentsController } from './job-comments.controller';
+import { JobMovesController } from './job-moves.controller';
+import { JobMovesService } from './job-moves.service';
 import { JobsController, PortalJobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
 import { OfferExpiryHandler } from './offer-expiry.handler';
@@ -57,6 +59,7 @@ import { SetupService } from './setup.service';
     PortalJobsController,
     PartnerJobsController,
     JobCommentsController,
+    JobMovesController,
     RatingsController,
     PortalRatingsController,
     PartnerScoreController,
@@ -71,6 +74,7 @@ import { SetupService } from './setup.service';
     JobsService,
     OfferExpiryHandler,
     PartnerJobsService,
+    JobMovesService,
     PartnerQuotesService,
     ScoreService,
     RatingsService,
