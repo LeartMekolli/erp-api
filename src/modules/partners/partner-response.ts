@@ -384,7 +384,7 @@ export const partnerMeResponseSchema = z.strictObject({
 });
 export type PartnerMeResponse = z.infer<typeof partnerMeResponseSchema>;
 
-/** A comment on a job the partner holds: what staff sent it and what it wrote, never the customer or the order. */
+/** A comment on a job the partner holds: what staff wrote on it while it held it and what it wrote, never the customer or the order. */
 export const partnerJobCommentResponseSchema = z.strictObject({
   id: z.uuid(),
   body: z.string(),

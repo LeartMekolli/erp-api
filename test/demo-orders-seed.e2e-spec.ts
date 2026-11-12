@@ -46,7 +46,7 @@ interface Order {
   id: string;
   number: number;
   customer: { name: string };
-  lines: { group_id: string | null; partner: { status: string; expires_at: string | null } | null }[];
+  lines: { id: string; group_id: string | null; partner: { name: string; status: string; expires_at: string | null } | null }[];
   payment: { state: string };
 }
 
@@ -131,7 +131,7 @@ describe('demo orders seed', () => {
     // Numbered from 1001 oldest first, as `-placed_at` lists them newest first.
     expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 22 }, (_, index) => 1022 - index));
 
-    // One order with quality problems: a scrapped piece, two being redone, and a comment for each reader.
+    // One order with quality problems: a scrapped piece, two being redone, a comment for staff and one with the partner.
     const qualityId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:quality-issues' } })).id);
     const quality = orders.find((order) => order.id === qualityId)!;
     const groupId = quality.lines[0].group_id!;
@@ -143,8 +143,11 @@ describe('demo orders seed', () => {
     expect(group.steps.find((step) => step.key === 'polishing')).toMatchObject({ failed: 2, passed: 7, defects: [{ key: 'scratch' }] });
     const pieces = (await get(`/workflow/work-orders?group_id=${groupId}&limit=100`)).body as { data: { in_rework: boolean }[] };
     expect(pieces.data.filter((piece) => piece.in_rework)).toHaveLength(2);
-    const said = (await get(`/orders/${qualityId}/comments`)).body as { data: { visibility: string }[] };
-    expect(said.data.map((comment) => comment.visibility).sort()).toEqual(['customer', 'partner', 'staff']);
+    const said = (await get(`/orders/${qualityId}/comments`)).body as { data: { line_id: string | null; partner: { name: string } | null }[] };
+    expect(said.data.map((comment) => [comment.line_id, comment.partner?.name ?? null])).toEqual([
+      [null, null],
+      [quality.lines[0].id, quality.lines[0].partner!.name],
+    ]);
 
     // One line offered to its workshop and not answered yet, open for 30 days from the seed.
     const offeredId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:offered' } })).id);
