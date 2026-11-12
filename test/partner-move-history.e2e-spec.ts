@@ -9,7 +9,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { downloadUrlResponseSchema } from '../src/modules/files/file-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { jobAssignmentResponseSchema, partnerJobDetailResponseSchema, partnerMoveHistoryResponseSchema } from '../src/modules/partners/partner-response';
-import type { PartnerMoveHistoryResponse } from '../src/modules/partners/partner-response';
+import type { PartnerJobDetailResponse, PartnerMoveHistoryResponse } from '../src/modules/partners/partner-response';
 import { moveHistoryResponseSchema } from '../src/modules/workflow/move-history-response';
 import type { MoveHistoryResponse } from '../src/modules/workflow/move-history-response';
 import { measuredDesign } from './catalog-fixtures';
@@ -401,6 +401,50 @@ describe("partners: the moves on a partner's job", () => {
         expect({ secret, found: text.includes(secret) }).toEqual({ secret, found: false });
       }
     }
+  });
+
+  it("each piece's rework and last move, as the partner reads who made it", async () => {
+    const tenant = await freshTenant();
+    await reassigned(tenant);
+    const detail = await tenant.metalworksPerson.client.get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted}`).expect(200);
+    expectDocumented(partnerJobDetailResponseSchema, detail.body);
+    const pieces = (detail.body as PartnerJobDetailResponse).work_orders;
+
+    // CastCo failed the first two at polishing: being redone, by another workshop, unnamed.
+    expect(pieces.slice(0, 2).map((piece) => [piece.in_rework, piece.last_move])).toEqual(
+      Array.from({ length: 2 }, () => [
+        true,
+        {
+          kind: 'fail',
+          outcome: 'rework',
+          from_step: expect.objectContaining({ key: 'polishing' }),
+          defect: expect.objectContaining({ key: 'scratch', name: 'Scratch' }),
+          actor: { kind: 'other_partner', name: null },
+          created_at: expect.any(String),
+        },
+      ]),
+    );
+    // MetalWorks passed the other eight at final QC: its own, named.
+    for (const piece of pieces.slice(2)) {
+      expect(piece).toMatchObject({ in_rework: false, last_move: { kind: 'pass', from_step: { key: 'final_qc' } } });
+      expect(piece.last_move!.actor).toEqual({ kind: 'own', name: tenant.metalworksPerson.name });
+    }
+
+    for (const secret of [tenant.castco, 'CastCo', tenant.ownerId, tenant.castcoPerson.id, tenant.castcoPerson.name, tenant.metalworksPerson.id, 'Test User', STAFF_COMMENT, CASTCO_COMMENT, CASTCO_NOTE]) {
+      expect({ secret, found: detail.text.includes(secret) }).toEqual({ secret, found: false });
+    }
+  });
+
+  it('an offered job shows no earlier moves', async () => {
+    const tenant = await freshTenant();
+    const listed = await tenant.staff.get(`/workflow/work-orders?group_id=${tenant.offered}`).expect(200);
+    const ids = (listed.body as { data: { id: string }[] }).data.map((piece) => piece.id);
+    await tenant.staff.post('/workflow/moves', { work_order_ids: ids, kind: 'pass', at_step: 'print_pattern' }).expect(200);
+
+    const detail = await tenant.castcoPerson.client.get(`/partner-portal/partners/${tenant.castco}/jobs/${tenant.offered}`).expect(200);
+    expectDocumented(partnerJobDetailResponseSchema, detail.body);
+    const pieces = (detail.body as PartnerJobDetailResponse).work_orders;
+    expect(pieces.map((piece) => [piece.step_key, piece.in_rework, piece.last_move])).toEqual(Array.from({ length: 10 }, () => ['casting_tree', false, null]));
   });
 
   it('photo link', async () => {

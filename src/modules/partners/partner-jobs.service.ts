@@ -11,18 +11,23 @@ import type { PartnerAuth } from '../identity/auth-context';
 import { notWaitingForPayment } from '../orders/payment-hold';
 import type { WorkflowStepRow } from '../workflow/coverage';
 import { pathFor } from '../workflow/path';
+import { inRework } from '../workflow/progress';
+import type { MoveFacts } from '../workflow/progress';
 import { toInspect } from '../workflow/sampling';
 import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
 import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules } from './partner-response';
+import { actorOf, partnerTransitionInclude } from './partner-view';
 
 export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
 export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
 
 type Tx = Prisma.TransactionClient;
 type PartnerJobStatus = PartnerJobResponse['status'];
+type PartnerLastMove = NonNullable<PartnerJobDetailResponse['work_orders'][number]['last_move']>;
+type PieceMove = MoveFacts & { workOrderId: string; createdAt: Date };
 
 /** Jobs the partner is offered or has accepted: its current row of each. */
 const OPEN = ['offered', 'accepted'];
@@ -76,7 +81,8 @@ export class PartnerJobsService {
 
   async detail(auth: PartnerAuth, groupId: string): Promise<PartnerJobDetailResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const [job] = await this.views(tx, [await this.find(tx, auth, groupId, OPEN)]);
+      const held = await this.find(tx, auth, groupId, OPEN);
+      const [job] = await this.views(tx, [held]);
       const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
       const pieces = await tx.workOrder.findMany({
         where: { groupId, status: { not: 'cancelled' } },
@@ -87,16 +93,38 @@ export class PartnerJobsService {
       // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
       const mine = new Set(partnerPath(steps, group).map((step) => step.id));
       const inspect = await toInspect(tx, pieces.filter((piece) => piece.currentStepId !== null && mine.has(piece.currentStepId)));
+      const histories = await movesOf(tx, groupId);
+      // A partner that may still decline sees nothing of earlier work (spec, part 2: option a).
+      const lastIds = held.status === 'accepted' ? pieces.flatMap((piece) => histories.get(piece.id)?.slice(-1).map((move) => move.id) ?? []) : [];
+      const lasts = new Map(
+        (lastIds.length > 0 ? await tx.transition.findMany({ where: { id: { in: lastIds } }, include: partnerTransitionInclude }) : []).map(
+          (row) => [row.workOrderId, row],
+        ),
+      );
       return {
         ...job,
         steps: await stepRules(tx, steps, group),
-        work_orders: pieces.map((piece) => ({
-          id: piece.id,
-          label: `${piece.number}/${group.quantity}`,
-          status: piece.status as PartnerJobDetailResponse['work_orders'][number]['status'],
-          step_key: piece.currentStep?.key ?? null,
-          to_inspect: inspect.get(piece.id) ?? null,
-        })),
+        work_orders: pieces.map((piece) => {
+          const last = lasts.get(piece.id);
+          return {
+            id: piece.id,
+            label: `${piece.number}/${group.quantity}`,
+            status: piece.status as PartnerJobDetailResponse['work_orders'][number]['status'],
+            step_key: piece.currentStep?.key ?? null,
+            to_inspect: inspect.get(piece.id) ?? null,
+            in_rework: piece.status === 'active' && inRework(histories.get(piece.id) ?? []) !== null,
+            last_move: last
+              ? {
+                  kind: last.kind as PartnerLastMove['kind'],
+                  outcome: last.outcome as PartnerLastMove['outcome'],
+                  from_step: last.fromStep ? { id: last.fromStep.id, key: last.fromStep.key, name: last.fromStep.name } : null,
+                  defect: last.defect,
+                  actor: actorOf(auth, last),
+                  created_at: last.createdAt.toISOString(),
+                }
+              : null,
+          };
+        }),
         summary: await jobSummaryOf(tx, groupId),
       };
     });
@@ -187,6 +215,25 @@ export class PartnerJobsService {
       };
     });
   }
+}
+
+/** The facts of every move on the group's pieces, per piece, in move order (id order), in one query. */
+async function movesOf(tx: Tx, groupId: string): Promise<Map<string, PieceMove[]>> {
+  const rows = await tx.transition.findMany({
+    where: { workOrder: { groupId } },
+    select: { id: true, workOrderId: true, kind: true, outcome: true, fromStepId: true, defectId: true, inspected: true, createdAt: true },
+    orderBy: { id: 'asc' },
+  });
+  const histories = new Map<string, PieceMove[]>();
+  for (const row of rows) {
+    const history = histories.get(row.workOrderId);
+    if (history) {
+      history.push(row);
+    } else {
+      histories.set(row.workOrderId, [row]);
+    }
+  }
+  return histories;
 }
 
 /** The steps of the group's workflow version. */

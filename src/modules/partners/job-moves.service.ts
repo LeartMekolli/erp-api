@@ -5,11 +5,11 @@ import type { JobAssignment, Prisma } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { PartnerAuth } from '../identity/auth-context';
 import { actionFacts, listActions } from '../workflow/move-history';
-import type { ActionRow, MoveHistoryQuery } from '../workflow/move-history';
-import type { PartnerActionResponse, PartnerMoveHistoryResponse } from './partner-response';
+import type { MoveHistoryQuery } from '../workflow/move-history';
+import type { PartnerMoveHistoryResponse } from './partner-response';
+import { actorOf, handedOverAt } from './partner-view';
 
 type Tx = Prisma.TransactionClient;
-type ActorKind = PartnerActionResponse['actor']['kind'];
 
 /**
  * The moves on a job the partner holds (Move history spec): every move on its pieces, its own, the
@@ -32,19 +32,19 @@ export class JobMovesService {
       return {
         data: actions.map((rows) => {
           const { representative, answers, ...rest } = actionFacts(rows);
-          const kind = actorKind(auth, representative);
-          const own = kind === 'own';
+          const actor = actorOf(auth, representative);
+          const own = actor.kind === 'own';
           return {
             ...rest,
             override_reason: own ? representative.overrideReason : null,
             comment: own ? representative.comment : null,
             answers: answers.map((answer) => ({ ...answer, note: own ? answer.note : null })),
-            actor: { kind, name: own ? representative.actor.name : null },
+            actor,
           };
         }),
         next_cursor,
         counts,
-        handed_over_at: (held.respondedAt ?? held.createdAt).toISOString(),
+        handed_over_at: handedOverAt(held).toISOString(),
       };
     });
   }
@@ -73,17 +73,4 @@ async function heldJob(tx: Tx, auth: PartnerAuth, groupId: string): Promise<JobA
     throw new NotFoundException('Job not found');
   }
   return held;
-}
-
-/**
- * Who made an action: the partner's own people, when a partner person made it for this partner (a partner's
- * move is always credited to the partner holding the job); another partner's people; or else the workspace.
- * Read from the move, not from who belongs to the partner now: a person of two partners stays with the one
- * they moved for, and a former member's moves stay the partner's own.
- */
-function actorKind(auth: PartnerAuth, row: ActionRow): ActorKind {
-  if (row.actor.kind !== 'partner') {
-    return 'workspace';
-  }
-  return row.partnerId === auth.partnerId ? 'own' : 'other_partner';
 }

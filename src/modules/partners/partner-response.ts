@@ -3,6 +3,7 @@ import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
 import { actionResponseSchema, moveHistoryResponseSchema } from '../workflow/move-history-response';
+import { lastMoveSchema } from '../workflow/work-order-response';
 import { OUTCOMES, checklistItemSchema } from '../workflow/workflow-config';
 import { jobSummaryResponseSchema } from './job-summary-response';
 import { PARTNER_ROLES } from './partner-roles';
@@ -222,6 +223,15 @@ export const partnerJobsResponseSchema = pageSchema(partnerJobResponseSchema);
 
 const evidenceSchema = z.strictObject({ min_photos: z.number().int(), comment_required: z.boolean() });
 
+export const PARTNER_ACTORS = ['own', 'workspace', 'other_partner'] as const;
+export type PartnerActor = (typeof PARTNER_ACTORS)[number];
+
+/** Who made a move, as a partner reads it: `own`, one of its people, named; `workspace`: staff; `other_partner`: another partner's people. */
+export const partnerActorSchema = z.strictObject({ kind: z.enum(PARTNER_ACTORS), name: z.string().nullable() });
+
+/** A piece's latest move, as a partner reads who made it. */
+export const partnerLastMoveSchema = lastMoveSchema.omit({ actor: true, partner: true }).extend({ actor: partnerActorSchema });
+
 /**
  * One of the partner's steps with what its QC gate asks for, so the partner can pass and fail pieces.
  * Never the workspace's own steps' rules, nor staff settings such as the skill a step needs.
@@ -266,6 +276,10 @@ export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
       step_key: z.string().nullable(),
       /** Null unless the piece is active at one of the partner's steps that samples; else whether it must be inspected in full. */
       to_inspect: z.boolean().nullable(),
+      /** Being redone after a failed check; false once the piece is finished or scrapped. */
+      in_rework: z.boolean(),
+      /** Null until the piece first moves, and on a job the partner has only been offered. */
+      last_move: partnerLastMoveSchema.nullable(),
     }),
   ),
   /** The AI's brief of the job (Orders 3 spec, goal 15); null when none was written. */
@@ -432,7 +446,6 @@ export const partnerJobCommentResponseSchema = z.strictObject({
 });
 export type PartnerJobCommentResponse = z.infer<typeof partnerJobCommentResponseSchema>;
 
-export const PARTNER_ACTORS = ['own', 'workspace', 'other_partner'] as const;
 
 /**
  * A move on a job the partner holds, as staff see it but for who made it and what they wrote: names,
@@ -440,8 +453,7 @@ export const PARTNER_ACTORS = ['own', 'workspace', 'other_partner'] as const;
  * else null. No user ids, and no partner: it is this one or nobody.
  */
 export const partnerActionResponseSchema = actionResponseSchema.omit({ actor: true, partner: true }).extend({
-  /** `own`: one of the partner's people, named; `workspace`: staff; `other_partner`: another partner's people. */
-  actor: z.strictObject({ kind: z.enum(PARTNER_ACTORS), name: z.string().nullable() }),
+  actor: partnerActorSchema,
 });
 export type PartnerActionResponse = z.infer<typeof partnerActionResponseSchema>;
 
