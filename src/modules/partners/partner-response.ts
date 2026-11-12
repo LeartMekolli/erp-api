@@ -198,7 +198,10 @@ export const PARTNER_JOB_STATUSES = ['offered', 'accepted', 'finished'] as const
 export const partnerJobResponseSchema = z.strictObject({
   /** The job's id: its work order group. */
   id: z.uuid(),
-  /** Offered and waiting for an answer, accepted and in production, or finished: no piece left to make. */
+  /**
+   * Offered and waiting for an answer, accepted and in production, or finished: no piece left for the
+   * partner, though some may still be at the workspace's steps. A piece sent back makes it accepted again.
+   */
   status: z.enum(PARTNER_JOB_STATUSES),
   offered_at: z.iso.datetime(),
   /** When an offer lapses; null for a job handed over without one. */

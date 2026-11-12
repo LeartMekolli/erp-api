@@ -393,6 +393,39 @@ describe('partners: working their jobs', () => {
     expect(await stages()).toEqual([...Array(3).fill('done'), ...Array(7).fill('yours')]);
   });
 
+  it("lists a job as finished once the partner's part is done, and accepted again when a piece comes back", async () => {
+    const tenant = await freshTenant(async () => ({ final_qc: { done_by: 'workspace' } }));
+    const moves = `${portal(tenant)}/moves`;
+    const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+    for (const at_step of ['print_pattern', 'casting_tree', 'casting']) {
+      await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step }).expect(200);
+    }
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+
+    const statusOf = async () => {
+      const listed = await tenant.castcoPerson.get(`${portal(tenant)}/jobs`).expect(200);
+      expectDocumented(partnerJobsResponseSchema, listed.body);
+      return (listed.body as { data: PartnerJob[] }).data.find((job) => job.id === tenant.accepted.group)!.status;
+    };
+    const filtered = async (status: string) =>
+      ((await tenant.castcoPerson.get(`${portal(tenant)}/jobs?status=${status}`).expect(200)).body as { data: PartnerJob[] }).data.map((job) => job.id);
+
+    // Every piece waits at the workspace's final QC: active, but the partner's part is done.
+    expect((await pieces(tenant, tenant.accepted.group)).map((piece) => piece.stage)).toEqual(Array(10).fill('done'));
+    expect(await statusOf()).toBe('finished');
+    expect(await filtered('finished')).toEqual([tenant.accepted.group]);
+    expect(await filtered('accepted')).toEqual([]);
+
+    // Staff send one back to polishing: the job is the partner's again.
+    await tenant.staff
+      .post('/workflow/moves', { work_order_ids: [ids[0]], kind: 'correction', to_step: 'polishing', comment: 'Back for a polish' })
+      .expect(200);
+    expect((await pieces(tenant, tenant.accepted.group))[0].stage).toBe('yours');
+    expect(await statusOf()).toBe('accepted');
+    expect(await filtered('accepted')).toEqual([tenant.accepted.group]);
+    expect(await filtered('finished')).toEqual([]);
+  });
+
   it("keeps the workspace's own sampling from the partner", async () => {
     const tenant = await freshTenant(async () => ({ print_pattern: { done_by: 'workspace', sampling: { inspect: 1, of_every: 10 } } }));
     const detail = await tenant.castcoPerson.get(`${portal(tenant)}/jobs/${tenant.accepted.group}`).expect(200);

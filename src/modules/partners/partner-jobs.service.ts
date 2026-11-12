@@ -5,7 +5,8 @@ import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { JobAssignment, Prisma, WorkOrderGroup } from '../../generated/prisma/client';
+import { Prisma } from '../../generated/prisma/client';
+import type { JobAssignment, WorkOrderGroup } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { PartnerAuth } from '../identity/auth-context';
 import { notWaitingForPayment } from '../orders/payment-hold';
@@ -33,18 +34,46 @@ type PieceMove = MoveFacts & { workOrderId: string; createdAt: Date };
 /** Jobs the partner is offered or has accepted: its current row of each. */
 const OPEN = ['offered', 'accepted'];
 
-/** The partner's rows of the jobs in one status, decided in the query so a page is never short. */
-function statusWhere(status: PartnerJobStatus | undefined): Prisma.JobAssignmentWhereInput {
+/**
+ * The partner's rows of the jobs in one status, decided in the query so a page is never short. `open` is
+ * the partner's accepted jobs it still has work on (`openForPartner`), read when the filter needs it.
+ */
+function statusWhere(status: PartnerJobStatus | undefined, open: Set<string>): Prisma.JobAssignmentWhereInput {
   switch (status) {
     case 'offered':
       return { status: 'offered' };
     case 'accepted':
-      return { status: 'accepted', group: { workOrders: { some: { status: 'active' } } } };
+      return { status: 'accepted', groupId: { in: [...open] } };
     case 'finished':
-      return { status: 'accepted', group: { workOrders: { none: { status: 'active' } } } };
+      return { status: 'accepted', groupId: { notIn: [...open] } };
     default:
       return { status: { in: OPEN } };
   }
+}
+
+/**
+ * The groups, of those given or of the partner's accepted jobs, with an active piece the partner still has
+ * work on: at a partner step, or with one later on its path (`stageOf`'s `yours` or `not_yet`). The path is
+ * as `pathFor` decides: a priced step runs only when the group's chain names its step type, or there is no
+ * chain. One query, whatever the number of jobs.
+ */
+export async function openForPartner(tx: Tx, scope: { groupIds: string[] } | { partnerId: string }): Promise<Set<string>> {
+  if ('groupIds' in scope && scope.groupIds.length === 0) return new Set();
+  const groups =
+    'groupIds' in scope
+      ? Prisma.sql`w.group_id IN (${Prisma.join(scope.groupIds.map((id) => Prisma.sql`${id}::uuid`))})`
+      : Prisma.sql`w.group_id IN (SELECT group_id FROM job_assignment WHERE partner_id = ${scope.partnerId}::uuid AND status = 'accepted')`;
+  const rows = await tx.$queryRaw<{ group_id: string }[]>`
+    SELECT DISTINCT w.group_id FROM work_order w
+    JOIN work_order_group g ON g.id = w.group_id
+    JOIN workflow_step cur ON cur.id = w.current_step_id
+    WHERE ${groups} AND w.status = 'active'
+      AND EXISTS (
+        SELECT 1 FROM workflow_step s
+        WHERE s.version_id = g.workflow_version_id AND s.done_by = 'partner' AND s.position >= cur.position
+          AND (NOT s.priced OR g.chain_step_type_ids IS NULL OR g.chain_step_type_ids @> to_jsonb(s.step_type_id::text))
+      )`;
+  return new Set(rows.map((row) => row.group_id));
 }
 
 /**
@@ -65,10 +94,12 @@ export class PartnerJobsService {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const filtersOpen = query.status === 'accepted' || query.status === 'finished';
+      const open = filtersOpen ? await openForPartner(tx, { partnerId: auth.partnerId }) : new Set<string>();
       const rows = await tx.jobAssignment.findMany({
         where: {
           partnerId: auth.partnerId,
-          ...statusWhere(query.status),
+          ...statusWhere(query.status, open),
           ...(after ? { id: { lt: after.id } } : {}),
           AND: [{ group: notWaitingForPayment }],
         },
@@ -270,6 +301,8 @@ export class PartnerJobsService {
       _count: { _all: true },
     });
     const options = await chosenOptions(tx, groups);
+    // Finished once the partner's part is done, though pieces may still be at the workspace's steps.
+    const open = await openForPartner(tx, { groupIds: groups.map((group) => group.id) });
 
     return rows.map((row) => {
       const group = groupById.get(row.groupId)!;
@@ -278,7 +311,7 @@ export class PartnerJobsService {
       const active = count('active');
       return {
         id: group.id,
-        status: row.status === 'offered' ? 'offered' : active > 0 ? 'accepted' : 'finished',
+        status: row.status === 'offered' ? 'offered' : open.has(group.id) ? 'accepted' : 'finished',
         offered_at: row.createdAt.toISOString(),
         expires_at: row.expiresAt?.toISOString() ?? null,
         due_on: row.dueOn?.toISOString().slice(0, 10) ?? null,
