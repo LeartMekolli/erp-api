@@ -18,8 +18,8 @@ import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules } from './partner-response';
-import { actorOf, handedOverAt, partnerTransitionInclude } from './partner-view';
+import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules, PartnerWorkOrderResponse } from './partner-response';
+import { actorOf, handedOverAt, partnerTransitionInclude, toPartnerTransition } from './partner-view';
 
 export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
 export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
@@ -170,6 +170,36 @@ export class PartnerJobsService {
           };
         }),
         summary: await jobSummaryOf(tx, groupId),
+      };
+    });
+  }
+
+  /** One piece of a job the partner holds, with every move it has had; any other piece is not found. */
+  async workOrder(auth: PartnerAuth, groupId: string, workOrderId: string): Promise<PartnerWorkOrderResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await this.find(tx, auth, groupId, ['accepted']);
+      const piece = await tx.workOrder.findFirst({
+        where: { id: workOrderId, groupId },
+        include: { currentStep: { select: { key: true, name: true } }, group: true },
+      });
+      if (!piece) {
+        throw new NotFoundException('Work order not found');
+      }
+      const steps = await versionSteps(tx, piece.group);
+      const byId = new Map(steps.map((step) => [step.id, step]));
+      const mine = new Set(partnerPath(steps, piece.group).map((step) => step.id));
+      const history = await tx.transition.findMany({ where: { workOrderId }, include: partnerTransitionInclude, orderBy: { id: 'asc' } });
+      // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
+      const inspect = piece.currentStepId !== null && mine.has(piece.currentStepId) ? await toInspect(tx, [piece]) : new Map<string, boolean | null>();
+      return {
+        id: piece.id,
+        label: `${piece.number}/${piece.group.quantity}`,
+        status: piece.status as PartnerWorkOrderResponse['status'],
+        step: piece.currentStep,
+        to_inspect: inspect.get(piece.id) ?? null,
+        in_rework: piece.status === 'active' && inRework(history) !== null,
+        path: pathFor(stepsForPath(steps), chainOf(piece.group)).map((id) => ({ key: byId.get(id)!.key, name: byId.get(id)!.name })),
+        history: history.map((row) => toPartnerTransition(auth, row)),
       };
     });
   }

@@ -8,8 +8,13 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { downloadUrlResponseSchema } from '../src/modules/files/file-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { jobAssignmentResponseSchema, partnerJobDetailResponseSchema, partnerMoveHistoryResponseSchema } from '../src/modules/partners/partner-response';
-import type { PartnerJobDetailResponse, PartnerMoveHistoryResponse } from '../src/modules/partners/partner-response';
+import {
+  jobAssignmentResponseSchema,
+  partnerJobDetailResponseSchema,
+  partnerMoveHistoryResponseSchema,
+  partnerWorkOrderResponseSchema,
+} from '../src/modules/partners/partner-response';
+import type { PartnerJobDetailResponse, PartnerMoveHistoryResponse, PartnerWorkOrderResponse } from '../src/modules/partners/partner-response';
 import { moveHistoryResponseSchema } from '../src/modules/workflow/move-history-response';
 import type { MoveHistoryResponse } from '../src/modules/workflow/move-history-response';
 import { measuredDesign } from './catalog-fixtures';
@@ -491,6 +496,71 @@ describe("partners: the moves on a partner's job", () => {
       latest_check: { move_id: staffPass.id, actor: { kind: 'workspace', name: null }, photos: [] },
     });
     expect(detail.text.includes('Test User')).toBe(false);
+  });
+
+  it("one piece's story, before and after the hand-over", async () => {
+    const tenant = await freshTenant();
+    const { ids, photo } = await reassigned(tenant);
+    const metalworks = tenant.metalworksPerson.client;
+    const piecePath = (partnerId: string, group: string, id: string) => `/partner-portal/partners/${partnerId}/jobs/${group}/work-orders/${id}`;
+
+    const first = await metalworks.get(piecePath(tenant.metalworks, tenant.accepted, ids[0])).expect(200);
+    expectDocumented(partnerWorkOrderResponseSchema, first.body);
+    const redone = first.body as PartnerWorkOrderResponse;
+    expect(redone).toMatchObject({ id: ids[0], label: '1/10', status: 'active', step: { key: 'polishing', name: 'Polishing' }, to_inspect: null, in_rework: true });
+    // Every step, the workspace's packing included, by name only.
+    expect(redone.path).toEqual([
+      { key: 'print_pattern', name: 'Print pattern' },
+      { key: 'casting_tree', name: 'Casting tree' },
+      { key: 'casting', name: 'Casting' },
+      { key: 'polishing', name: 'Polishing' },
+      { key: 'final_qc', name: 'Final QC' },
+      { key: 'packing', name: 'Packing' },
+    ]);
+    // Review Focus 8: before the hand-over too, oldest first, with what happened but never who or what they wrote.
+    expect(redone.history.map((move) => [move.kind, move.from_step?.key, move.actor])).toEqual(
+      ['print_pattern', 'casting_tree', 'casting'].map((key) => ['pass', key, { kind: 'other_partner', name: null }]).concat([
+        ['fail', 'polishing', { kind: 'other_partner', name: null }],
+      ]),
+    );
+    const fail = redone.history[3];
+    expect(fail).toMatchObject({
+      outcome: 'rework',
+      defect: { key: 'scratch', name: 'Scratch' },
+      comment: null,
+      override_reason: null,
+      photos: [{ file_id: photo.fileId, file_version_id: photo.versionId }],
+    });
+    expect(fail.answers.map((answer) => [answer.value, answer.note])).toEqual([['pitted', null]]);
+    // Its photo downloads through the job's moves.
+    await metalworks.get(`${movesPath(tenant.metalworks, tenant.accepted)}/${fail.move_id}/photos/${photo.versionId}/url`).expect(200);
+
+    const third = await metalworks.get(piecePath(tenant.metalworks, tenant.accepted, ids[2])).expect(200);
+    expectDocumented(partnerWorkOrderResponseSchema, third.body);
+    const passed = third.body as PartnerWorkOrderResponse;
+    expect(passed).toMatchObject({ step: { key: 'packing' }, to_inspect: null, in_rework: false });
+    expect(passed.history.at(-1)).toMatchObject({ kind: 'pass', from_step: { key: 'final_qc' }, actor: { kind: 'own', name: tenant.metalworksPerson.name } });
+    expect(passed.history.find((move) => move.from_step?.key === 'polishing')).toMatchObject({ actor: { kind: 'workspace', name: null }, comment: null });
+
+    for (const body of [first.body, third.body]) {
+      for (const move of (body as PartnerWorkOrderResponse).history) {
+        expect(move).not.toHaveProperty('partner');
+      }
+      const text = JSON.stringify(body);
+      for (const secret of [tenant.castco, 'CastCo', tenant.ownerId, tenant.castcoPerson.id, tenant.castcoPerson.name, tenant.metalworksPerson.id, 'Test User', STAFF_COMMENT, CASTCO_COMMENT, CASTCO_NOTE]) {
+        expect({ secret, found: text.includes(secret) }).toEqual({ secret, found: false });
+      }
+    }
+
+    // Review Focus 9: not a job CastCo still holds; not an offered job; not a piece of another job; no such piece.
+    const offeredIds = ((await tenant.staff.get(`/workflow/work-orders?group_id=${tenant.offered}`).expect(200)).body as { data: { id: string }[] }).data.map(
+      (piece) => piece.id,
+    );
+    await tenant.castcoPerson.client.get(piecePath(tenant.castco, tenant.accepted, ids[0])).expect(404);
+    await tenant.castcoPerson.client.get(piecePath(tenant.castco, tenant.offered, offeredIds[0])).expect(404);
+    await metalworks.get(piecePath(tenant.metalworks, tenant.accepted, offeredIds[0])).expect(404);
+    await metalworks.get(piecePath(tenant.metalworks, tenant.accepted, newId())).expect(404);
+    await metalworks.get(piecePath(tenant.metalworks, tenant.accepted, 'not-a-uuid')).expect(400);
   });
 
   it('photo link', async () => {

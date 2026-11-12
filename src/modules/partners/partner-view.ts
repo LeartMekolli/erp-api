@@ -1,7 +1,7 @@
 import type { JobAssignment, Prisma } from '../../generated/prisma/client';
 import type { PartnerAuth } from '../identity/auth-context';
-import { transitionInclude } from '../workflow/transition-rows';
-import type { PartnerActor } from './partner-response';
+import { toTransition, transitionInclude } from '../workflow/transition-rows';
+import type { PartnerActor, PartnerTransitionResponse } from './partner-response';
 
 // How a partner reads the moves on a job it holds (Move history spec): who made each, named only for its
 // own people. Shared by the job's moves, the job detail and a piece's history, so they never disagree.
@@ -26,6 +26,23 @@ export function actorOf(
     return { kind: 'workspace', name: null };
   }
   return row.partnerId === auth.partnerId ? { kind: 'own', name: row.actor.name } : { kind: 'other_partner', name: null };
+}
+
+/** A move of a piece as the partner reads it: what was written only on its own people's moves. */
+export function toPartnerTransition(
+  auth: PartnerAuth,
+  row: Prisma.TransitionGetPayload<{ include: typeof partnerTransitionInclude }>,
+): PartnerTransitionResponse {
+  const { actor: _actor, partner: _partner, ...move } = toTransition(row);
+  const actor = actorOf(auth, row);
+  const own = actor.kind === 'own';
+  return {
+    ...move,
+    override_reason: own ? move.override_reason : null,
+    comment: own ? move.comment : null,
+    answers: move.answers.map((answer) => ({ ...answer, note: own ? answer.note : null })),
+    actor,
+  };
 }
 
 /** When the job came to the partner: it accepted the offer, or else staff handed or moved it over. */

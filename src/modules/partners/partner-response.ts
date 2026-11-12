@@ -3,7 +3,7 @@ import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
 import { actionResponseSchema, moveHistoryResponseSchema } from '../workflow/move-history-response';
-import { lastMoveSchema } from '../workflow/work-order-response';
+import { WORK_ORDER_STATUSES, lastMoveSchema, transitionResponseSchema } from '../workflow/work-order-response';
 import { OUTCOMES, checklistItemSchema } from '../workflow/workflow-config';
 import { jobSummaryResponseSchema } from './job-summary-response';
 import { PARTNER_ROLES } from './partner-roles';
@@ -231,6 +231,32 @@ export const partnerActorSchema = z.strictObject({ kind: z.enum(PARTNER_ACTORS),
 
 /** A piece's latest move, as a partner reads who made it. */
 export const partnerLastMoveSchema = lastMoveSchema.omit({ actor: true, partner: true }).extend({ actor: partnerActorSchema });
+
+/**
+ * A move of a piece as a partner reads it: as staff see it, but `comment`, `override_reason` and each
+ * answer's `note` only on moves its own people made, else null. No user ids and no partner.
+ */
+export const partnerTransitionResponseSchema = transitionResponseSchema.omit({ actor: true, partner: true }).extend({ actor: partnerActorSchema });
+export type PartnerTransitionResponse = z.infer<typeof partnerTransitionResponseSchema>;
+
+/** One piece of a job the partner holds, with every move it has had, from before the hand-over too. */
+export const partnerWorkOrderResponseSchema = z.strictObject({
+  id: z.uuid(),
+  /** Such as 3/10. */
+  label: z.string(),
+  status: z.enum(WORK_ORDER_STATUSES),
+  /** Where the piece is now; null once it is finished, scrapped or cancelled. */
+  step: z.strictObject({ key: z.string(), name: z.string() }).nullable(),
+  /** Null unless the piece is active at one of the partner's steps that samples; else whether it must be inspected in full. */
+  to_inspect: z.boolean().nullable(),
+  /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */
+  in_rework: z.boolean(),
+  /** Every step the piece goes through, in order, the workspace's own included: names only. */
+  path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
+  /** Every move of the piece, oldest first; photos download from the job's `moves/{move_id}/photos` route. */
+  history: z.array(partnerTransitionResponseSchema),
+});
+export type PartnerWorkOrderResponse = z.infer<typeof partnerWorkOrderResponseSchema>;
 
 /**
  * One of the partner's steps with what its QC gate asks for, so the partner can pass and fail pieces.
