@@ -7,6 +7,8 @@ import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { JobsService as QueueJobsService } from '../src/jobs/jobs.service';
+import { DispatchHandler } from '../src/modules/notifications/dispatch.handler';
+import { feedEntrySchema } from '../src/modules/notifications/feed.controller';
 import { downloadUrlResponseSchema } from '../src/modules/files/file-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import {
@@ -468,6 +470,34 @@ describe('partners: working their jobs', () => {
     } finally {
       enqueue.mockRestore();
     }
+  });
+
+  it("opens the job from a notice about a hand-over, the partner's and staff's alike", async () => {
+    const tenant = await freshTenant();
+    await tenant.castcoPerson.post(`${portal(tenant)}/jobs/${tenant.offered.group}/decline`).expect(200);
+    // No worker runs here: deliver the workspace's notices as the dispatch job would.
+    const pending = await prisma.inTenant(tenant.id, (tx) => tx.notification.findMany({ where: { status: 'pending' }, select: { id: true } }));
+    for (const { id } of pending) {
+      await app.get(DispatchHandler).handle({ tenantId: tenant.id, notificationId: id });
+    }
+    type Entry = { event_key: string; job: { id: string; partner_id: string } | null };
+    const feed = async (person: Person) => {
+      const response = await person.get('/notifications').expect(200);
+      expectDocumented(pageSchema(feedEntrySchema), response.body);
+      return (response.body as { data: Entry[] }).data;
+    };
+
+    // CastCo was offered both jobs.
+    const castco = await feed(tenant.castcoPerson);
+    expect(castco.filter((entry) => entry.event_key === 'partner.job.offered').map((entry) => entry.job)).toEqual(
+      expect.arrayContaining([
+        { id: tenant.accepted.group, partner_id: tenant.castco },
+        { id: tenant.offered.group, partner_id: tenant.castco },
+      ]),
+    );
+    // Staff hear CastCo declined the second, and open that job.
+    const declined = (await feed(tenant.staff)).find((entry) => entry.event_key === 'partner.job.declined');
+    expect(declined?.job).toEqual({ id: tenant.offered.group, partner_id: tenant.castco });
   });
 
   it("keeps the workspace's own sampling from the partner", async () => {

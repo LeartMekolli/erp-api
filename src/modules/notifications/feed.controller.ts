@@ -21,6 +21,8 @@ export const feedEntrySchema = z.strictObject({
   id: z.uuid(),
   event_key: z.string(),
   subject: z.strictObject({ type: z.string(), id: z.string() }),
+  /** The job a notice about a hand-over is for, with its partner, so the app can open it; null for any other notice. */
+  job: z.strictObject({ id: z.uuid(), partner_id: z.uuid() }).nullable(),
   title: z.string(),
   body: z.string(),
   created_at: z.string(),
@@ -61,8 +63,8 @@ export class FeedController {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
 
-    const rows = await this.prisma.inTenant(auth.tenantId, (tx) =>
-      tx.notificationRecipient.findMany({
+    const { rows, jobs } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const rows = await tx.notificationRecipient.findMany({
         where: {
           userId: auth.userId,
           ...(query.unread === 'true' ? { readAt: null } : {}),
@@ -71,8 +73,15 @@ export class FeedController {
         include: { notification: { select: { eventKey: true, subjectType: true, subjectId: true } } },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
-      }),
-    );
+      });
+      // A notice about a hand-over opens its job: one query for the page.
+      const handOverIds = rows.flatMap((row) => (row.notification.subjectType === 'job_assignment' ? [row.notification.subjectId] : []));
+      const handOvers =
+        handOverIds.length > 0
+          ? await tx.jobAssignment.findMany({ where: { id: { in: handOverIds } }, select: { id: true, groupId: true, partnerId: true } })
+          : [];
+      return { rows, jobs: new Map(handOvers.map((row) => [row.id, { id: row.groupId, partner_id: row.partnerId }])) };
+    });
 
     const page = toPage(rows, query.limit, secret);
     return {
@@ -80,6 +89,7 @@ export class FeedController {
         id: row.id,
         event_key: row.notification.eventKey,
         subject: { type: row.notification.subjectType, id: row.notification.subjectId },
+        job: row.notification.subjectType === 'job_assignment' ? (jobs.get(row.notification.subjectId) ?? null) : null,
         title: row.title,
         body: row.body,
         created_at: row.createdAt.toISOString(),
