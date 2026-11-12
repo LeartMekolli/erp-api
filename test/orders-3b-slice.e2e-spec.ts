@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AI_PROVIDER } from '../src/modules/ai/ai-provider';
@@ -230,6 +231,7 @@ describe('Orders 3b: job summaries, production planning and couriers', () => {
         const step = await tx.workflowStep.findFirstOrThrow({ where: { versionId: piece.group.workflowVersionId, key: stepKey } });
         await tx.transition.create({
           data: {
+            moveId: newId(),
             workOrderId: piece.id,
             kind: 'fail',
             outcome: 'rework',

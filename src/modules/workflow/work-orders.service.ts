@@ -159,9 +159,12 @@ export class WorkOrdersService {
 
     const active = await tx.workOrder.findMany({ where: { groupId: { in: groups.map((group) => group.id) }, status: 'active' } });
     if (active.length > 0) {
+      // One action: every piece this call cancels shares an id.
+      const moveId = newId();
       await tx.transition.createMany({
         data: active.map((piece) => ({
           id: newId(),
+          moveId,
           workOrderId: piece.id,
           kind: 'correction',
           fromStepId: piece.currentStepId,
@@ -692,6 +695,7 @@ export function toTransition(row: TransitionRow): TransitionResponse {
   const checklist = row.fromStep ? (row.fromStep.config as StepConfig).checklist : undefined;
   return {
     id: row.id,
+    move_id: row.moveId,
     kind: row.kind as TransitionResponse['kind'],
     outcome: row.outcome as TransitionResponse['outcome'],
     from_step: row.fromStep ? { id: row.fromStep.id, key: row.fromStep.key, name: row.fromStep.name } : null,
