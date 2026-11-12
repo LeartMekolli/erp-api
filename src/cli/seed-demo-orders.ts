@@ -28,6 +28,7 @@ import type { ChecklistItem, StepConfig } from '../modules/workflow/workflow-con
 
 const NORTHCAST = 'Northcast Foundry';
 const LAYERLINE = 'Layerline Prints';
+const EMBERLINE = 'Emberline Casting';
 const NORTHSIDE = 'Northside Architecture Models and Protos';
 
 /** The demo customers this step adds, beside Luna Jewels and Mira Studio (`seed-customers.ts`) and Brightline (`seed-payments.ts`). */
@@ -127,6 +128,8 @@ interface DemoOrder {
   cancelLines?: number[];
   /** Its first line's pieces fail checks on the way: one scrapped at casting, two sent back at polishing. */
   quality?: true;
+  /** The line is moved to this partner part-way, after the first partner's moves. */
+  handOver?: string;
 }
 
 /** The situations the Orders screen is tested with; the comment is what staff see. */
@@ -190,6 +193,8 @@ const ORDERS: DemoOrder[] = [
     promised: 8,
     cancelLines: [1],
   },
+  // In production, handed from one foundry to another after a failure: the second one's History shows the first one's moves.
+  { key: 'handed-over', customer: 'Kestrel Labs', lines: [cast('silver_925', 'polished', '1', 6)], paid: true, partner: NORTHCAST, progress: 'production', promised: 8, handOver: EMBERLINE },
 ];
 
 const HOUR_MS = 3_600_000;
@@ -309,12 +314,12 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     const speed = await tx.deliverySpeed.findFirst({ where: { isDefault: true }, select: { workingDays: true } });
     const customerRows = await tx.customer.findMany({ where: { name: { in: [...new Set(ORDERS.map((order) => order.customer))] } } });
     const products = await tx.product.findMany({ where: { key: { in: [...new Set(ORDERS.flatMap((order) => order.lines.map((line) => line.product)))] } } });
-    const partners = await tx.partner.findMany({ where: { name: { in: [NORTHCAST, LAYERLINE] } }, select: { id: true, name: true } });
+    const partners = await tx.partner.findMany({ where: { name: { in: [NORTHCAST, LAYERLINE, EMBERLINE] } }, select: { id: true, name: true } });
     const owners = await tx.organisationMembership.findMany({
       where: { organisationType: 'partner', organisationId: { in: partners.map((partner) => partner.id) }, role: 'owner' },
       select: { organisationId: true, userId: true },
     });
-    const defects = await tx.defect.findMany({ where: { key: { in: ['crack', 'scratch'] } }, select: { id: true, key: true } });
+    const defects = await tx.defect.findMany({ where: { key: { in: ['crack', 'scratch', 'porosity'] } }, select: { id: true, key: true } });
     const existing = await tx.order.findMany({
       where: { channel: 'staff', channelOrderId: { in: ORDERS.map((order) => `demo:${order.key}`) } },
       select: { channelOrderId: true },
@@ -341,9 +346,9 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
   const missing = [
     ...ORDERS.flatMap((order) => (context.customers.has(order.customer) ? [] : [order.customer])),
     ...ORDERS.flatMap((order) => order.lines.flatMap((line) => (context.products.has(line.product) ? [] : [line.product]))),
-    ...[NORTHCAST, LAYERLINE].filter((name) => !context.partners.get(name)?.ownerId),
+    ...[NORTHCAST, LAYERLINE, EMBERLINE].filter((name) => !context.partners.get(name)?.ownerId),
     ...(context.designId ? [] : ['the placeholder design']),
-    ...['crack', 'scratch'].filter((key) => !context.defects.has(key)).map((key) => `the ${key} defect`),
+    ...['crack', 'scratch', 'porosity'].filter((key) => !context.defects.has(key)).map((key) => `the ${key} defect`),
   ];
   if (missing.length > 0) {
     throw new Error(`Demo orders need the rest of the demo first; missing: ${[...new Set(missing)].join(', ')}`);
@@ -413,6 +418,34 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     await move(ids.slice(3), 'polishing', { answers: [{ item: 'surface', value: 'ok' }] });
   };
 
+  /**
+   * Takes the group's pieces from the first partner to the one it is handed to: the first partner passes all
+   * at the first two steps and fails the first two at casting (porosity, redone there), staff pass the other
+   * four at casting and move the job, and the second partner polishes those four.
+   */
+  const handOver = async (groupId: string, from: string, to: string) => {
+    const ids = (
+      await prisma.inTenant(tenantId, (tx) => tx.workOrder.findMany({ where: { groupId }, orderBy: { id: 'asc' }, select: { id: true } }))
+    ).map((piece) => piece.id);
+    const owner = (name: string) => {
+      const partner = context.partners.get(name)!;
+      const auth: PartnerAuth = { tenantId, userId: partner.ownerId!, partnerId: partner.id, role: 'owner' };
+      return { auth, scope: { partnerId: partner.id } };
+    };
+    const first = owner(from);
+    const second = owner(to);
+    const move = (who: ReturnType<typeof owner> | null, workOrderIds: string[], atStep: string, extra: Partial<MoveBody> = {}) =>
+      who
+        ? deps.moves.move(who.auth, { work_order_ids: workOrderIds, at_step: atStep, kind: 'pass', inspected: true, ...extra }, who.scope)
+        : deps.moves.move(staff, { work_order_ids: workOrderIds, at_step: atStep, kind: 'pass', inspected: true, ...extra });
+    await move(first, ids, 'print_pattern');
+    await move(first, ids, 'casting_tree');
+    await move(first, ids.slice(0, 2), 'casting', { kind: 'fail', defect_id: context.defects.get('porosity')!, comment: COMMENT });
+    await move(null, ids.slice(2), 'casting');
+    await deps.jobs.reassign(staff, groupId, { partner_id: context.partners.get(to)!.id });
+    await move(second, ids.slice(2), 'polishing', { answers: [{ item: 'surface', value: 'ok' }] });
+  };
+
   const plan = ORDERS.filter((order) => !context.existing.has(`demo:${order.key}`))
     .map((order) => ({ order, timeline: demoTimeline(order, context.clock) }))
     .sort((a, b) => a.timeline.placedAt.getTime() - b.timeline.placedAt.getTime());
@@ -465,6 +498,9 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
         await deps.jobs.offer(staff, line.group_id, partner.id);
         if (order.accepts !== false) await deps.jobs.accept(partnerAuth, line.group_id);
       }
+    }
+    if (order.handOver) {
+      await handOver(placed.lines[0].group_id!, order.partner!, order.handOver);
     }
     if (order.quality) {
       await failSome(placed.lines[0].group_id!);

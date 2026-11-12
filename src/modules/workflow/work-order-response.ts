@@ -30,6 +30,8 @@ const toInspectSchema = z.boolean().nullable();
 
 export const transitionResponseSchema = z.strictObject({
   id: z.uuid(),
+  /** Shared by every row one request wrote: one action. */
+  move_id: z.uuid(),
   kind: z.enum(['pass', 'fail', 'correction']),
   /** What a fail did with the piece; null for a pass or a correction. */
   outcome: z.enum(['rework', 'scrap', 'continue']).nullable(),

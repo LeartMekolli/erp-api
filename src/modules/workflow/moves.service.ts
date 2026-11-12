@@ -153,11 +153,11 @@ export class MovesService {
    * goal 13 and B5).
    */
   async move(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, body: MoveBody, scope?: { partnerId: string }): Promise<MoveResponse> {
-    const { response, groupIds } = await this.moveInTransaction(auth, body, scope);
+    const { response, groupIds, moveId } = await this.moveInTransaction(auth, body, scope);
     // After the move commits, never inside it: the progress emails due (Workflow 2 spec, goal 18). A queue
     // failure is only logged; the sweep sends what the job would have.
     try {
-      await this.jobs.enqueue('orders.progress', { tenantId: auth.tenantId, groupIds, moveId: newId() });
+      await this.jobs.enqueue('orders.progress', { tenantId: auth.tenantId, groupIds, moveId });
     } catch (error) {
       this.logger.warn({ err: error, tenantId: auth.tenantId, groupIds }, 'queueing the progress emails of a move failed');
     }
@@ -168,8 +168,10 @@ export class MovesService {
     auth: Pick<TenantAuth, 'tenantId' | 'userId'>,
     body: MoveBody,
     scope?: { partnerId: string },
-  ): Promise<{ response: MoveResponse; groupIds: string[] }> {
+  ): Promise<{ response: MoveResponse; groupIds: string[]; moveId: string }> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      // One id for every row this request writes: one action (Move history spec).
+      const moveId = newId();
       const ids = body.work_order_ids;
       // Lock order: the pieces' orders first (through the move hooks), then the pieces, then their groups,
       // as every change to an order locks it first.
@@ -327,7 +329,7 @@ export class MovesService {
       const credited = pieces.map((piece, index) =>
         creditFor(piece.groupId, piece.currentStepId ?? (landings[index] as Landing).stepId),
       );
-      const written = await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[], credited);
+      const written = await this.write(tx, auth.userId, body, fail, config, pieces, landings as Landing[], credited, moveId);
       if (body.kind === 'pass') {
         for (const hook of this.passHooks) await hook(tx, { groupIds, userId: auth.userId });
       }
@@ -365,6 +367,7 @@ export class MovesService {
         await tx.transition.createMany({
           data: cancelled.map((replacement, index) => ({
             id: newId(),
+            moveId,
             workOrderId: replacement.id,
             kind: 'correction',
             fromStepId: replacement.currentStepId,
@@ -399,7 +402,7 @@ export class MovesService {
 
       const moved = await tx.workOrder.findMany({ where: { id: { in: ids } }, include: pieceInclude });
       const movedById = new Map(moved.map((row) => [row.id, row]));
-      return { response: { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) }, groupIds };
+      return { response: { data: ids.map((id) => toWorkOrder(movedById.get(id)!)) }, groupIds, moveId };
     });
   }
 
@@ -547,10 +550,12 @@ export class MovesService {
     pieces: { id: string; status: string; currentStepId: string | null }[],
     landings: Landing[],
     partnerIds: (string | null)[],
+    moveId: string,
   ): Promise<{ id: string; workOrderId: string }[]> {
     const comment = body.comment && body.comment.length > 0 ? body.comment : null;
     const transitions = pieces.map((piece, index) => ({
       id: newId(),
+      moveId,
       workOrderId: piece.id,
       kind: body.kind,
       outcome: fail?.outcome ?? null,

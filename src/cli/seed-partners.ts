@@ -4,8 +4,8 @@ import type { Prisma } from '../generated/prisma/client';
 import { hashPassword } from '../modules/identity/passwords';
 
 // Demo partners for the demo workspace, on top of its catalog, pricing and workflows (`seed-catalog.ts`,
-// `seed-pricing.ts`, `seed-workflows.ts`): a foundry for cast metal parts and a print shop for printed
-// parts, both approved, with the workspace's prices and an owner each.
+// `seed-pricing.ts`, `seed-workflows.ts`): two foundries for cast metal parts and a print shop for printed
+// parts, all approved, with the workspace's prices and an owner each.
 
 interface PartnerSeed {
   name: string;
@@ -45,6 +45,21 @@ const PARTNERS: PartnerSeed[] = [
       { step: 'packing', perWeek: 500 },
     ],
     offerings: { material: ['resin_standard', 'nylon_pa12', 'pla'], finish: ['raw', 'polished'] },
+  },
+  // A smaller foundry a cast job can be handed to part-way. It takes no direct orders, so customers never pick it.
+  {
+    name: 'Emberline Casting',
+    owner: { email: 'owner@emberline.example.test', name: 'Ines' },
+    acceptsDirectOrders: false,
+    capabilities: [
+      { step: 'print_pattern', perWeek: 150 },
+      { step: 'casting_tree', perWeek: 150 },
+      { step: 'casting', perWeek: 100, maxSizeMm: '80' },
+      { step: 'polishing', perWeek: 100 },
+      { step: 'final_qc', perWeek: 150 },
+      { step: 'packing', perWeek: 150 },
+    ],
+    offerings: { material: ['silver_925', 'brass'], finish: ['raw', 'polished'] },
   },
 ];
 

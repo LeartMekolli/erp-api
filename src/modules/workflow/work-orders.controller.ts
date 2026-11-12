@@ -7,6 +7,10 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
+import { moveHistoryQuerySchema } from './move-history';
+import type { MoveHistoryQuery } from './move-history';
+import { moveHistoryResponseSchema } from './move-history-response';
+import type { MoveHistoryResponse } from './move-history-response';
 import { MAX_PHOTOS_PER_MOVE, MAX_PIECES_PER_MOVE, MovesService, moveSchema } from './moves.service';
 import type { MoveBody } from './moves.service';
 import {
@@ -66,6 +70,23 @@ export class WorkOrdersController {
   @Get('groups/:id')
   group(@CurrentTenant() tenantId: string, @Param('id', new ZodValidationPipe(idSchema)) id: string): Promise<GroupResponse> {
     return this.workOrders.group(tenantId, id);
+  }
+
+  @ApiDoc({
+    summary: "A line's moves, one item per action, newest first, a page at a time.",
+    description: '`only=fails` keeps fails and corrections that put a piece at a step. `counts` covers every page, whatever the filter.',
+    query: moveHistoryQuerySchema,
+    response: moveHistoryResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('workflow.read')
+  @Get('groups/:id/moves')
+  moveHistory(
+    @CurrentTenant() tenantId: string,
+    @Param('id', new ZodValidationPipe(idSchema)) id: string,
+    @Query(new ZodValidationPipe(moveHistoryQuerySchema)) query: MoveHistoryQuery,
+  ): Promise<MoveHistoryResponse> {
+    return this.workOrders.moves(tenantId, id, query);
   }
 
   @ApiDoc({

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
+import { actionResponseSchema, moveHistoryResponseSchema } from '../workflow/move-history-response';
 import { jobSummaryResponseSchema } from './job-summary-response';
 import { PARTNER_ROLES } from './partner-roles';
 
@@ -393,3 +394,26 @@ export const partnerJobCommentResponseSchema = z.strictObject({
   created_at: z.string(),
 });
 export type PartnerJobCommentResponse = z.infer<typeof partnerJobCommentResponseSchema>;
+
+export const PARTNER_ACTORS = ['own', 'workspace', 'other_partner'] as const;
+
+/**
+ * A move on a job the partner holds, as staff see it but for who made it and what they wrote: names,
+ * `comment`, `override_reason` and each answer's `note` show only on moves the partner's own people made,
+ * else null. No user ids, and no partner: it is this one or nobody.
+ */
+export const partnerActionResponseSchema = actionResponseSchema.omit({ actor: true, partner: true }).extend({
+  /** `own`: one of the partner's people, named; `workspace`: staff; `other_partner`: another partner's people. */
+  actor: z.strictObject({ kind: z.enum(PARTNER_ACTORS), name: z.string().nullable() }),
+});
+export type PartnerActionResponse = z.infer<typeof partnerActionResponseSchema>;
+
+export const partnerMoveHistoryResponseSchema = z.strictObject({
+  data: z.array(partnerActionResponseSchema),
+  next_cursor: z.string().nullable(),
+  /** The job's actions over every page: all of them, and those `only=fails` keeps. */
+  counts: moveHistoryResponseSchema.shape.counts,
+  /** When the job came to the partner: it accepted the offer, or else staff handed or moved it over. */
+  handed_over_at: z.iso.datetime(),
+});
+export type PartnerMoveHistoryResponse = z.infer<typeof partnerMoveHistoryResponseSchema>;

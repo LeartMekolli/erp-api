@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
@@ -137,6 +138,7 @@ describe('reporting: the dashboard numbers', () => {
     await prisma.inTenant(tenant.id, (tx) =>
       tx.transition.create({
         data: {
+          moveId: newId(),
           workOrderId: failed.id,
           kind: 'fail',
           outcome: 'rework',

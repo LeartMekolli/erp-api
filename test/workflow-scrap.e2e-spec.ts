@@ -154,6 +154,14 @@ describe('workflow: scrap, replacement and rework', () => {
     expect(await piece(tenant, replacement.id)).toMatchObject({ status: 'cancelled', step: null });
     expect((await group(tenant, groupId)).pieces).toEqual({ active: 10, finished: 0, scrapped: 0 });
 
+    // The restored piece's row and its replacement's cancelled row are one action.
+    const rows = (await tenant.owner.get(`/workflow/transitions?group_id=${groupId}&limit=200`).expect(200)).body as {
+      data: { move_id: string; kind: string; work_order: { id: string } }[];
+    };
+    const restoredRow = rows.data.find((row) => row.kind === 'correction' && row.work_order.id === pieces[3].id)!;
+    const cancelledRow = rows.data.find((row) => row.kind === 'correction' && row.work_order.id === replacement.id)!;
+    expect(restoredRow.move_id).toBe(cancelledRow.move_id);
+
     // A cancelled piece never moves again.
     await pass(tenant, [replacement.id], 'print_pattern').expect(409);
     await move(tenant, { work_order_ids: [replacement.id], kind: 'correction', to_step: 'casting', comment: 'Back again' }).expect(409);

@@ -1461,6 +1461,8 @@ model WorkOrder {
 // and from-status are read from the piece, never sent by the client (D35). A correction is a new row.
 model Transition {
   id             String   @id @default(uuid(7)) @db.Uuid
+  // Shared by every row one request wrote: one action (Move history spec).
+  moveId         String   @map("move_id") @db.Uuid
   tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
   workOrderId    String   @map("work_order_id") @db.Uuid
   // pass | fail | correction
@@ -1499,6 +1501,7 @@ model Transition {
 
   @@unique([tenantId, id])
   @@index([tenantId, workOrderId, id])
+  @@index([tenantId, moveId])
   @@index([tenantId, createdAt])
   @@index([tenantId, fromStepId])
   @@index([tenantId, toStepId])

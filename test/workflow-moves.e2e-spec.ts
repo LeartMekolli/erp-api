@@ -168,6 +168,28 @@ describe('workflow: moving pieces through their steps', () => {
     });
   });
 
+  it('gives the rows of one move a shared id, and each move its own', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant, 3);
+    type Row = { id: string; move_id: string; from_step: { key: string } | null; work_order: { id: string } };
+    const rowsAt = async (step: string) =>
+      ((await tenant.owner.get('/workflow/transitions?limit=200').expect(200)).body as { data: Row[] }).data.filter(
+        (row) => row.from_step?.key === step,
+      );
+
+    await pass(tenant, pieces, 'print_pattern').expect(200);
+    const first = await rowsAt('print_pattern');
+    expect(first).toHaveLength(3);
+    expect(new Set(first.map((row) => row.move_id)).size).toBe(1);
+    expect(first[0].move_id).not.toBe(first[0].id);
+
+    await pass(tenant, pieces, 'casting_tree').expect(200);
+    const second = await rowsAt('casting_tree');
+    expect(second).toHaveLength(3);
+    expect(new Set(second.map((row) => row.move_id)).size).toBe(1);
+    expect(second[0].move_id).not.toBe(first[0].move_id);
+  });
+
   it('names an answer by its key once the item is no longer on the step', async () => {
     const tenant = await freshTenant();
     const pieces = await started(tenant, 1);
@@ -487,6 +509,7 @@ describe('workflow: moving pieces through their steps', () => {
       tx.transition.create({
         data: {
           id: newId(),
+          moveId: newId(),
           workOrderId: piece.id,
           kind: 'correction',
           fromStepId: stepId('casting_tree'),

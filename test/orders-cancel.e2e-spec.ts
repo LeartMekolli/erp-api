@@ -177,6 +177,13 @@ describe('orders: state and cancelling', () => {
     expect(cancelled.body).toMatchObject({ state: 'cancelled', lines: [{ state: 'cancelled' }, { state: 'cancelled' }] });
 
     // Every piece is cancelled, and the log says so: a correction to `cancelled` with the reason.
+    const everyRow = await prisma.inTenant(tenant.id, (tx) =>
+      tx.transition.findMany({ where: { workOrder: { groupId: { in: placed.lines.map((line) => line.group_id) } } } }),
+    );
+    // Both lines are cancelled by one request: one action.
+    expect(everyRow).toHaveLength(12);
+    expect(new Set(everyRow.map((row) => row.moveId)).size).toBe(1);
+    expect(everyRow.every((row) => row.moveId !== row.id)).toBe(true);
     for (const line of placed.lines) {
       const rows = await pieces(tenant, line.group_id);
       expect(rows.map((piece) => [piece.status, piece.currentStepId])).toEqual(rows.map(() => ['cancelled', null]));
