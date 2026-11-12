@@ -161,6 +161,14 @@ export class MovesService {
     } catch (error) {
       this.logger.warn({ err: error, tenantId: auth.tenantId, groupIds }, 'queueing the progress emails of a move failed');
     }
+    // Only a fail or a correction can send pieces back to a partner; a pass never does.
+    if (body.kind !== 'pass') {
+      try {
+        await this.jobs.enqueue('partners.rework_notice', { tenantId: auth.tenantId, groupIds, moveId });
+      } catch (error) {
+        this.logger.warn({ err: error, tenantId: auth.tenantId, groupIds }, 'queueing the rework notice of a move failed');
+      }
+    }
     return response;
   }
 

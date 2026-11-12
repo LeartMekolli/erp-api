@@ -127,6 +127,14 @@ export const JOBS = {
     payload: z.object({ tenantId: z.uuid(), groupIds: z.array(z.uuid()).min(1), moveId: z.uuid() }),
     jobId: (p) => [p.moveId],
   }),
+  // Tells a partner when a fail or a correction sent pieces it had finished back to it (partner step rules
+  // spec, part 3). Per move, like `orders.progress`; the notice is raised last, so a retry repeats nothing
+  // but a raise that failed.
+  'partners.rework_notice': defineJob({
+    queue: 'maintenance',
+    payload: z.object({ tenantId: z.uuid(), groupIds: z.array(z.uuid()).min(1), moveId: z.uuid() }),
+    jobId: (p) => [p.moveId],
+  }),
   // Runs one AI call and writes its result; after the last attempt, a failed result (AI 1 spec).
   'ai.run': defineJob({
     queue: 'ai',

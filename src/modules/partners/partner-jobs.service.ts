@@ -347,12 +347,12 @@ async function movesOf(tx: Tx, groupId: string): Promise<Map<string, PieceMove[]
 }
 
 /** The steps of the group's workflow version. */
-function versionSteps(tx: Tx, group: WorkOrderGroup): Promise<WorkflowStepRow[]> {
+export function versionSteps(tx: Tx, group: WorkOrderGroup): Promise<WorkflowStepRow[]> {
   return tx.workflowStep.findMany({ where: { versionId: group.workflowVersionId }, include: { stepType: true } });
 }
 
 /** Every step on the group's path, in order; `steps` are those of the group's version. */
-function pathOf(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
+export function pathOf(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
   const stepById = new Map(steps.map((step) => [step.id, step]));
   return pathFor(stepsForPath(steps), chainOf(group)).map((id) => stepById.get(id)!);
 }

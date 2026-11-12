@@ -35,6 +35,7 @@ describe('notification catalogue', () => {
       'partner.job.expired',
       'partner.job.offered',
       'partner.job.reassigned',
+      'partner.job.reworked',
       'partner.submitted',
       'payment.received',
       'payment.requested',

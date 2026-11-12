@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
+import { JobsService as QueueJobsService } from '../src/jobs/jobs.service';
 import { downloadUrlResponseSchema } from '../src/modules/files/file-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import {
@@ -13,6 +14,7 @@ import {
   partnerJobResponseSchema,
   partnerJobsResponseSchema,
 } from '../src/modules/partners/partner-response';
+import { ReworkNoticeService } from '../src/modules/partners/rework-notice.service';
 import { moveResponseSchema, transitionListItemSchema, workOrderDetailResponseSchema } from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -424,6 +426,48 @@ describe('partners: working their jobs', () => {
     expect(await statusOf()).toBe('accepted');
     expect(await filtered('accepted')).toEqual([tenant.accepted.group]);
     expect(await filtered('finished')).toEqual([]);
+  });
+
+  it('tells the partner when pieces it finished come back', async () => {
+    // No worker runs here: the test reads what a move queued and runs the notice as the job would.
+    const enqueue = jest.spyOn(app.get(QueueJobsService), 'enqueue');
+    try {
+      const tenant = await freshTenant(async () => ({ final_qc: { done_by: 'workspace' } }));
+      const moves = `${portal(tenant)}/moves`;
+      const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+      for (const at_step of ['print_pattern', 'casting_tree', 'casting']) {
+        await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step }).expect(200);
+      }
+      await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+      const queued = () =>
+        enqueue.mock.calls.filter(([name]) => name === 'partners.rework_notice').map(([, payload]) => payload as { tenantId: string; groupIds: string[]; moveId: string });
+      const notices = () => prisma.inTenant(tenant.id, (tx) => tx.notification.findMany({ where: { eventKey: 'partner.job.reworked' } }));
+      // Review Focus 14: a pass never sends a piece back.
+      expect(queued()).toEqual([]);
+
+      // Staff send two finished pieces back from the workspace's final QC to polishing.
+      await tenant.staff
+        .post('/workflow/moves', { work_order_ids: ids.slice(0, 2), kind: 'correction', to_step: 'polishing', comment: 'Back for a polish' })
+        .expect(200);
+      const [sentBack] = queued();
+      expect(sentBack).toMatchObject({ tenantId: tenant.id, groupIds: [tenant.accepted.group] });
+      await app.get(ReworkNoticeService).notify(sentBack.tenantId, sentBack.moveId);
+      const held = await prisma.inTenant(tenant.id, (tx) =>
+        tx.jobAssignment.findFirstOrThrow({ where: { groupId: tenant.accepted.group, partnerId: tenant.castco, status: 'accepted' } }),
+      );
+      const [notice] = await notices();
+      expect(notice).toMatchObject({ subjectType: 'job_assignment', subjectId: held.id, payload: { pieces: '2', quantity: '10' } });
+
+      // A correction between the partner's own steps sends nothing back: no notice.
+      await tenant.staff
+        .post('/workflow/moves', { work_order_ids: [ids[0]], kind: 'correction', to_step: 'casting', comment: 'Recast it' })
+        .expect(200);
+      const [, withinPartner] = queued();
+      await app.get(ReworkNoticeService).notify(withinPartner.tenantId, withinPartner.moveId);
+      expect(await notices()).toHaveLength(1);
+    } finally {
+      enqueue.mockRestore();
+    }
   });
 
   it("keeps the workspace's own sampling from the partner", async () => {
