@@ -136,7 +136,7 @@ interface DemoOrder {
 const ORDERS: DemoOrder[] = [
   // Late, in production.
   { key: 'late-in-production', customer: 'Fieldnote Studio', lines: [cast('silver_925', 'polished', '1', 12)], paid: true, partner: NORTHCAST, progress: 'production', promised: -2 },
-  // In production with failures: a scrapped piece, two being redone, and a comment for each reader.
+  // In production with failures: a scrapped piece, two being redone, a comment for staff and one with the partner.
   { key: 'quality-issues', customer: 'Fieldnote Studio', lines: [cast('silver_925', 'polished', '1', 10)], paid: true, partner: NORTHCAST, progress: 'production', promised: 7, quality: true },
   // Late and ready: late, to ship.
   { key: 'late-ready', customer: 'Luna Jewels', lines: [pendant('silver_925', 'polished', 'M', 24)], paid: true, partner: NORTHCAST, progress: 'ready', promised: -1 },
@@ -504,12 +504,11 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     }
     if (order.quality) {
       await failSome(placed.lines[0].group_id!);
-      // One comment for each reader: the customer, the partner that has accepted the line, and staff alone.
-      const say = (body: string, visibility: 'customer' | 'partner' | 'staff', lineId?: string) =>
-        deps.comments.staffPost({ tenantId, userId: staffUserId }, id, { body, visibility, ...(lineId ? { line_id: lineId } : {}) });
-      await say('We have had to remake one piece, the order is still on time.', 'customer');
-      await say('Please check the polish on the next batch.', 'partner', placed.lines[0].id);
-      await say('Keep an eye on this line, two pieces are being redone.', 'staff');
+      // One comment for staff alone, on the order, and one on the line the partner has accepted, which it reads too.
+      const say = (body: string, lineId?: string) =>
+        deps.comments.staffPost({ tenantId, userId: staffUserId }, id, { body, ...(lineId ? { line_id: lineId } : {}) });
+      await say('Keep an eye on this order, two pieces are being redone.');
+      await say('Please check the polish on the next batch.', placed.lines[0].id);
     }
     if (FINISHED.includes(order.progress)) {
       for (const line of placed.lines) {

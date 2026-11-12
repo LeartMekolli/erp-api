@@ -7,7 +7,7 @@ import { PricingModule } from '../pricing/pricing.module';
 import { SettingsModule } from '../settings/settings.module';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { CommentsService } from './comments.service';
-import { OrderCommentsController, PortalOrderCommentsController } from './comments.controller';
+import { OrderCommentsController } from './comments.controller';
 import { OrderStatesHandler } from './order-states.handler';
 import { OrderStatesService } from './order-states.service';
 import { OrdersController } from './orders.controller';
@@ -33,7 +33,6 @@ import { TaxRatesService } from './tax-rates.service';
     OrdersController,
     OrderCommentsController,
     PortalOrdersController,
-    PortalOrderCommentsController,
   ],
   providers: [
     ShippingMethodsService,

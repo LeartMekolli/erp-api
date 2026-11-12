@@ -16,8 +16,8 @@ import type { PartnerJobCommentResponse } from './partner-response';
 const idParam = new ZodValidationPipe(z.uuid());
 
 /**
- * A partner's talk with the workspace about a job it holds (Orders spec, goal 13): only what staff marked for
- * it and what it wrote itself. Never the customer, the order, another line or a comment not sent to it.
+ * A partner's talk with the workspace about a job it holds: what staff wrote on the line while it held it,
+ * and what it wrote itself. Never the customer, the order, another line or what was said with another partner.
  */
 @Controller('partner-portal/partners/:partnerId/jobs/:groupId/comments')
 export class JobCommentsController {
@@ -26,7 +26,7 @@ export class JobCommentsController {
   @ApiDoc({
     summary: "The comments on one of the partner's jobs, oldest first, a page at a time.",
     description:
-      'Only for a job the partner has accepted and still holds; else a 404. What staff wrote to a partner that held the job before is never shown.',
+      'Only for a job the partner has accepted and still holds; else a 404. What staff wrote while another partner held the job is never shown.',
     query: paginationQuerySchema,
     response: pageSchema(partnerJobCommentResponseSchema),
     errors: [400, 404],
@@ -59,7 +59,7 @@ export class JobCommentsController {
   }
 
   @ApiDoc({
-    summary: "A short-lived download link for an attachment of a comment sent to the partner.",
+    summary: "A short-lived download link for an attachment of a comment the partner can read.",
     response: downloadUrlResponseSchema,
     errors: [400, 404],
   })

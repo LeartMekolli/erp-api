@@ -5,25 +5,25 @@ import type { Page, PaginationQuery } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
 import { downloadUrlResponseSchema } from '../files/file-response';
-import { CurrentCustomer, CurrentUser } from '../identity/auth-context';
-import type { CustomerAuth, TenantAuth } from '../identity/auth-context';
-import { CustomerAccess, RequirePermission } from '../identity/route-markers';
-import { CommentsService, customerCommentSchema, staffCommentSchema } from './comments.service';
-import type { CustomerComment, StaffComment } from './comments.service';
-import { customerOrderCommentResponseSchema, orderCommentResponseSchema } from './order-response';
-import type { CustomerOrderCommentResponse, OrderCommentResponse } from './order-response';
+import { CurrentUser } from '../identity/auth-context';
+import type { TenantAuth } from '../identity/auth-context';
+import { RequirePermission } from '../identity/route-markers';
+import { CommentsService, staffCommentSchema } from './comments.service';
+import type { StaffComment } from './comments.service';
+import { orderCommentResponseSchema } from './order-response';
+import type { OrderCommentResponse } from './order-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
 type Link = { url: string; expires_at: string };
 
-/** What staff and the customer's people say on an order (Orders spec, goal 13). */
+/** What staff say on an order and its lines, and what the partners making the lines say back. */
 @Controller('orders/:id/comments')
 export class OrderCommentsController {
   constructor(private readonly comments: CommentsService) {}
 
   @ApiDoc({
-    summary: "An order's comments, oldest first, a page at a time, with who wrote each and who else reads it.",
+    summary: "An order's comments, oldest first, a page at a time, with who wrote each and the partner that reads it, if any.",
     query: paginationQuerySchema,
     response: pageSchema(orderCommentResponseSchema),
     errors: [400, 404],
@@ -41,13 +41,13 @@ export class OrderCommentsController {
   @ApiDoc({
     summary: 'Comment on an order or one of its lines, with files attached.',
     description:
-      '`visibility` says who reads it besides staff: nobody by default, `customer`, or `partner`, the partner that has accepted the line, ' +
-      'which needs a `line_id`. A `partner` comment stays that partner\'s when the line changes hands; on a line no partner has accepted ' +
-      'yet it is a 409 with `code` `line_not_accepted`. A `line_id` of another order is a 400. Any uploaded file of the workspace can be ' +
-      'attached, at most 10; one not found, or not uploaded yet, is a 404 naming it. Comments cannot be edited or deleted.',
+      'Where it is posted decides who reads it. On the order, or on a line no partner has accepted yet, only staff do. On a line ' +
+      'a partner has accepted, that partner reads it too, named in `partner`, and it stays that partner\'s when the line changes hands. ' +
+      'A `line_id` of another order is a 400. Any uploaded file of the workspace can be attached, at most 10; one not found, or not ' +
+      'uploaded yet, is a 404 naming it. Comments cannot be edited or deleted.',
     body: staffCommentSchema,
     response: orderCommentResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404],
   })
   @RequirePermission('order.write')
   @Post()
@@ -73,62 +73,5 @@ export class OrderCommentsController {
     @Param('fileVersionId', idParam) fileVersionId: string,
   ): Promise<Link> {
     return this.comments.staffUrl(auth.tenantId, id, commentId, fileVersionId);
-  }
-}
-
-/** The customer's side of an order's comments: its own people's and what staff wrote for it, nothing else. */
-@Controller('portal/customers/:customerId/orders/:id/comments')
-export class PortalOrderCommentsController {
-  constructor(private readonly comments: CommentsService) {}
-
-  @ApiDoc({
-    summary: "An order's comments for the customer, oldest first, a page at a time: its own people's and what staff wrote for it.",
-    query: paginationQuerySchema,
-    response: pageSchema(customerOrderCommentResponseSchema),
-    errors: [400, 404],
-  })
-  @CustomerAccess('viewer')
-  @Get()
-  list(
-    @CurrentCustomer() customer: CustomerAuth,
-    @Param('id', idParam) id: string,
-    @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
-  ): Promise<Page<CustomerOrderCommentResponse>> {
-    return this.comments.customerList(customer, id, query);
-  }
-
-  @ApiDoc({
-    summary: 'Comment on an order or one of its lines, with files attached.',
-    description:
-      'A `line_id` of another order is a 400. Only files the customer uploaded itself can be attached, at most 10; ' +
-      'another file, or one not uploaded yet, is a 404 naming it.',
-    body: customerCommentSchema,
-    response: customerOrderCommentResponseSchema,
-    errors: [400, 404],
-  })
-  @CustomerAccess('buyer')
-  @Post()
-  post(
-    @CurrentCustomer() customer: CustomerAuth,
-    @Param('id', idParam) id: string,
-    @Body(new ZodValidationPipe(customerCommentSchema)) body: CustomerComment,
-  ): Promise<CustomerOrderCommentResponse> {
-    return this.comments.customerPost(customer, id, body);
-  }
-
-  @ApiDoc({
-    summary: "A short-lived download link for an attachment of a comment the customer can read.",
-    response: downloadUrlResponseSchema,
-    errors: [400, 404],
-  })
-  @CustomerAccess('viewer')
-  @Get(':commentId/attachments/:fileVersionId/url')
-  url(
-    @CurrentCustomer() customer: CustomerAuth,
-    @Param('id', idParam) id: string,
-    @Param('commentId', idParam) commentId: string,
-    @Param('fileVersionId', idParam) fileVersionId: string,
-  ): Promise<Link> {
-    return this.comments.customerUrl(customer, id, commentId, fileVersionId);
   }
 }

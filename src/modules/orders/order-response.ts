@@ -348,35 +348,19 @@ export type PriceChangedResponse = z.infer<typeof priceChangedResponseSchema>;
 export const COMMENT_MAX_LENGTH = 5000;
 export const COMMENT_MAX_ATTACHMENTS = 10;
 
-/** Who reads a comment besides staff: the customer, the partner that had accepted its line when written, or nobody. */
-export const COMMENT_VISIBILITIES = ['customer', 'partner', 'staff'] as const;
-export type CommentVisibility = (typeof COMMENT_VISIBILITIES)[number];
-
 const commentAttachmentResponseSchema = z.strictObject({ file_version_id: z.uuid(), name: z.string() });
 
-/** A comment as staff read it: who wrote it, and who else reads it. */
+/** A comment as staff read it: who wrote it, and the partner that reads it too, if any. */
 export const orderCommentResponseSchema = z.strictObject({
   id: z.uuid(),
   /** A line or sub-line of the order; null for the order as a whole. */
   line_id: z.uuid().nullable(),
+  /** `customer` only on comments the customer's people wrote before customers stopped commenting. */
   author: z.strictObject({ kind: z.enum(['staff', 'customer', 'partner']), id: z.uuid(), name: z.string() }),
-  /** Who reads it besides staff. A customer's own comment is `customer`, a partner's own is `partner`. */
-  visibility: z.enum(COMMENT_VISIBILITIES),
-  /** The partner a `partner` comment is to or from; null for any other. */
+  /** The partner that wrote it, or had accepted its line when staff wrote it, and reads it; null when only staff do. */
   partner: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
   body: z.string(),
   attachments: z.array(commentAttachmentResponseSchema),
   created_at: z.string(),
 });
 export type OrderCommentResponse = z.infer<typeof orderCommentResponseSchema>;
-
-/** A comment as the customer reads it: only those for the customer, and no `visibility`. */
-export const customerOrderCommentResponseSchema = z.strictObject({
-  id: z.uuid(),
-  line_id: z.uuid().nullable(),
-  author: z.strictObject({ kind: z.enum(['staff', 'customer']), name: z.string() }),
-  body: z.string(),
-  attachments: z.array(commentAttachmentResponseSchema),
-  created_at: z.string(),
-});
-export type CustomerOrderCommentResponse = z.infer<typeof customerOrderCommentResponseSchema>;
