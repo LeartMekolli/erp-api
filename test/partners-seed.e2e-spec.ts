@@ -57,14 +57,15 @@ describe('partners demo seed', () => {
     return { ...tenant, ownerId: owner.id, staff: as((await tokens.issueForUser(tenant.id, owner.id)).accessToken) };
   }
 
-  it('creates two approved partners with an owner each once, and a second run creates nothing', async () => {
+  it('creates three approved partners with an owner each once, and a second run creates nothing', async () => {
     const tenant = await seededTenant();
 
-    expect(await seedPartners(prisma, tenant.id, { password: PASSWORD })).toEqual({ counts: { partners: 2, people: 2 }, password: PASSWORD });
+    expect(await seedPartners(prisma, tenant.id, { password: PASSWORD })).toEqual({ counts: { partners: 3, people: 3 }, password: PASSWORD });
     expect(await seedPartners(prisma, tenant.id)).toEqual({ counts: { partners: 0, people: 0 }, password: null });
 
     const partners = ((await tenant.staff.get('/partners').expect(200)).body as { data: Partner[] }).data;
     expect(partners.map((partner) => [partner.name, partner.status, partner.agreement !== null]).sort()).toEqual([
+      ['Emberline Casting', 'approved', true],
       ['Layerline Prints', 'approved', true],
       ['Northcast Foundry', 'approved', true],
     ]);
@@ -105,7 +106,7 @@ describe('partners demo seed', () => {
     );
   });
 
-  it('makes the demo cast part a job Northcast can take and Layerline cannot', async () => {
+  it('makes the demo cast part a job the two foundries can take and Layerline cannot', async () => {
     const tenant = await seededTenant();
     await seedPartners(prisma, tenant.id, { password: PASSWORD });
     const product = await prisma.inTenant(tenant.id, (tx) => tx.product.findFirstOrThrow({ where: { key: 'custom_cast_part' } }));
@@ -127,7 +128,7 @@ describe('partners demo seed', () => {
       data: { partner: { name: string } }[];
       ineligible: { partner: { name: string } }[];
     };
-    expect(eligible.data.map((row) => row.partner.name)).toEqual(['Northcast Foundry']);
+    expect(eligible.data.map((row) => row.partner.name).sort()).toEqual(['Emberline Casting', 'Northcast Foundry']);
     expect(eligible.ineligible.map((row) => row.partner.name)).toEqual(['Layerline Prints']);
   });
 });

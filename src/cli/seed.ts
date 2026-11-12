@@ -160,7 +160,7 @@ void runCli(async (app) => {
   const partners = await seedPartners(prisma, demo.id);
   process.stdout.write(
     `partners for demo: created ${partners.counts.partners} partners, ${partners.counts.people} people` +
-      (partners.password ? ` with password ${partners.password} (owner@northcast.example.test, owner@layerline.example.test)` : '') +
+      (partners.password ? ` with password ${partners.password} (owner@northcast.example.test, owner@layerline.example.test, owner@emberline.example.test)` : '') +
       '\n',
   );
 
