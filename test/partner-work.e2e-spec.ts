@@ -37,7 +37,7 @@ interface PartnerJob {
   quantity: number;
   steps: { key: string }[];
   pieces: { active: number; finished: number; scrapped: number };
-  work_orders?: { id: string; label: string; status: string; step_key: string | null; to_inspect: boolean | null }[];
+  work_orders?: { id: string; label: string; status: string; step_key: string | null; to_inspect: boolean | null; stage: string | null }[];
 }
 interface PartnerStep {
   key: string;
@@ -372,6 +372,25 @@ describe('partners: working their jobs', () => {
     await tenant.metalworksPerson
       .get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted.group}/steps/print_pattern/sop`)
       .expect(404);
+  });
+
+  it('says where each piece stands: with the partner, not with it yet, or its part done', async () => {
+    const tenant = await freshTenant(async () => ({ casting_tree: { done_by: 'workspace' }, final_qc: { done_by: 'workspace' } }));
+    const moves = `${portal(tenant)}/moves`;
+    const stages = async () => (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.stage);
+
+    expect(await stages()).toEqual(Array(10).fill('yours'));
+    const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+
+    // The casting tree is the workspace's, between two of the partner's steps.
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'print_pattern' }).expect(200);
+    expect(await stages()).toEqual(Array(10).fill('not_yet'));
+
+    await tenant.staff.post('/workflow/moves', { work_order_ids: ids, kind: 'pass', at_step: 'casting_tree' }).expect(200);
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids.slice(0, 3), kind: 'pass', at_step: 'casting' }).expect(200);
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids.slice(0, 3), kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+    // Final QC and packing are the workspace's, and nothing of the partner's is left after them.
+    expect(await stages()).toEqual([...Array(3).fill('done'), ...Array(7).fill('yours')]);
   });
 
   it("keeps the workspace's own sampling from the partner", async () => {

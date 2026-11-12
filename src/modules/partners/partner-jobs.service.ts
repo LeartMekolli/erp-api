@@ -19,6 +19,7 @@ import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
 import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules, PartnerWorkOrderResponse } from './partner-response';
+import { stageOf } from './partner-stage';
 import { actorOf, handedOverAt, partnerTransitionInclude, toPartnerTransition } from './partner-view';
 
 export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
@@ -91,6 +92,7 @@ export class PartnerJobsService {
       });
       const steps = await versionSteps(tx, group);
       const own = partnerPath(steps, group);
+      const path = pathOf(steps, group);
       // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
       const mine = new Set(own.map((step) => step.id));
       const inspect = await toInspect(tx, pieces.filter((piece) => piece.currentStepId !== null && mine.has(piece.currentStepId)));
@@ -157,6 +159,7 @@ export class PartnerJobsService {
             step_key: piece.currentStep?.key ?? null,
             to_inspect: inspect.get(piece.id) ?? null,
             in_rework: piece.status === 'active' && inRework(histories.get(piece.id) ?? []) !== null,
+            stage: stageOf(path, piece),
             last_move: last
               ? {
                   kind: last.kind as PartnerLastMove['kind'],
@@ -315,12 +318,15 @@ function versionSteps(tx: Tx, group: WorkOrderGroup): Promise<WorkflowStepRow[]>
   return tx.workflowStep.findMany({ where: { versionId: group.workflowVersionId }, include: { stepType: true } });
 }
 
-/** The partner's steps on the group's path, in path order; `steps` are those of the group's version. */
-function partnerPath(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
+/** Every step on the group's path, in order; `steps` are those of the group's version. */
+function pathOf(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
   const stepById = new Map(steps.map((step) => [step.id, step]));
-  return pathFor(stepsForPath(steps), chainOf(group))
-    .map((id) => stepById.get(id)!)
-    .filter((step) => step.doneBy === 'partner');
+  return pathFor(stepsForPath(steps), chainOf(group)).map((id) => stepById.get(id)!);
+}
+
+/** The partner's steps on the group's path, in path order. */
+function partnerPath(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
+  return pathOf(steps, group).filter((step) => step.doneBy === 'partner');
 }
 
 /**

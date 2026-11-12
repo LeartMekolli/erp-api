@@ -6,6 +6,7 @@ import { actionResponseSchema, moveHistoryResponseSchema } from '../workflow/mov
 import { WORK_ORDER_STATUSES, lastMoveSchema, transitionResponseSchema } from '../workflow/work-order-response';
 import { OUTCOMES, checklistItemSchema } from '../workflow/workflow-config';
 import { jobSummaryResponseSchema } from './job-summary-response';
+import { PARTNER_STAGES } from './partner-stage';
 import { PARTNER_ROLES } from './partner-roles';
 
 // What clients receive for partners; checked against real responses in the e2e tests.
@@ -331,6 +332,11 @@ export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
       in_rework: z.boolean(),
       /** Null until the piece first moves, and on a job the partner has only been offered. */
       last_move: partnerLastMoveSchema.nullable(),
+      /**
+       * `yours`: at one of the partner's steps; `not_yet`: at a workspace step with a partner step still to
+       * come; `done`: past the partner's last step; null once finished or scrapped.
+       */
+      stage: z.enum(PARTNER_STAGES).nullable(),
     }),
   ),
   /** The AI's brief of the job (Orders 3 spec, goal 15); null when none was written. */
