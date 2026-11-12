@@ -5,15 +5,18 @@ import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { JobAssignment, Prisma } from '../../generated/prisma/client';
+import type { JobAssignment, Prisma, WorkOrderGroup } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { PartnerAuth } from '../identity/auth-context';
 import { notWaitingForPayment } from '../orders/payment-hold';
+import type { WorkflowStepRow } from '../workflow/coverage';
 import { pathFor } from '../workflow/path';
+import { toInspect } from '../workflow/sampling';
+import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse } from './partner-response';
+import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules } from './partner-response';
 
 export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
 export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
@@ -74,23 +77,44 @@ export class PartnerJobsService {
   async detail(auth: PartnerAuth, groupId: string): Promise<PartnerJobDetailResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const [job] = await this.views(tx, [await this.find(tx, auth, groupId, OPEN)]);
-      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId }, select: { quantity: true } });
+      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
       const pieces = await tx.workOrder.findMany({
         where: { groupId, status: { not: 'cancelled' } },
         orderBy: { id: 'asc' },
         include: { currentStep: { select: { key: true } } },
       });
+      const steps = await versionSteps(tx, group);
+      // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
+      const mine = new Set(partnerPath(steps, group).map((step) => step.id));
+      const inspect = await toInspect(tx, pieces.filter((piece) => piece.currentStepId !== null && mine.has(piece.currentStepId)));
       return {
         ...job,
+        steps: await stepRules(tx, steps, group),
         work_orders: pieces.map((piece) => ({
           id: piece.id,
           label: `${piece.number}/${group.quantity}`,
           status: piece.status as PartnerJobDetailResponse['work_orders'][number]['status'],
           step_key: piece.currentStep?.key ?? null,
+          to_inspect: inspect.get(piece.id) ?? null,
         })),
         summary: await jobSummaryOf(tx, groupId),
       };
     });
+  }
+
+  /** A short-lived link to the instructions of one of the partner's steps on a job it has accepted. */
+  async sop(auth: PartnerAuth, groupId: string, stepKey: string): Promise<{ url: string; expires_at: string }> {
+    const version = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await this.find(tx, auth, groupId, ['accepted']);
+      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
+      const step = partnerPath(await versionSteps(tx, group), group).find((one) => one.key === stepKey);
+      if (!step?.sopFileVersionId) return null;
+      return tx.fileVersion.findUniqueOrThrow({ where: { id: step.sopFileVersionId }, select: { id: true, fileId: true } });
+    });
+    if (!version) {
+      throw new NotFoundException('Step instructions not found');
+    }
+    return this.files.downloadUrl(auth.tenantId, version.fileId, version.id);
   }
 
   /** A short-lived link to the job's design file; only once the partner has accepted the job. */
@@ -135,7 +159,6 @@ export class PartnerJobsService {
       where: { versionId: { in: [...new Set(groups.map((group) => group.workflowVersionId))] } },
       include: { stepType: true },
     });
-    const stepById = new Map(steps.map((step) => [step.id, step]));
     const counts = await tx.workOrder.groupBy({
       by: ['groupId', 'status'],
       where: { groupId: { in: groups.map((group) => group.id) } },
@@ -145,9 +168,7 @@ export class PartnerJobsService {
 
     return rows.map((row) => {
       const group = groupById.get(row.groupId)!;
-      const partnerSteps = pathFor(stepsForPath(steps.filter((step) => step.versionId === group.workflowVersionId)), chainOf(group))
-        .map((id) => stepById.get(id)!)
-        .filter((step) => step.doneBy === 'partner');
+      const partnerSteps = partnerPath(steps.filter((step) => step.versionId === group.workflowVersionId), group);
       const count = (status: string) => counts.find((one) => one.groupId === group.id && one.status === status)?._count._all ?? 0;
       const active = count('active');
       return {
@@ -166,7 +187,49 @@ export class PartnerJobsService {
       };
     });
   }
+}
 
+/** The steps of the group's workflow version. */
+function versionSteps(tx: Tx, group: WorkOrderGroup): Promise<WorkflowStepRow[]> {
+  return tx.workflowStep.findMany({ where: { versionId: group.workflowVersionId }, include: { stepType: true } });
+}
+
+/** The partner's steps on the group's path, in path order; `steps` are those of the group's version. */
+function partnerPath(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
+  const stepById = new Map(steps.map((step) => [step.id, step]));
+  return pathFor(stepsForPath(steps), chainOf(group))
+    .map((id) => stepById.get(id)!)
+    .filter((step) => step.doneBy === 'partner');
+}
+
+/**
+ * What the QC gate asks for at each of the partner's steps on the group's path. A rework target the
+ * workspace does is named, nothing more.
+ */
+async function stepRules(tx: Tx, steps: WorkflowStepRow[], group: WorkOrderGroup): Promise<PartnerStepRules[]> {
+  const mine = partnerPath(steps, group).map((step) => ({ step, config: step.config as StepConfig }));
+  const defectIds = [...new Set(mine.flatMap(({ config }) => config.defects.map((defect) => defect.defect_id)))];
+  const defects = new Map(
+    (await tx.defect.findMany({ where: { id: { in: defectIds } }, select: { id: true, key: true, name: true } })).map((row) => [row.id, row]),
+  );
+  const nameOf = new Map(steps.map((step) => [step.key, step.name]));
+  return mine.map(({ step, config }) => ({
+    key: step.key,
+    name: step.name,
+    sop_file_version_id: step.sopFileVersionId,
+    checklist: config.checklist,
+    defects: config.defects.map((defect) => ({
+      id: defect.defect_id,
+      key: defects.get(defect.defect_id)!.key,
+      name: defects.get(defect.defect_id)!.name,
+      outcome: defect.outcome,
+      rework_to: defect.rework_to ?? null,
+    })),
+    rework_targets: config.rework_targets.map((key) => ({ key, name: nameOf.get(key) ?? key })),
+    pass: config.pass,
+    fail: config.fail,
+    sampling: config.sampling ?? null,
+  }));
 }
 
 /**

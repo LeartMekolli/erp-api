@@ -3,6 +3,7 @@ import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
 import { actionResponseSchema, moveHistoryResponseSchema } from '../workflow/move-history-response';
+import { OUTCOMES, checklistItemSchema } from '../workflow/workflow-config';
 import { jobSummaryResponseSchema } from './job-summary-response';
 import { PARTNER_ROLES } from './partner-roles';
 
@@ -219,8 +220,42 @@ export type PartnerJobResponse = z.infer<typeof partnerJobResponseSchema>;
 /** A page of the partner's jobs, newest hand-over first. */
 export const partnerJobsResponseSchema = pageSchema(partnerJobResponseSchema);
 
-/** A job with each of its pieces, so the partner knows which to move. */
+const evidenceSchema = z.strictObject({ min_photos: z.number().int(), comment_required: z.boolean() });
+
+/**
+ * One of the partner's steps with what its QC gate asks for, so the partner can pass and fail pieces.
+ * Never the workspace's own steps' rules, nor staff settings such as the skill a step needs.
+ */
+export const partnerStepRulesSchema = z.strictObject({
+  key: z.string(),
+  name: z.string(),
+  /** Download it from the step's `sop` route. */
+  sop_file_version_id: z.uuid().nullable(),
+  checklist: z.array(checklistItemSchema),
+  /** The defects a fail may name, with what happens to the piece. */
+  defects: z.array(
+    z.strictObject({
+      id: z.uuid(),
+      key: z.string(),
+      name: z.string(),
+      outcome: z.enum(OUTCOMES),
+      /** The step a rework goes back to; null for a scrap or a continue. */
+      rework_to: z.string().nullable(),
+    }),
+  ),
+  /** The steps a failed piece may go back to, the workspace's own included. */
+  rework_targets: z.array(z.strictObject({ key: z.string(), name: z.string() })),
+  pass: evidenceSchema,
+  fail: evidenceSchema,
+  /** Inspect only `inspect` of every `of_every` pieces; null when every piece is inspected. */
+  sampling: z.strictObject({ inspect: z.number().int(), of_every: z.number().int() }).nullable(),
+});
+export type PartnerStepRules = z.infer<typeof partnerStepRulesSchema>;
+
+/** A job with its steps' QC rules and each of its pieces, so the partner knows which to move and how. */
 export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
+  /** The partner's own steps, in order, with what each one's QC gate asks for. */
+  steps: z.array(partnerStepRulesSchema),
   work_orders: z.array(
     z.strictObject({
       id: z.uuid(),
@@ -229,6 +264,8 @@ export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
       status: z.enum(['active', 'finished', 'scrapped']),
       /** The step the piece is at; null once it is finished or scrapped. */
       step_key: z.string().nullable(),
+      /** Null unless the piece is active at one of the partner's steps that samples; else whether it must be inspected in full. */
+      to_inspect: z.boolean().nullable(),
     }),
   ),
   /** The AI's brief of the job (Orders 3 spec, goal 15); null when none was written. */
