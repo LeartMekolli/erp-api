@@ -11,7 +11,7 @@ import type { PartnerAuth } from '../identity/auth-context';
 import { notWaitingForPayment } from '../orders/payment-hold';
 import type { WorkflowStepRow } from '../workflow/coverage';
 import { pathFor } from '../workflow/path';
-import { inRework } from '../workflow/progress';
+import { groupProgress, inRework, stepTotals } from '../workflow/progress';
 import type { MoveFacts } from '../workflow/progress';
 import { toInspect } from '../workflow/sampling';
 import type { StepConfig } from '../workflow/workflow-config';
@@ -19,7 +19,7 @@ import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
 import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules } from './partner-response';
-import { actorOf, partnerTransitionInclude } from './partner-view';
+import { actorOf, handedOverAt, partnerTransitionInclude } from './partner-view';
 
 export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
 export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
@@ -90,20 +90,64 @@ export class PartnerJobsService {
         include: { currentStep: { select: { key: true } } },
       });
       const steps = await versionSteps(tx, group);
+      const own = partnerPath(steps, group);
       // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
-      const mine = new Set(partnerPath(steps, group).map((step) => step.id));
+      const mine = new Set(own.map((step) => step.id));
       const inspect = await toInspect(tx, pieces.filter((piece) => piece.currentStepId !== null && mine.has(piece.currentStepId)));
       const histories = await movesOf(tx, groupId);
-      // A partner that may still decline sees nothing of earlier work (spec, part 2: option a).
-      const lastIds = held.status === 'accepted' ? pieces.flatMap((piece) => histories.get(piece.id)?.slice(-1).map((move) => move.id) ?? []) : [];
-      const lasts = new Map(
-        (lastIds.length > 0 ? await tx.transition.findMany({ where: { id: { in: lastIds } }, include: partnerTransitionInclude }) : []).map(
-          (row) => [row.workOrderId, row],
+
+      // A partner that may still decline sees nothing of earlier work, and one that holds the job only what
+      // was done since it came to it (spec, part 2).
+      const accepted = held.status === 'accepted';
+      const since = handedOverAt(held);
+      const counted = accepted ? [...histories.values()].flat().filter((move) => move.createdAt >= since) : [];
+      const totals = stepTotals([...mine], counted);
+      const progress = groupProgress(
+        own,
+        pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
+      );
+      const lastIds = accepted ? pieces.flatMap((piece) => histories.get(piece.id)?.slice(-1).map((move) => move.id) ?? []) : [];
+      const checkIds = [...totals.values()].flatMap((total) => (total.latestCheckId === null ? [] : [total.latestCheckId]));
+      const named = new Map(
+        (lastIds.length + checkIds.length > 0
+          ? await tx.transition.findMany({ where: { id: { in: [...lastIds, ...checkIds] } }, include: partnerTransitionInclude })
+          : []
+        ).map((row) => [row.id, row]),
+      );
+      const lasts = new Map(lastIds.map((id) => [named.get(id)!.workOrderId, named.get(id)!]));
+      const defectIds = [...new Set([...totals.values()].flatMap((total) => [...total.defectCounts.keys()]))];
+      const defects = new Map(
+        (defectIds.length > 0 ? await tx.defect.findMany({ where: { id: { in: defectIds } }, select: { id: true, key: true, name: true } }) : []).map(
+          (row) => [row.id, row],
         ),
       );
+      const rules = await stepRules(tx, steps, group);
+
       return {
         ...job,
-        steps: await stepRules(tx, steps, group),
+        steps: rules.map((rule, index) => {
+          const total = totals.get(own[index].id)!;
+          const check = total.latestCheckId === null ? undefined : named.get(total.latestCheckId);
+          return {
+            ...rule,
+            count: progress.steps[index].count,
+            in_rework: progress.steps[index].in_rework,
+            passed: total.passed,
+            failed: total.failed,
+            not_inspected: total.not_inspected,
+            defect_counts: [...total.defectCounts]
+              .map(([id, count]) => ({ key: defects.get(id)!.key, name: defects.get(id)!.name, count }))
+              .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+            latest_check: check
+              ? {
+                  move_id: check.moveId,
+                  actor: actorOf(auth, check),
+                  created_at: check.createdAt.toISOString(),
+                  photos: check.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
+                }
+              : null,
+          };
+        }),
         work_orders: pieces.map((piece) => {
           const last = lasts.get(piece.id);
           return {

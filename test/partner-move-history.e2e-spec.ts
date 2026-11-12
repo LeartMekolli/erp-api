@@ -237,7 +237,7 @@ describe("partners: the moves on a partner's job", () => {
         photo_file_version_ids: [ownPhoto.versionId],
       })
       .expect(200);
-    return { ids, photo, reassignedAt: (moved.body as { created_at: string }).created_at };
+    return { ids, photo, ownPhoto, reassignedAt: (moved.body as { created_at: string }).created_at };
   }
 
   beforeAll(async () => {
@@ -403,12 +403,31 @@ describe("partners: the moves on a partner's job", () => {
     }
   });
 
-  it("each piece's rework and last move, as the partner reads who made it", async () => {
+  it("each piece's rework and last move, and quality per step since the hand-over, as the partner reads who made them", async () => {
     const tenant = await freshTenant();
-    await reassigned(tenant);
+    const { ownPhoto } = await reassigned(tenant);
     const detail = await tenant.metalworksPerson.client.get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted}`).expect(200);
     expectDocumented(partnerJobDetailResponseSchema, detail.body);
-    const pieces = (detail.body as PartnerJobDetailResponse).work_orders;
+    const job = detail.body as PartnerJobDetailResponse;
+    const pieces = job.work_orders;
+    const step = (key: string) => job.steps.find((one) => one.key === key);
+
+    // Review Focus 6: CastCo's fail and the staff pass came before the hand-over, so MetalWorks' totals start empty,
+    // while the two pieces being redone are still counted where they are.
+    expect(step('polishing')).toMatchObject({ count: 2, in_rework: 2, passed: 0, failed: 0, not_inspected: 0, defect_counts: [], latest_check: null });
+    expect(step('print_pattern')).toMatchObject({ count: 0, passed: 0, latest_check: null });
+    const [ownMove] = (await partnerMoves(tenant.metalworksPerson.client, tenant.metalworks, tenant.accepted)).data;
+    expect(step('final_qc')).toMatchObject({
+      count: 0,
+      passed: 8,
+      failed: 0,
+      latest_check: {
+        move_id: ownMove.id,
+        actor: { kind: 'own', name: tenant.metalworksPerson.name },
+        created_at: ownMove.created_at,
+        photos: [{ file_id: ownPhoto.fileId, file_version_id: ownPhoto.versionId }],
+      },
+    });
 
     // CastCo failed the first two at polishing: being redone, by another workshop, unnamed.
     expect(pieces.slice(0, 2).map((piece) => [piece.in_rework, piece.last_move])).toEqual(
@@ -443,8 +462,35 @@ describe("partners: the moves on a partner's job", () => {
 
     const detail = await tenant.castcoPerson.client.get(`/partner-portal/partners/${tenant.castco}/jobs/${tenant.offered}`).expect(200);
     expectDocumented(partnerJobDetailResponseSchema, detail.body);
-    const pieces = (detail.body as PartnerJobDetailResponse).work_orders;
-    expect(pieces.map((piece) => [piece.step_key, piece.in_rework, piece.last_move])).toEqual(Array.from({ length: 10 }, () => ['casting_tree', false, null]));
+    const job = detail.body as PartnerJobDetailResponse;
+    expect(job.work_orders.map((piece) => [piece.step_key, piece.in_rework, piece.last_move])).toEqual(
+      Array.from({ length: 10 }, () => ['casting_tree', false, null]),
+    );
+    // Review Focus 10: where the pieces are now, but no totals of the work done before.
+    expect(job.steps.find((step) => step.key === 'print_pattern')).toMatchObject({ count: 0, passed: 0, latest_check: null });
+    expect(job.steps.find((step) => step.key === 'casting_tree')).toMatchObject({ count: 10, in_rework: 0, passed: 0 });
+  });
+
+  it("CastCo's quality totals count the workspace's moves at its steps", async () => {
+    const tenant = await freshTenant();
+    await workedByCastco(tenant);
+    const detail = await tenant.castcoPerson.client.get(`/partner-portal/partners/${tenant.castco}/jobs/${tenant.accepted}`).expect(200);
+    expectDocumented(partnerJobDetailResponseSchema, detail.body);
+    const job = detail.body as PartnerJobDetailResponse;
+    const [staffPass] = (await partnerMoves(tenant.castcoPerson.client, tenant.castco, tenant.accepted)).data;
+
+    expect(job.steps.find((step) => step.key === 'print_pattern')).toMatchObject({ passed: 10, failed: 0 });
+    // Review Focus 7: staff passed eight at CastCo's step after the hand-over: counted, and unnamed as the latest check.
+    expect(job.steps.find((step) => step.key === 'polishing')).toMatchObject({
+      count: 2,
+      in_rework: 2,
+      passed: 8,
+      failed: 2,
+      not_inspected: 0,
+      defect_counts: [{ key: 'scratch', name: 'Scratch', count: 2 }],
+      latest_check: { move_id: staffPass.id, actor: { kind: 'workspace', name: null }, photos: [] },
+    });
+    expect(detail.text.includes('Test User')).toBe(false);
   });
 
   it('photo link', async () => {

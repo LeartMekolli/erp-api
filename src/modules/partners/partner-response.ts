@@ -262,10 +262,35 @@ export const partnerStepRulesSchema = z.strictObject({
 });
 export type PartnerStepRules = z.infer<typeof partnerStepRulesSchema>;
 
-/** A job with its steps' QC rules and each of its pieces, so the partner knows which to move and how. */
+/**
+ * One of the partner's steps on a job: its QC rules, the active pieces there now, and its checks since the
+ * job came to the partner. `passed` and `failed` count moves, not pieces, so a piece that fails and then
+ * passes counts once in each; `not_inspected` is the part of `passed` left out of a sample. On a job only
+ * offered, the checks are empty.
+ */
+export const partnerJobStepSchema = partnerStepRulesSchema.extend({
+  count: z.number().int(),
+  in_rework: z.number().int(),
+  passed: z.number().int(),
+  failed: z.number().int(),
+  not_inspected: z.number().int(),
+  /** The defects of the step's fails, most frequent first, then by name (staff's `defects`; here `defects` are the rules). */
+  defect_counts: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int() })),
+  /** The latest inspected pass or fail; its photos download from the job's `moves/{move_id}/photos` route. */
+  latest_check: z
+    .strictObject({
+      move_id: z.uuid(),
+      actor: partnerActorSchema,
+      created_at: z.iso.datetime(),
+      photos: z.array(z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() })),
+    })
+    .nullable(),
+});
+
+/** A job with its steps' QC rules and quality, and each of its pieces, so the partner knows which to move and how. */
 export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
-  /** The partner's own steps, in order, with what each one's QC gate asks for. */
-  steps: z.array(partnerStepRulesSchema),
+  /** The partner's own steps, in order. */
+  steps: z.array(partnerJobStepSchema),
   work_orders: z.array(
     z.strictObject({
       id: z.uuid(),
