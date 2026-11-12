@@ -18,11 +18,15 @@ import type { TenantAuth } from '../identity/auth-context';
 import { keySchema } from '../pricing/decimals';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
+import { actionFacts, listActions } from './move-history';
+import type { MoveHistoryQuery } from './move-history';
+import type { MoveHistoryResponse } from './move-history-response';
 import { pathFor } from './path';
 import { customerView, groupProgress, inRework, stepTotals } from './progress';
 import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
 import { ensureDraw, toInspect } from './sampling';
 import { barredStepIds } from './step-skills';
+import { nameRef, stepRef, toTransition, transitionInclude } from './transition-rows';
 import type { StepConfig } from './workflow-config';
 import { WORK_ORDER_STATUSES } from './work-order-response';
 import type {
@@ -30,7 +34,6 @@ import type {
   GroupResponse,
   LastMove,
   TransitionListItem,
-  TransitionResponse,
   WorkOrderDetailResponse,
   WorkOrderListItem,
   WorkOrderResponse,
@@ -456,6 +459,28 @@ export class WorkOrdersService {
     });
   }
 
+  /** A line's moves, one item per action, newest first (Move history spec). */
+  async moves(tenantId: string, groupId: string, query: MoveHistoryQuery): Promise<MoveHistoryResponse> {
+    const secret = this.config.get('APP_SECRET');
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const { actions, next_cursor, counts } = await listActions(tx, groupId, query, secret);
+      return {
+        data: actions.map((rows) => {
+          const { representative, ...facts } = actionFacts(rows);
+          return {
+            ...facts,
+            override_reason: representative.overrideReason,
+            comment: representative.comment,
+            actor: { id: representative.actor.id, name: representative.actor.name },
+            partner: rows.find((row) => row.partner !== null)?.partner ?? null,
+          };
+        }),
+        next_cursor,
+        counts,
+      };
+    });
+  }
+
   async get(tenantId: string, id: string): Promise<WorkOrderDetailResponse> {
     return this.prisma.inTenant(tenantId, async (tx) => {
       const row = await tx.workOrder.findUnique({ where: { id }, include: { ...pieceInclude, group: true } });
@@ -657,61 +682,6 @@ export const pieceInclude = {
   currentStep: { select: { id: true, key: true, name: true } },
   group: { select: { quantity: true, queueRank: true } },
 } as const;
-
-const stepRef = { select: { id: true, key: true, name: true } } as const;
-const nameRef = { select: { id: true, name: true } } as const;
-
-export const transitionInclude = {
-  // With its config, to name the answers: a version's steps are never changed, so it is what staff answered.
-  fromStep: { select: { id: true, key: true, name: true, config: true } },
-  toStep: stepRef,
-  defect: stepRef,
-  actor: nameRef,
-  partner: nameRef,
-  answers: { orderBy: { id: 'asc' } },
-  photos: { orderBy: { id: 'asc' }, include: { fileVersion: { select: { fileId: true } } } },
-} as const satisfies Prisma.TransitionInclude;
-
-type TransitionRow = Prisma.TransitionGetPayload<{ include: typeof transitionInclude }>;
-
-/**
- * An answer with the names the step gave its item and, for a choice, the chosen option. An item no longer
- * on the step is named by its key.
- */
-function readableAnswer(answer: TransitionRow['answers'][number], checklist: StepConfig['checklist'] | undefined): TransitionResponse['answers'][number] {
-  const item = checklist?.find((one) => one.key === answer.itemKey);
-  const option = item?.kind === 'choice' ? item.options.find((one) => one.key === answer.value) : undefined;
-  return {
-    item: answer.itemKey,
-    label: item?.label ?? answer.itemKey,
-    value: answer.value,
-    value_label: option?.label ?? null,
-    note: answer.note,
-    passing: answer.passing,
-  };
-}
-
-export function toTransition(row: TransitionRow): TransitionResponse {
-  const checklist = row.fromStep ? (row.fromStep.config as StepConfig).checklist : undefined;
-  return {
-    id: row.id,
-    move_id: row.moveId,
-    kind: row.kind as TransitionResponse['kind'],
-    outcome: row.outcome as TransitionResponse['outcome'],
-    from_step: row.fromStep ? { id: row.fromStep.id, key: row.fromStep.key, name: row.fromStep.name } : null,
-    to_step: row.toStep,
-    defect: row.defect,
-    override_reason: row.overrideReason,
-    comment: row.comment,
-    answers: row.answers.map((answer) => readableAnswer(answer, checklist)),
-    photo_file_version_ids: row.photos.map((photo) => photo.fileVersionId),
-    photos: row.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
-    actor: row.actor,
-    partner: row.partner,
-    inspected: row.inspected,
-    created_at: row.createdAt.toISOString(),
-  };
-}
 
 export function stepsForPath(steps: WorkflowStepRow[]) {
   return steps.map((step) => ({
