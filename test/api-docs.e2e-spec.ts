@@ -3,7 +3,7 @@ import { METHOD_METADATA, PATH_METADATA, ROUTE_ARGS_METADATA } from '@nestjs/com
 import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import { MetadataScanner, ModulesContainer } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import type { OpenAPIObject, OperationObject, RequestBodyObject, SchemaObject } from '@nestjs/swagger';
+import type { OpenAPIObject, OperationObject, RequestBodyObject, ResponseObject, SchemaObject } from '@nestjs/swagger';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
@@ -175,6 +175,30 @@ describe('API docs', () => {
         expect(doc.paths[path].post?.description).not.toContain('Idempotency-Key');
         expect(statuses(doc.paths[path].post)).not.toContain('409');
       }
+    });
+
+    it('shows a coded refusal with its extension members next to the plain problem', () => {
+      const problemOf = (operation: OperationObject | undefined, status: string) => {
+        const response = operation?.responses[status] as ResponseObject | undefined;
+        return (response?.content?.['application/problem+json'].schema ?? {}) as SchemaObject;
+      };
+      const problem = { $ref: '#/components/schemas/Problem' };
+
+      const readers = problemOf(doc.paths['/orders/{id}/comments'].post, '409');
+      expect(readers.anyOf).toEqual([
+        expect.objectContaining({
+          properties: expect.objectContaining({ code: { type: 'string', enum: ['readers_changed'] }, partner: expect.any(Object) }),
+        }),
+        problem,
+      ]);
+      for (const path of ['/orders', '/portal/customers/{customerId}/orders']) {
+        const priced = problemOf(doc.paths[path].post, '409');
+        expect(priced.anyOf).toEqual([
+          expect.objectContaining({ properties: expect.objectContaining({ code: { type: 'string', enum: ['price_changed'] }, lines: expect.any(Object) }) }),
+          problem,
+        ]);
+      }
+      expect(problemOf(doc.paths['/orders/{id}/comments'].post, '404')).toEqual(problem);
     });
 
     it('declares Idempotency-Key as an optional header on tenant POSTs only', () => {

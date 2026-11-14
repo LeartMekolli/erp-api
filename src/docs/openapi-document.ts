@@ -2,7 +2,7 @@ import { INestApplication, RequestMethod } from '@nestjs/common';
 import { HTTP_CODE_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { MetadataScanner, ModulesContainer } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import type { OpenAPIObject, OperationObject, ParameterObject, ResponsesObject, SchemaObject } from '@nestjs/swagger';
+import type { OpenAPIObject, OperationObject, ParameterObject, ReferenceObject, ResponsesObject, SchemaObject } from '@nestjs/swagger';
 import { z } from 'zod';
 import { ConfigService } from '../config/config.service';
 import { ROUTE_MARKER } from '../modules/identity/route-markers';
@@ -195,11 +195,19 @@ function fillOperation(operation: OperationObject, route: DocumentedRoute, ctx: 
   // Derived like access: any protected route can refuse the token (401) or the caller (403, also a
   // suspended tenant or the wrong kind of token), and a reused Idempotency-Key is a 409.
   const derived = [...(isPublic ? [] : [401, 403]), ...(idempotent ? [409] : [])];
-  const errors = [...new Set([...(doc?.errors ?? []), ...derived])].sort((a, b) => a - b);
+  const coded = new Map<number, z.ZodType[]>();
+  for (const error of doc?.errors ?? []) {
+    if (typeof error === 'number') continue;
+    coded.set(error.status, [...(coded.get(error.status) ?? []), error.schema]);
+  }
+  const listed = (doc?.errors ?? []).map((error) => (typeof error === 'number' ? error : error.status));
+  const errors = [...new Set([...listed, ...derived])].sort((a, b) => a - b);
+  const problem: ReferenceObject = { $ref: '#/components/schemas/Problem' };
   for (const status of errors) {
+    const schemas = (coded.get(status) ?? []).map((schema) => zodToOpenApi(schema, 'output'));
     responses[status] = {
       description: ERROR_DESCRIPTIONS[status] ?? 'Error',
-      content: { 'application/problem+json': { schema: { $ref: '#/components/schemas/Problem' } } },
+      content: { 'application/problem+json': { schema: schemas.length > 0 ? { anyOf: [...schemas, problem] } : problem } },
     };
   }
   operation.responses = responses;
