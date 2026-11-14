@@ -285,6 +285,24 @@ export const EVENTS = {
       },
     },
   },
+  // Pieces the partner had finished its part of, sent back to it by a fail or a correction at a later
+  // workspace step (partner step rules spec, part 3). Never names the customer.
+  'partner.job.reworked': {
+    audience: { kind: 'partner' },
+    channels: ['email', 'feed'],
+    subjectType: 'job_assignment',
+    variables: {
+      product_name: { sample: 'Custom cast part' },
+      quantity: { sample: '10' },
+      pieces: { sample: '2' },
+    },
+    defaults: {
+      en: {
+        subject: '{{ pieces }} pieces of {{ product_name }} came back for rework',
+        body: '{{ pieces }} of the {{ quantity }} × {{ product_name }} you finished came back to you to be redone. You will find them under the job.',
+      },
+    },
+  },
   'partner.job.declined': {
     audience: { kind: 'permission', permission: 'partner.assign' },
     channels: ['email', 'feed'],

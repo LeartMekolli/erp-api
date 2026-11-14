@@ -29,6 +29,8 @@ import { PartnersController } from './partners.controller';
 import { PartnersService } from './partners.service';
 import { PartnerScoreController, PortalRatingsController, RatingsController } from './ratings.controller';
 import { RatingsService } from './ratings.service';
+import { ReworkNoticeHandler } from './rework-notice.handler';
+import { ReworkNoticeService } from './rework-notice.service';
 import { ScoreService } from './score.service';
 import { PortalSetupController, SetupController } from './setup.controller';
 import { SetupService } from './setup.service';
@@ -79,6 +81,8 @@ import { SetupService } from './setup.service';
     ScoreService,
     RatingsService,
     CapacitySnapshotHandler,
+    ReworkNoticeService,
+    ReworkNoticeHandler,
   ],
   exports: [PartnersService, PartnerInvitationsService, SetupService, EligibilityService, JobsService, PartnerQuotesService],
 })

@@ -6,6 +6,9 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
+import { JobsService as QueueJobsService } from '../src/jobs/jobs.service';
+import { DispatchHandler } from '../src/modules/notifications/dispatch.handler';
+import { feedEntrySchema } from '../src/modules/notifications/feed.controller';
 import { downloadUrlResponseSchema } from '../src/modules/files/file-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import {
@@ -13,6 +16,7 @@ import {
   partnerJobResponseSchema,
   partnerJobsResponseSchema,
 } from '../src/modules/partners/partner-response';
+import { ReworkNoticeService } from '../src/modules/partners/rework-notice.service';
 import { moveResponseSchema, transitionListItemSchema, workOrderDetailResponseSchema } from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -37,7 +41,17 @@ interface PartnerJob {
   quantity: number;
   steps: { key: string }[];
   pieces: { active: number; finished: number; scrapped: number };
-  work_orders?: { id: string; label: string; status: string; step_key: string | null }[];
+  work_orders?: { id: string; label: string; status: string; step_key: string | null; to_inspect: boolean | null; stage: string | null }[];
+}
+interface PartnerStep {
+  key: string;
+  sop_file_version_id: string | null;
+  checklist: object[];
+  defects: object[];
+  rework_targets: { key: string; name: string }[];
+  pass: object;
+  fail: object;
+  sampling: object | null;
 }
 interface Transition {
   kind: string;
@@ -84,15 +98,23 @@ describe('partners: working their jobs', () => {
   /**
    * The priced cast part, with packing done in-house; CastCo and MetalWorks approved for the partner
    * steps; Luna's two jobs of 10 silver polished pieces, the first accepted by CastCo, the second only
-   * offered to it.
+   * offered to it. `overrides` changes steps by key before the jobs are made; `sopVersionId` makes a
+   * file in the workspace to use as a step's instructions.
    */
-  async function freshTenant() {
+  async function freshTenant(overrides?: (sopVersionId: () => Promise<string>) => Promise<Record<string, object>>) {
     const tenant = await createTestTenant(prisma);
     createdTenants.push(tenant.id);
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
     const { printPattern, castingTree, casting, polishing } = cast.steps;
+    let sop: string | null = null;
+    const changes = overrides
+      ? await overrides(async () => {
+          sop = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [] })).versionId;
+          return sop;
+        })
+      : {};
 
     // The same steps again, with packing done by the workspace.
     const workflowPath = `/workflow/workflows/${cast.workflow.workflowId}`;
@@ -110,6 +132,7 @@ describe('partners: working their jobs', () => {
           fail: step.fail,
           customer: step.customer,
           done_by: step.key === 'packing' ? 'workspace' : 'partner',
+          ...changes[step.key],
         })),
       })
       .expect(200);
@@ -169,6 +192,7 @@ describe('partners: working their jobs', () => {
       offered,
       castcoPerson,
       metalworksPerson: await partnerPerson(tenant.id, metalworks, 'member'),
+      sop: sop as string | null,
     };
   }
   type Tenant = Awaited<ReturnType<typeof freshTenant>>;
@@ -269,8 +293,8 @@ describe('partners: working their jobs', () => {
     await tenant.castcoPerson.get(`${portal(tenant)}/jobs?status=lost`).expect(400);
 
     const detail = await tenant.castcoPerson.get(`${portal(tenant)}/jobs/${tenant.accepted.group}`).expect(200);
-    expect((detail.body as PartnerJob).work_orders!.map((piece) => [piece.label, piece.step_key])).toEqual(
-      Array.from({ length: 10 }, (_, index) => [`${index + 1}/10`, 'print_pattern']),
+    expect((detail.body as PartnerJob).work_orders!.map((piece) => [piece.label, piece.step_key, piece.to_inspect])).toEqual(
+      Array.from({ length: 10 }, (_, index) => [`${index + 1}/10`, 'print_pattern', null]),
     );
 
     // Review Focus 2: nothing of the customer or the customer's price, anywhere in what the partner gets.
@@ -290,6 +314,200 @@ describe('partners: working their jobs', () => {
     await tenant.metalworksPerson.get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted.group}`).expect(404);
     await tenant.metalworksPerson.get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted.group}/design`).expect(404);
     expect(((await tenant.metalworksPerson.get(`/partner-portal/partners/${tenant.metalworks}/jobs`).expect(200)).body as { data: unknown[] }).data).toEqual([]);
+  });
+
+  it("gives a partner its steps' QC rules, the pieces to inspect and each step's instructions", async () => {
+    const tenant = await freshTenant(async (sopVersionId) => {
+      const sop = await sopVersionId();
+      return {
+        print_pattern: { sampling: { inspect: 1, of_every: 10 }, sop_file_version_id: sop },
+        polishing: { done_by: 'workspace' },
+        packing: { done_by: 'workspace', sop_file_version_id: sop },
+      };
+    });
+    const sop = tenant.sop!;
+    const { defects } = tenant.cast.workflow;
+
+    const detail = await tenant.castcoPerson.get(`${portal(tenant)}/jobs/${tenant.accepted.group}`).expect(200);
+    expectDocumented(partnerJobDetailResponseSchema, detail.body);
+    const job = detail.body as PartnerJob & { steps: PartnerStep[] };
+    // Polishing and packing are in-house.
+    expect(job.steps.map((step) => step.key)).toEqual(['print_pattern', 'casting_tree', 'casting', 'final_qc']);
+    expect(job.steps[0]).toMatchObject({ sop_file_version_id: sop, sampling: { inspect: 1, of_every: 10 }, checklist: [] });
+    expect(job.steps.find((step) => step.key === 'casting')).toMatchObject({
+      defects: [
+        { id: defects.porosity, key: 'porosity', name: 'Porosity', outcome: 'rework', rework_to: 'casting' },
+        { id: defects.crack, key: 'crack', name: 'Crack', outcome: 'scrap', rework_to: null },
+      ],
+      rework_targets: [{ key: 'casting', name: 'Casting' }],
+      sampling: null,
+    });
+    expect(job.steps.find((step) => step.key === 'final_qc')).toMatchObject({
+      checklist: [{ key: 'weight', kind: 'number', unit: 'g', min: '4.8', max: '5.2', required: true }],
+      pass: { min_photos: 1, comment_required: false },
+      // Polishing is the workspace's: named, never its rules.
+      rework_targets: [{ key: 'polishing', name: 'Polishing' }],
+      defects: [{ id: defects.scratch, key: 'scratch', name: 'Scratch', outcome: 'rework', rework_to: 'polishing' }],
+    });
+    // No staff-only settings, and nothing of the in-house steps' checks.
+    for (const secret of ['required_skill_id', 'expected_minutes', 'done_by', 'step_type', '"customer"', '"surface"']) {
+      expect({ secret, found: detail.text.includes(secret) }).toEqual({ secret, found: false });
+    }
+
+    // One of every ten pieces at the sampling step is drawn, and the QC gate agrees.
+    const drawn = job.work_orders!.filter((piece) => piece.to_inspect === true).map((piece) => piece.id);
+    const leftOut = job.work_orders!.filter((piece) => piece.to_inspect === false).map((piece) => piece.id);
+    expect([drawn.length, leftOut.length]).toEqual([1, 9]);
+    const uninspected = (ids: string[]) => ({ work_order_ids: ids, kind: 'pass', at_step: 'print_pattern', inspected: false });
+    await tenant.castcoPerson.post(`${portal(tenant)}/moves`, uninspected(drawn)).expect(409);
+    // The rest go through without inspection once the drawn piece has passed in full.
+    await tenant.castcoPerson.post(`${portal(tenant)}/moves`, { work_order_ids: drawn, kind: 'pass', at_step: 'print_pattern' }).expect(200);
+    await tenant.castcoPerson.post(`${portal(tenant)}/moves`, uninspected(leftOut)).expect(200);
+
+    const instructions = (group: string, key: string) => `${portal(tenant)}/jobs/${group}/steps/${key}/sop`;
+    const link = await tenant.castcoPerson.get(instructions(tenant.accepted.group, 'print_pattern')).expect(200);
+    expectDocumented(downloadUrlResponseSchema, link.body);
+    expect((link.body as { url: string }).url).toMatch(/^https?:\/\//);
+    // Only offered, no instructions, the workspace's step, an unknown step, another partner.
+    await tenant.castcoPerson.get(instructions(tenant.offered.group, 'print_pattern')).expect(404);
+    await tenant.castcoPerson.get(instructions(tenant.accepted.group, 'casting')).expect(404);
+    await tenant.castcoPerson.get(instructions(tenant.accepted.group, 'packing')).expect(404);
+    await tenant.castcoPerson.get(instructions(tenant.accepted.group, 'nope')).expect(404);
+    await tenant.metalworksPerson
+      .get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted.group}/steps/print_pattern/sop`)
+      .expect(404);
+  });
+
+  it('says where each piece stands: with the partner, not with it yet, or its part done', async () => {
+    const tenant = await freshTenant(async () => ({ casting_tree: { done_by: 'workspace' }, final_qc: { done_by: 'workspace' } }));
+    const moves = `${portal(tenant)}/moves`;
+    const stages = async () => (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.stage);
+
+    expect(await stages()).toEqual(Array(10).fill('yours'));
+    const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+
+    // The casting tree is the workspace's, between two of the partner's steps.
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'print_pattern' }).expect(200);
+    expect(await stages()).toEqual(Array(10).fill('not_yet'));
+
+    await tenant.staff.post('/workflow/moves', { work_order_ids: ids, kind: 'pass', at_step: 'casting_tree' }).expect(200);
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids.slice(0, 3), kind: 'pass', at_step: 'casting' }).expect(200);
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids.slice(0, 3), kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+    // Final QC and packing are the workspace's, and nothing of the partner's is left after them.
+    expect(await stages()).toEqual([...Array(3).fill('done'), ...Array(7).fill('yours')]);
+  });
+
+  it("lists a job as finished once the partner's part is done, and accepted again when a piece comes back", async () => {
+    const tenant = await freshTenant(async () => ({ final_qc: { done_by: 'workspace' } }));
+    const moves = `${portal(tenant)}/moves`;
+    const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+    for (const at_step of ['print_pattern', 'casting_tree', 'casting']) {
+      await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step }).expect(200);
+    }
+    await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+
+    const statusOf = async () => {
+      const listed = await tenant.castcoPerson.get(`${portal(tenant)}/jobs`).expect(200);
+      expectDocumented(partnerJobsResponseSchema, listed.body);
+      return (listed.body as { data: PartnerJob[] }).data.find((job) => job.id === tenant.accepted.group)!.status;
+    };
+    const filtered = async (status: string) =>
+      ((await tenant.castcoPerson.get(`${portal(tenant)}/jobs?status=${status}`).expect(200)).body as { data: PartnerJob[] }).data.map((job) => job.id);
+
+    // Every piece waits at the workspace's final QC: active, but the partner's part is done.
+    expect((await pieces(tenant, tenant.accepted.group)).map((piece) => piece.stage)).toEqual(Array(10).fill('done'));
+    expect(await statusOf()).toBe('finished');
+    expect(await filtered('finished')).toEqual([tenant.accepted.group]);
+    expect(await filtered('accepted')).toEqual([]);
+
+    // Staff send one back to polishing: the job is the partner's again.
+    await tenant.staff
+      .post('/workflow/moves', { work_order_ids: [ids[0]], kind: 'correction', to_step: 'polishing', comment: 'Back for a polish' })
+      .expect(200);
+    expect((await pieces(tenant, tenant.accepted.group))[0].stage).toBe('yours');
+    expect(await statusOf()).toBe('accepted');
+    expect(await filtered('accepted')).toEqual([tenant.accepted.group]);
+    expect(await filtered('finished')).toEqual([]);
+  });
+
+  it('tells the partner when pieces it finished come back', async () => {
+    // No worker runs here: the test reads what a move queued and runs the notice as the job would.
+    const enqueue = jest.spyOn(app.get(QueueJobsService), 'enqueue');
+    try {
+      const tenant = await freshTenant(async () => ({ final_qc: { done_by: 'workspace' } }));
+      const moves = `${portal(tenant)}/moves`;
+      const ids = (await pieces(tenant, tenant.accepted.group)).map((piece) => piece.id);
+      for (const at_step of ['print_pattern', 'casting_tree', 'casting']) {
+        await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step }).expect(200);
+      }
+      await tenant.castcoPerson.post(moves, { work_order_ids: ids, kind: 'pass', at_step: 'polishing', answers: surfaceOk }).expect(200);
+      const queued = () =>
+        enqueue.mock.calls.filter(([name]) => name === 'partners.rework_notice').map(([, payload]) => payload as { tenantId: string; groupIds: string[]; moveId: string });
+      const notices = () => prisma.inTenant(tenant.id, (tx) => tx.notification.findMany({ where: { eventKey: 'partner.job.reworked' } }));
+      // Review Focus 14: a pass never sends a piece back.
+      expect(queued()).toEqual([]);
+
+      // Staff send two finished pieces back from the workspace's final QC to polishing.
+      await tenant.staff
+        .post('/workflow/moves', { work_order_ids: ids.slice(0, 2), kind: 'correction', to_step: 'polishing', comment: 'Back for a polish' })
+        .expect(200);
+      const [sentBack] = queued();
+      expect(sentBack).toMatchObject({ tenantId: tenant.id, groupIds: [tenant.accepted.group] });
+      await app.get(ReworkNoticeService).notify(sentBack.tenantId, sentBack.moveId);
+      const held = await prisma.inTenant(tenant.id, (tx) =>
+        tx.jobAssignment.findFirstOrThrow({ where: { groupId: tenant.accepted.group, partnerId: tenant.castco, status: 'accepted' } }),
+      );
+      const [notice] = await notices();
+      expect(notice).toMatchObject({ subjectType: 'job_assignment', subjectId: held.id, payload: { pieces: '2', quantity: '10' } });
+
+      // A correction between the partner's own steps sends nothing back: no notice.
+      await tenant.staff
+        .post('/workflow/moves', { work_order_ids: [ids[0]], kind: 'correction', to_step: 'casting', comment: 'Recast it' })
+        .expect(200);
+      const [, withinPartner] = queued();
+      await app.get(ReworkNoticeService).notify(withinPartner.tenantId, withinPartner.moveId);
+      expect(await notices()).toHaveLength(1);
+    } finally {
+      enqueue.mockRestore();
+    }
+  });
+
+  it("opens the job from a notice about a hand-over, the partner's and staff's alike", async () => {
+    const tenant = await freshTenant();
+    await tenant.castcoPerson.post(`${portal(tenant)}/jobs/${tenant.offered.group}/decline`).expect(200);
+    // No worker runs here: deliver the workspace's notices as the dispatch job would.
+    const pending = await prisma.inTenant(tenant.id, (tx) => tx.notification.findMany({ where: { status: 'pending' }, select: { id: true } }));
+    for (const { id } of pending) {
+      await app.get(DispatchHandler).handle({ tenantId: tenant.id, notificationId: id });
+    }
+    type Entry = { event_key: string; job: { id: string; partner_id: string } | null };
+    const feed = async (person: Person) => {
+      const response = await person.get('/notifications').expect(200);
+      expectDocumented(pageSchema(feedEntrySchema), response.body);
+      return (response.body as { data: Entry[] }).data;
+    };
+
+    // CastCo was offered both jobs.
+    const castco = await feed(tenant.castcoPerson);
+    expect(castco.filter((entry) => entry.event_key === 'partner.job.offered').map((entry) => entry.job)).toEqual(
+      expect.arrayContaining([
+        { id: tenant.accepted.group, partner_id: tenant.castco },
+        { id: tenant.offered.group, partner_id: tenant.castco },
+      ]),
+    );
+    // Staff hear CastCo declined the second, and open that job.
+    const declined = (await feed(tenant.staff)).find((entry) => entry.event_key === 'partner.job.declined');
+    expect(declined?.job).toEqual({ id: tenant.offered.group, partner_id: tenant.castco });
+  });
+
+  it("keeps the workspace's own sampling from the partner", async () => {
+    const tenant = await freshTenant(async () => ({ print_pattern: { done_by: 'workspace', sampling: { inspect: 1, of_every: 10 } } }));
+    const detail = await tenant.castcoPerson.get(`${portal(tenant)}/jobs/${tenant.accepted.group}`).expect(200);
+    expectDocumented(partnerJobDetailResponseSchema, detail.body);
+    const job = detail.body as PartnerJob;
+    expect(job.steps.map((step) => step.key)).not.toContain('print_pattern');
+    // Every piece is at the workspace's sampling step: none says whether it was drawn.
+    expect(job.work_orders!.map((piece) => [piece.step_key, piece.to_inspect])).toEqual(Array.from({ length: 10 }, () => ['print_pattern', null]));
   });
 
   it("moves the partner's pieces through its own steps behind the QC gate, and records the partner on each move", async () => {

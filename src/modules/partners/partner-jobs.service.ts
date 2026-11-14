@@ -5,37 +5,75 @@ import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
-import type { JobAssignment, Prisma } from '../../generated/prisma/client';
+import { Prisma } from '../../generated/prisma/client';
+import type { JobAssignment, WorkOrderGroup } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { PartnerAuth } from '../identity/auth-context';
 import { notWaitingForPayment } from '../orders/payment-hold';
+import type { WorkflowStepRow } from '../workflow/coverage';
 import { pathFor } from '../workflow/path';
+import { groupProgress, inRework, stepTotals } from '../workflow/progress';
+import type { MoveFacts } from '../workflow/progress';
+import { toInspect } from '../workflow/sampling';
+import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse } from './partner-response';
+import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules, PartnerWorkOrderResponse } from './partner-response';
+import { stageOf } from './partner-stage';
+import { actorOf, handedOverAt, partnerTransitionInclude, toPartnerTransition } from './partner-view';
 
 export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
 export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
 
 type Tx = Prisma.TransactionClient;
 type PartnerJobStatus = PartnerJobResponse['status'];
+type PartnerLastMove = NonNullable<PartnerJobDetailResponse['work_orders'][number]['last_move']>;
+type PieceMove = MoveFacts & { workOrderId: string; createdAt: Date };
 
 /** Jobs the partner is offered or has accepted: its current row of each. */
 const OPEN = ['offered', 'accepted'];
 
-/** The partner's rows of the jobs in one status, decided in the query so a page is never short. */
-function statusWhere(status: PartnerJobStatus | undefined): Prisma.JobAssignmentWhereInput {
+/**
+ * The partner's rows of the jobs in one status, decided in the query so a page is never short. `open` is
+ * the partner's accepted jobs it still has work on (`openForPartner`), read when the filter needs it.
+ */
+function statusWhere(status: PartnerJobStatus | undefined, open: Set<string>): Prisma.JobAssignmentWhereInput {
   switch (status) {
     case 'offered':
       return { status: 'offered' };
     case 'accepted':
-      return { status: 'accepted', group: { workOrders: { some: { status: 'active' } } } };
+      return { status: 'accepted', groupId: { in: [...open] } };
     case 'finished':
-      return { status: 'accepted', group: { workOrders: { none: { status: 'active' } } } };
+      return { status: 'accepted', groupId: { notIn: [...open] } };
     default:
       return { status: { in: OPEN } };
   }
+}
+
+/**
+ * The groups, of those given or of the partner's accepted jobs, with an active piece the partner still has
+ * work on: at a partner step, or with one later on its path (`stageOf`'s `yours` or `not_yet`). The path is
+ * as `pathFor` decides: a priced step runs only when the group's chain names its step type, or there is no
+ * chain. One query, whatever the number of jobs.
+ */
+export async function openForPartner(tx: Tx, scope: { groupIds: string[] } | { partnerId: string }): Promise<Set<string>> {
+  if ('groupIds' in scope && scope.groupIds.length === 0) return new Set();
+  const groups =
+    'groupIds' in scope
+      ? Prisma.sql`w.group_id IN (${Prisma.join(scope.groupIds.map((id) => Prisma.sql`${id}::uuid`))})`
+      : Prisma.sql`w.group_id IN (SELECT group_id FROM job_assignment WHERE partner_id = ${scope.partnerId}::uuid AND status = 'accepted')`;
+  const rows = await tx.$queryRaw<{ group_id: string }[]>`
+    SELECT DISTINCT w.group_id FROM work_order w
+    JOIN work_order_group g ON g.id = w.group_id
+    JOIN workflow_step cur ON cur.id = w.current_step_id
+    WHERE ${groups} AND w.status = 'active'
+      AND EXISTS (
+        SELECT 1 FROM workflow_step s
+        WHERE s.version_id = g.workflow_version_id AND s.done_by = 'partner' AND s.position >= cur.position
+          AND (NOT s.priced OR g.chain_step_type_ids IS NULL OR g.chain_step_type_ids @> to_jsonb(s.step_type_id::text))
+      )`;
+  return new Set(rows.map((row) => row.group_id));
 }
 
 /**
@@ -56,10 +94,12 @@ export class PartnerJobsService {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const filtersOpen = query.status === 'accepted' || query.status === 'finished';
+      const open = filtersOpen ? await openForPartner(tx, { partnerId: auth.partnerId }) : new Set<string>();
       const rows = await tx.jobAssignment.findMany({
         where: {
           partnerId: auth.partnerId,
-          ...statusWhere(query.status),
+          ...statusWhere(query.status, open),
           ...(after ? { id: { lt: after.id } } : {}),
           AND: [{ group: notWaitingForPayment }],
         },
@@ -73,24 +113,144 @@ export class PartnerJobsService {
 
   async detail(auth: PartnerAuth, groupId: string): Promise<PartnerJobDetailResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const [job] = await this.views(tx, [await this.find(tx, auth, groupId, OPEN)]);
-      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId }, select: { quantity: true } });
+      const held = await this.find(tx, auth, groupId, OPEN);
+      const [job] = await this.views(tx, [held]);
+      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
       const pieces = await tx.workOrder.findMany({
         where: { groupId, status: { not: 'cancelled' } },
         orderBy: { id: 'asc' },
         include: { currentStep: { select: { key: true } } },
       });
+      const steps = await versionSteps(tx, group);
+      const own = partnerPath(steps, group);
+      const path = pathOf(steps, group);
+      // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
+      const mine = new Set(own.map((step) => step.id));
+      const inspect = await toInspect(tx, pieces.filter((piece) => piece.currentStepId !== null && mine.has(piece.currentStepId)));
+      const histories = await movesOf(tx, groupId);
+
+      // A partner that may still decline sees nothing of earlier work, and one that holds the job only what
+      // was done since it came to it (spec, part 2).
+      const accepted = held.status === 'accepted';
+      const since = handedOverAt(held);
+      const counted = accepted ? [...histories.values()].flat().filter((move) => move.createdAt >= since) : [];
+      const totals = stepTotals([...mine], counted);
+      const progress = groupProgress(
+        own,
+        pieces.map((piece) => ({ ...piece, history: histories.get(piece.id) ?? [] })),
+      );
+      const lastIds = accepted ? pieces.flatMap((piece) => histories.get(piece.id)?.slice(-1).map((move) => move.id) ?? []) : [];
+      const checkIds = [...totals.values()].flatMap((total) => (total.latestCheckId === null ? [] : [total.latestCheckId]));
+      const named = new Map(
+        (lastIds.length + checkIds.length > 0
+          ? await tx.transition.findMany({ where: { id: { in: [...lastIds, ...checkIds] } }, include: partnerTransitionInclude })
+          : []
+        ).map((row) => [row.id, row]),
+      );
+      const lasts = new Map(lastIds.map((id) => [named.get(id)!.workOrderId, named.get(id)!]));
+      const defectIds = [...new Set([...totals.values()].flatMap((total) => [...total.defectCounts.keys()]))];
+      const defects = new Map(
+        (defectIds.length > 0 ? await tx.defect.findMany({ where: { id: { in: defectIds } }, select: { id: true, key: true, name: true } }) : []).map(
+          (row) => [row.id, row],
+        ),
+      );
+      const rules = await stepRules(tx, steps, group);
+
       return {
         ...job,
-        work_orders: pieces.map((piece) => ({
-          id: piece.id,
-          label: `${piece.number}/${group.quantity}`,
-          status: piece.status as PartnerJobDetailResponse['work_orders'][number]['status'],
-          step_key: piece.currentStep?.key ?? null,
-        })),
+        steps: rules.map((rule, index) => {
+          const total = totals.get(own[index].id)!;
+          const check = total.latestCheckId === null ? undefined : named.get(total.latestCheckId);
+          return {
+            ...rule,
+            count: progress.steps[index].count,
+            in_rework: progress.steps[index].in_rework,
+            passed: total.passed,
+            failed: total.failed,
+            not_inspected: total.not_inspected,
+            defect_counts: [...total.defectCounts]
+              .map(([id, count]) => ({ key: defects.get(id)!.key, name: defects.get(id)!.name, count }))
+              .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+            latest_check: check
+              ? {
+                  move_id: check.moveId,
+                  actor: actorOf(auth, check),
+                  created_at: check.createdAt.toISOString(),
+                  photos: check.photos.map((photo) => ({ file_id: photo.fileVersion.fileId, file_version_id: photo.fileVersionId })),
+                }
+              : null,
+          };
+        }),
+        work_orders: pieces.map((piece) => {
+          const last = lasts.get(piece.id);
+          return {
+            id: piece.id,
+            label: `${piece.number}/${group.quantity}`,
+            status: piece.status as PartnerJobDetailResponse['work_orders'][number]['status'],
+            step_key: piece.currentStep?.key ?? null,
+            to_inspect: inspect.get(piece.id) ?? null,
+            in_rework: piece.status === 'active' && inRework(histories.get(piece.id) ?? []) !== null,
+            stage: stageOf(path, piece),
+            last_move: last
+              ? {
+                  kind: last.kind as PartnerLastMove['kind'],
+                  outcome: last.outcome as PartnerLastMove['outcome'],
+                  from_step: last.fromStep ? { id: last.fromStep.id, key: last.fromStep.key, name: last.fromStep.name } : null,
+                  defect: last.defect,
+                  actor: actorOf(auth, last),
+                  created_at: last.createdAt.toISOString(),
+                }
+              : null,
+          };
+        }),
         summary: await jobSummaryOf(tx, groupId),
       };
     });
+  }
+
+  /** One piece of a job the partner holds, with every move it has had; any other piece is not found. */
+  async workOrder(auth: PartnerAuth, groupId: string, workOrderId: string): Promise<PartnerWorkOrderResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await this.find(tx, auth, groupId, ['accepted']);
+      const piece = await tx.workOrder.findFirst({
+        where: { id: workOrderId, groupId },
+        include: { currentStep: { select: { key: true, name: true } }, group: true },
+      });
+      if (!piece) {
+        throw new NotFoundException('Work order not found');
+      }
+      const steps = await versionSteps(tx, piece.group);
+      const byId = new Map(steps.map((step) => [step.id, step]));
+      const mine = new Set(partnerPath(steps, piece.group).map((step) => step.id));
+      const history = await tx.transition.findMany({ where: { workOrderId }, include: partnerTransitionInclude, orderBy: { id: 'asc' } });
+      // Only at the partner's own steps: whether the workspace samples at its steps stays with staff.
+      const inspect = piece.currentStepId !== null && mine.has(piece.currentStepId) ? await toInspect(tx, [piece]) : new Map<string, boolean | null>();
+      return {
+        id: piece.id,
+        label: `${piece.number}/${piece.group.quantity}`,
+        status: piece.status as PartnerWorkOrderResponse['status'],
+        step: piece.currentStep,
+        to_inspect: inspect.get(piece.id) ?? null,
+        in_rework: piece.status === 'active' && inRework(history) !== null,
+        path: pathFor(stepsForPath(steps), chainOf(piece.group)).map((id) => ({ key: byId.get(id)!.key, name: byId.get(id)!.name })),
+        history: history.map((row) => toPartnerTransition(auth, row)),
+      };
+    });
+  }
+
+  /** A short-lived link to the instructions of one of the partner's steps on a job it has accepted. */
+  async sop(auth: PartnerAuth, groupId: string, stepKey: string): Promise<{ url: string; expires_at: string }> {
+    const version = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      await this.find(tx, auth, groupId, ['accepted']);
+      const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
+      const step = partnerPath(await versionSteps(tx, group), group).find((one) => one.key === stepKey);
+      if (!step?.sopFileVersionId) return null;
+      return tx.fileVersion.findUniqueOrThrow({ where: { id: step.sopFileVersionId }, select: { id: true, fileId: true } });
+    });
+    if (!version) {
+      throw new NotFoundException('Step instructions not found');
+    }
+    return this.files.downloadUrl(auth.tenantId, version.fileId, version.id);
   }
 
   /** A short-lived link to the job's design file; only once the partner has accepted the job. */
@@ -135,24 +295,23 @@ export class PartnerJobsService {
       where: { versionId: { in: [...new Set(groups.map((group) => group.workflowVersionId))] } },
       include: { stepType: true },
     });
-    const stepById = new Map(steps.map((step) => [step.id, step]));
     const counts = await tx.workOrder.groupBy({
       by: ['groupId', 'status'],
       where: { groupId: { in: groups.map((group) => group.id) } },
       _count: { _all: true },
     });
     const options = await chosenOptions(tx, groups);
+    // Finished once the partner's part is done, though pieces may still be at the workspace's steps.
+    const open = await openForPartner(tx, { groupIds: groups.map((group) => group.id) });
 
     return rows.map((row) => {
       const group = groupById.get(row.groupId)!;
-      const partnerSteps = pathFor(stepsForPath(steps.filter((step) => step.versionId === group.workflowVersionId)), chainOf(group))
-        .map((id) => stepById.get(id)!)
-        .filter((step) => step.doneBy === 'partner');
+      const partnerSteps = partnerPath(steps.filter((step) => step.versionId === group.workflowVersionId), group);
       const count = (status: string) => counts.find((one) => one.groupId === group.id && one.status === status)?._count._all ?? 0;
       const active = count('active');
       return {
         id: group.id,
-        status: row.status === 'offered' ? 'offered' : active > 0 ? 'accepted' : 'finished',
+        status: row.status === 'offered' ? 'offered' : open.has(group.id) ? 'accepted' : 'finished',
         offered_at: row.createdAt.toISOString(),
         expires_at: row.expiresAt?.toISOString() ?? null,
         due_on: row.dueOn?.toISOString().slice(0, 10) ?? null,
@@ -166,7 +325,71 @@ export class PartnerJobsService {
       };
     });
   }
+}
 
+/** The facts of every move on the group's pieces, per piece, in move order (id order), in one query. */
+async function movesOf(tx: Tx, groupId: string): Promise<Map<string, PieceMove[]>> {
+  const rows = await tx.transition.findMany({
+    where: { workOrder: { groupId } },
+    select: { id: true, workOrderId: true, kind: true, outcome: true, fromStepId: true, defectId: true, inspected: true, createdAt: true },
+    orderBy: { id: 'asc' },
+  });
+  const histories = new Map<string, PieceMove[]>();
+  for (const row of rows) {
+    const history = histories.get(row.workOrderId);
+    if (history) {
+      history.push(row);
+    } else {
+      histories.set(row.workOrderId, [row]);
+    }
+  }
+  return histories;
+}
+
+/** The steps of the group's workflow version. */
+export function versionSteps(tx: Tx, group: WorkOrderGroup): Promise<WorkflowStepRow[]> {
+  return tx.workflowStep.findMany({ where: { versionId: group.workflowVersionId }, include: { stepType: true } });
+}
+
+/** Every step on the group's path, in order; `steps` are those of the group's version. */
+export function pathOf(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
+  const stepById = new Map(steps.map((step) => [step.id, step]));
+  return pathFor(stepsForPath(steps), chainOf(group)).map((id) => stepById.get(id)!);
+}
+
+/** The partner's steps on the group's path, in path order. */
+function partnerPath(steps: WorkflowStepRow[], group: WorkOrderGroup): WorkflowStepRow[] {
+  return pathOf(steps, group).filter((step) => step.doneBy === 'partner');
+}
+
+/**
+ * What the QC gate asks for at each of the partner's steps on the group's path. A rework target the
+ * workspace does is named, nothing more.
+ */
+async function stepRules(tx: Tx, steps: WorkflowStepRow[], group: WorkOrderGroup): Promise<PartnerStepRules[]> {
+  const mine = partnerPath(steps, group).map((step) => ({ step, config: step.config as StepConfig }));
+  const defectIds = [...new Set(mine.flatMap(({ config }) => config.defects.map((defect) => defect.defect_id)))];
+  const defects = new Map(
+    (await tx.defect.findMany({ where: { id: { in: defectIds } }, select: { id: true, key: true, name: true } })).map((row) => [row.id, row]),
+  );
+  const nameOf = new Map(steps.map((step) => [step.key, step.name]));
+  return mine.map(({ step, config }) => ({
+    key: step.key,
+    name: step.name,
+    sop_file_version_id: step.sopFileVersionId,
+    checklist: config.checklist,
+    defects: config.defects.map((defect) => ({
+      id: defect.defect_id,
+      key: defects.get(defect.defect_id)!.key,
+      name: defects.get(defect.defect_id)!.name,
+      outcome: defect.outcome,
+      rework_to: defect.rework_to ?? null,
+    })),
+    rework_targets: config.rework_targets.map((key) => ({ key, name: nameOf.get(key) ?? key })),
+    pass: config.pass,
+    fail: config.fail,
+    sampling: config.sampling ?? null,
+  }));
 }
 
 /**

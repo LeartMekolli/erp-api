@@ -15,8 +15,8 @@ import type { MoveResponse } from '../workflow/work-order-response';
 import { JobsService } from './jobs.service';
 import { PartnerJobsService, partnerJobsQuerySchema } from './partner-jobs.service';
 import type { PartnerJobsQuery } from './partner-jobs.service';
-import { partnerJobDetailResponseSchema, partnerJobsResponseSchema, portalOwedResponseSchema } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse, PortalOwedResponse } from './partner-response';
+import { partnerJobDetailResponseSchema, partnerJobsResponseSchema, partnerWorkOrderResponseSchema, portalOwedResponseSchema } from './partner-response';
+import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerWorkOrderResponse, PortalOwedResponse } from './partner-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -79,7 +79,10 @@ export class PartnerJobsController {
   }
 
   @ApiDoc({
-    summary: "One of the partner's jobs, with each of its pieces and the step it is at.",
+    summary: "One of the partner's jobs, with its steps' QC rules and each of its pieces.",
+    description:
+      "Each of the partner's steps says what a pass or fail there needs; a step the workspace does is only named, as a rework target. " +
+      '`to_inspect` says which pieces at a sampling step must be inspected.',
     response: partnerJobDetailResponseSchema,
     errors: [400, 404],
   })
@@ -99,6 +102,40 @@ export class PartnerJobsController {
   @Get('jobs/:groupId/design')
   design(@CurrentPartner() partner: PartnerAuth, @Param('groupId', idParam) groupId: string): Promise<{ url: string; expires_at: string }> {
     return this.jobs.design(partner, groupId);
+  }
+
+  @ApiDoc({
+    summary: "One piece of the partner's job, with every move it has had, oldest first.",
+    description:
+      "Only for a job the partner has accepted and still holds, and a piece of it; else a 404. Names and what was written show only on moves the partner's own people made.",
+    response: partnerWorkOrderResponseSchema,
+    errors: [400, 404],
+  })
+  @PartnerAccess('member')
+  @Get('jobs/:groupId/work-orders/:workOrderId')
+  workOrder(
+    @CurrentPartner() partner: PartnerAuth,
+    @Param('groupId', idParam) groupId: string,
+    @Param('workOrderId', idParam) workOrderId: string,
+  ): Promise<PartnerWorkOrderResponse> {
+    return this.jobs.workOrder(partner, groupId, workOrderId);
+  }
+
+  @ApiDoc({
+    summary: "A short-lived download link for one of the partner's steps' instructions.",
+    description:
+      'Only for a job the partner has accepted and a step it does on that job; otherwise, or when the step has no instructions, a 404.',
+    response: downloadUrlResponseSchema,
+    errors: [400, 404],
+  })
+  @PartnerAccess('member')
+  @Get('jobs/:groupId/steps/:stepKey/sop')
+  sop(
+    @CurrentPartner() partner: PartnerAuth,
+    @Param('groupId', idParam) groupId: string,
+    @Param('stepKey') stepKey: string,
+  ): Promise<{ url: string; expires_at: string }> {
+    return this.jobs.sop(partner, groupId, stepKey);
   }
 
   @ApiDoc({

@@ -130,6 +130,8 @@ interface DemoOrder {
   quality?: true;
   /** The line is moved to this partner part-way, after the first partner's moves. */
   handOver?: string;
+  /** Its first line's pieces wait at the workspace's own final check, but for one sent back to the partner. */
+  sendBack?: true;
 }
 
 /** The situations the Orders screen is tested with; the comment is what staff see. */
@@ -195,6 +197,8 @@ const ORDERS: DemoOrder[] = [
   },
   // In production, handed from one foundry to another after a failure: the second one's History shows the first one's moves.
   { key: 'handed-over', customer: 'Kestrel Labs', lines: [cast('silver_925', 'polished', '1', 6)], paid: true, partner: NORTHCAST, progress: 'production', promised: 8, handOver: EMBERLINE },
+  // In production, with the workshop's part done but for one piece staff sent back from the in-house final check.
+  { key: 'in-house-qc', customer: 'Luna Jewels', lines: [print('resin_standard', 'raw', '1', 8)], paid: true, partner: LAYERLINE, progress: 'production', promised: 6, sendBack: true },
 ];
 
 const HOUR_MS = 3_600_000;
@@ -365,8 +369,12 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
   };
   const designId = context.designId!;
 
-  /** Passes the group's pieces through every step of their path, a step at a time, as staff at the workshop's steps. */
-  const finishPieces = async (groupId: string) => {
+  /**
+   * Passes the group's pieces through every step of their path, a step at a time, as staff at the workshop's
+   * steps. With `toWorkspace`, stops once they reach a step the workspace does. Answers the last step passed.
+   */
+  const finishPieces = async (groupId: string, options: { toWorkspace?: true } = {}): Promise<string | null> => {
+    let last: string | null = null;
     for (let round = 0; round < 50; round++) {
       const next = await prisma.inTenant(tenantId, async (tx) => {
         const pieces = await tx.workOrder.findMany({ where: { groupId, status: 'active' }, include: { currentStep: true } });
@@ -375,7 +383,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
         const step = steps.reduce((first, candidate) => (candidate.position < first.position ? candidate : first));
         return { step, ids: pieces.filter((piece) => piece.currentStepId === step.id).map((piece) => piece.id) };
       });
-      if (!next) return;
+      if (!next || (options.toWorkspace && next.step.doneBy === 'workspace')) return last;
       const config = next.step.config as StepConfig;
       if (config.pass.min_photos > 1) {
         throw new Error(`Demo orders attach one photo; step ${next.step.key} needs ${config.pass.min_photos}`);
@@ -389,8 +397,25 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
         ...(config.pass.comment_required ? { comment: COMMENT } : {}),
         inspected: true,
       });
+      last = next.step.key;
     }
     throw new Error(`The pieces of group ${groupId} did not finish`);
+  };
+
+  /**
+   * Takes the group's pieces through the workshop's steps to the workspace's own final check, then staff
+   * send the first piece back to the workshop's last step: its part is done for all but that one.
+   */
+  const sendBack = async (groupId: string) => {
+    const lastPartnerStep = await finishPieces(groupId, { toWorkspace: true });
+    const first = await prisma.inTenant(tenantId, (tx) => tx.workOrder.findFirstOrThrow({ where: { groupId }, orderBy: { id: 'asc' } }));
+    await deps.moves.move(staff, {
+      work_order_ids: [first.id],
+      kind: 'correction',
+      to_step: lastPartnerStep!,
+      comment: 'The edge needs another pass before the final check.',
+      inspected: true,
+    });
   };
 
   /**
@@ -501,6 +526,9 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     }
     if (order.handOver) {
       await handOver(placed.lines[0].group_id!, order.partner!, order.handOver);
+    }
+    if (order.sendBack) {
+      await sendBack(placed.lines[0].group_id!);
     }
     if (order.quality) {
       await failSome(placed.lines[0].group_id!);

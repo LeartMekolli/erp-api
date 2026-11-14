@@ -3,7 +3,10 @@ import { pageSchema } from '../../common/pagination/page';
 import { stepPriceResponseSchema } from '../pricing/pricing-response';
 import { quotePriceSchema } from '../pricing/quote-response';
 import { actionResponseSchema, moveHistoryResponseSchema } from '../workflow/move-history-response';
+import { WORK_ORDER_STATUSES, lastMoveSchema, transitionResponseSchema } from '../workflow/work-order-response';
+import { OUTCOMES, checklistItemSchema } from '../workflow/workflow-config';
 import { jobSummaryResponseSchema } from './job-summary-response';
+import { PARTNER_STAGES } from './partner-stage';
 import { PARTNER_ROLES } from './partner-roles';
 
 // What clients receive for partners; checked against real responses in the e2e tests.
@@ -195,7 +198,10 @@ export const PARTNER_JOB_STATUSES = ['offered', 'accepted', 'finished'] as const
 export const partnerJobResponseSchema = z.strictObject({
   /** The job's id: its work order group. */
   id: z.uuid(),
-  /** Offered and waiting for an answer, accepted and in production, or finished: no piece left to make. */
+  /**
+   * Offered and waiting for an answer, accepted and in production, or finished: no piece left for the
+   * partner, though some may still be at the workspace's steps. A piece sent back makes it accepted again.
+   */
   status: z.enum(PARTNER_JOB_STATUSES),
   offered_at: z.iso.datetime(),
   /** When an offer lapses; null for a job handed over without one. */
@@ -219,8 +225,102 @@ export type PartnerJobResponse = z.infer<typeof partnerJobResponseSchema>;
 /** A page of the partner's jobs, newest hand-over first. */
 export const partnerJobsResponseSchema = pageSchema(partnerJobResponseSchema);
 
-/** A job with each of its pieces, so the partner knows which to move. */
+const evidenceSchema = z.strictObject({ min_photos: z.number().int(), comment_required: z.boolean() });
+
+export const PARTNER_ACTORS = ['own', 'workspace', 'other_partner'] as const;
+export type PartnerActor = (typeof PARTNER_ACTORS)[number];
+
+/** Who made a move, as a partner reads it: `own`, one of its people, named; `workspace`: staff; `other_partner`: another partner's people. */
+export const partnerActorSchema = z.strictObject({ kind: z.enum(PARTNER_ACTORS), name: z.string().nullable() });
+
+/** A piece's latest move, as a partner reads who made it. */
+export const partnerLastMoveSchema = lastMoveSchema.omit({ actor: true, partner: true }).extend({ actor: partnerActorSchema });
+
+/**
+ * A move of a piece as a partner reads it: as staff see it, but `comment`, `override_reason` and each
+ * answer's `note` only on moves its own people made, else null. No user ids and no partner.
+ */
+export const partnerTransitionResponseSchema = transitionResponseSchema.omit({ actor: true, partner: true }).extend({ actor: partnerActorSchema });
+export type PartnerTransitionResponse = z.infer<typeof partnerTransitionResponseSchema>;
+
+/** One piece of a job the partner holds, with every move it has had, from before the hand-over too. */
+export const partnerWorkOrderResponseSchema = z.strictObject({
+  id: z.uuid(),
+  /** Such as 3/10. */
+  label: z.string(),
+  status: z.enum(WORK_ORDER_STATUSES),
+  /** Where the piece is now; null once it is finished, scrapped or cancelled. */
+  step: z.strictObject({ key: z.string(), name: z.string() }).nullable(),
+  /** Null unless the piece is active at one of the partner's steps that samples; else whether it must be inspected in full. */
+  to_inspect: z.boolean().nullable(),
+  /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */
+  in_rework: z.boolean(),
+  /** Every step the piece goes through, in order, the workspace's own included: names only. */
+  path: z.array(z.strictObject({ key: z.string(), name: z.string() })),
+  /** Every move of the piece, oldest first; photos download from the job's `moves/{move_id}/photos` route. */
+  history: z.array(partnerTransitionResponseSchema),
+});
+export type PartnerWorkOrderResponse = z.infer<typeof partnerWorkOrderResponseSchema>;
+
+/**
+ * One of the partner's steps with what its QC gate asks for, so the partner can pass and fail pieces.
+ * Never the workspace's own steps' rules, nor staff settings such as the skill a step needs.
+ */
+export const partnerStepRulesSchema = z.strictObject({
+  key: z.string(),
+  name: z.string(),
+  /** Download it from the step's `sop` route. */
+  sop_file_version_id: z.uuid().nullable(),
+  checklist: z.array(checklistItemSchema),
+  /** The defects a fail may name, with what happens to the piece. */
+  defects: z.array(
+    z.strictObject({
+      id: z.uuid(),
+      key: z.string(),
+      name: z.string(),
+      outcome: z.enum(OUTCOMES),
+      /** The step a rework goes back to; null for a scrap or a continue. */
+      rework_to: z.string().nullable(),
+    }),
+  ),
+  /** The steps a failed piece may go back to, the workspace's own included. */
+  rework_targets: z.array(z.strictObject({ key: z.string(), name: z.string() })),
+  pass: evidenceSchema,
+  fail: evidenceSchema,
+  /** Inspect only `inspect` of every `of_every` pieces; null when every piece is inspected. */
+  sampling: z.strictObject({ inspect: z.number().int(), of_every: z.number().int() }).nullable(),
+});
+export type PartnerStepRules = z.infer<typeof partnerStepRulesSchema>;
+
+/**
+ * One of the partner's steps on a job: its QC rules, the active pieces there now, and its checks since the
+ * job came to the partner. `passed` and `failed` count moves, not pieces, so a piece that fails and then
+ * passes counts once in each; `not_inspected` is the part of `passed` left out of a sample. On a job only
+ * offered, the checks are empty.
+ */
+export const partnerJobStepSchema = partnerStepRulesSchema.extend({
+  count: z.number().int(),
+  in_rework: z.number().int(),
+  passed: z.number().int(),
+  failed: z.number().int(),
+  not_inspected: z.number().int(),
+  /** The defects of the step's fails, most frequent first, then by name (staff's `defects`; here `defects` are the rules). */
+  defect_counts: z.array(z.strictObject({ key: z.string(), name: z.string(), count: z.number().int() })),
+  /** The latest inspected pass or fail; its photos download from the job's `moves/{move_id}/photos` route. */
+  latest_check: z
+    .strictObject({
+      move_id: z.uuid(),
+      actor: partnerActorSchema,
+      created_at: z.iso.datetime(),
+      photos: z.array(z.strictObject({ file_id: z.uuid(), file_version_id: z.uuid() })),
+    })
+    .nullable(),
+});
+
+/** A job with its steps' QC rules and quality, and each of its pieces, so the partner knows which to move and how. */
 export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
+  /** The partner's own steps, in order. */
+  steps: z.array(partnerJobStepSchema),
   work_orders: z.array(
     z.strictObject({
       id: z.uuid(),
@@ -229,6 +329,17 @@ export const partnerJobDetailResponseSchema = partnerJobResponseSchema.extend({
       status: z.enum(['active', 'finished', 'scrapped']),
       /** The step the piece is at; null once it is finished or scrapped. */
       step_key: z.string().nullable(),
+      /** Null unless the piece is active at one of the partner's steps that samples; else whether it must be inspected in full. */
+      to_inspect: z.boolean().nullable(),
+      /** Being redone after a failed check; false once the piece is finished or scrapped. */
+      in_rework: z.boolean(),
+      /** Null until the piece first moves, and on a job the partner has only been offered. */
+      last_move: partnerLastMoveSchema.nullable(),
+      /**
+       * `yours`: at one of the partner's steps; `not_yet`: at a workspace step with a partner step still to
+       * come; `done`: past the partner's last step; null once finished or scrapped.
+       */
+      stage: z.enum(PARTNER_STAGES).nullable(),
     }),
   ),
   /** The AI's brief of the job (Orders 3 spec, goal 15); null when none was written. */
@@ -395,16 +506,13 @@ export const partnerJobCommentResponseSchema = z.strictObject({
 });
 export type PartnerJobCommentResponse = z.infer<typeof partnerJobCommentResponseSchema>;
 
-export const PARTNER_ACTORS = ['own', 'workspace', 'other_partner'] as const;
-
 /**
  * A move on a job the partner holds, as staff see it but for who made it and what they wrote: names,
  * `comment`, `override_reason` and each answer's `note` show only on moves the partner's own people made,
  * else null. No user ids, and no partner: it is this one or nobody.
  */
 export const partnerActionResponseSchema = actionResponseSchema.omit({ actor: true, partner: true }).extend({
-  /** `own`: one of the partner's people, named; `workspace`: staff; `other_partner`: another partner's people. */
-  actor: z.strictObject({ kind: z.enum(PARTNER_ACTORS), name: z.string().nullable() }),
+  actor: partnerActorSchema,
 });
 export type PartnerActionResponse = z.infer<typeof partnerActionResponseSchema>;
 
