@@ -258,11 +258,21 @@ describe('partners: eligible partners, offers and assignments', () => {
     const tenant = await freshTenant();
     const [first, , watch] = tenant.jobs;
     const offered = (await offer(tenant, first.group, tenant.castco).expect(201)).body as Assignment;
+    const jobs = `/partner-portal/partners/${tenant.castco}/jobs`;
+    const listed = async (query: string) =>
+      ((await tenant.castcoPerson.get(`${jobs}${query}`).expect(200)).body as { data: { id: string }[] }).data.map((job) => job.id);
+    expect(await listed('')).toEqual([first.group]);
+    expect(await listed('?status=offered')).toEqual([first.group]);
+    await tenant.castcoPerson.get(`${jobs}/${first.group}`).expect(200);
 
     await prisma.inTenant(tenant.id, (tx) =>
       tx.jobAssignment.update({ where: { id: offered.id }, data: { expiresAt: new Date(Date.now() - 1_000) } }),
     );
-    await tenant.castcoPerson.post(`/partner-portal/partners/${tenant.castco}/jobs/${first.group}/accept`).expect(409);
+    await tenant.castcoPerson.post(`${jobs}/${first.group}/accept`).expect(409);
+    // The partner no longer sees it, though the run hasn't marked it expired yet.
+    expect(await listed('')).toEqual([]);
+    expect(await listed('?status=offered')).toEqual([]);
+    await tenant.castcoPerson.get(`${jobs}/${first.group}`).expect(404);
 
     await expiry.handle();
     const history = (await tenant.staff.get(`/partners/jobs/${first.group}`).expect(200)).body as { data: Assignment[] };

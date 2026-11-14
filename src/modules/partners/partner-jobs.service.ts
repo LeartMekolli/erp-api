@@ -17,6 +17,7 @@ import type { MoveFacts } from '../workflow/progress';
 import { toInspect } from '../workflow/sampling';
 import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
+import { liveOpen } from './eligibility.service';
 import { jobSummaryOf } from './job-summary-response';
 import { PARTNER_JOB_STATUSES } from './partner-response';
 import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules, PartnerWorkOrderResponse } from './partner-response';
@@ -31,23 +32,24 @@ type PartnerJobStatus = PartnerJobResponse['status'];
 type PartnerLastMove = NonNullable<PartnerJobDetailResponse['work_orders'][number]['last_move']>;
 type PieceMove = MoveFacts & { workOrderId: string; createdAt: Date };
 
-/** Jobs the partner is offered or has accepted: its current row of each. */
-const OPEN = ['offered', 'accepted'];
+/** A job the partner has accepted: its current row. */
+const ACCEPTED: Prisma.JobAssignmentWhereInput = { status: 'accepted' };
 
 /**
  * The partner's rows of the jobs in one status, decided in the query so a page is never short. `open` is
- * the partner's accepted jobs it still has work on (`openForPartner`), read when the filter needs it.
+ * the partner's accepted jobs it still has work on (`openForPartner`), read when the filter needs it. An
+ * offer past its deadline is gone at once, before the expiry run marks it expired.
  */
-function statusWhere(status: PartnerJobStatus | undefined, open: Set<string>): Prisma.JobAssignmentWhereInput {
+function statusWhere(status: PartnerJobStatus | undefined, open: Set<string>, now: Date): Prisma.JobAssignmentWhereInput {
   switch (status) {
     case 'offered':
-      return { status: 'offered' };
+      return { status: 'offered', expiresAt: { gt: now } };
     case 'accepted':
       return { status: 'accepted', groupId: { in: [...open] } };
     case 'finished':
       return { status: 'accepted', groupId: { notIn: [...open] } };
     default:
-      return { status: { in: OPEN } };
+      return liveOpen(now);
   }
 }
 
@@ -99,7 +101,7 @@ export class PartnerJobsService {
       const rows = await tx.jobAssignment.findMany({
         where: {
           partnerId: auth.partnerId,
-          ...statusWhere(query.status, open),
+          ...statusWhere(query.status, open, new Date()),
           ...(after ? { id: { lt: after.id } } : {}),
           AND: [{ group: notWaitingForPayment }],
         },
@@ -113,7 +115,7 @@ export class PartnerJobsService {
 
   async detail(auth: PartnerAuth, groupId: string): Promise<PartnerJobDetailResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const held = await this.find(tx, auth, groupId, OPEN);
+      const held = await this.find(tx, auth, groupId, liveOpen(new Date()));
       const [job] = await this.views(tx, [held]);
       const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
       const pieces = await tx.workOrder.findMany({
@@ -211,7 +213,7 @@ export class PartnerJobsService {
   /** One piece of a job the partner holds, with every move it has had; any other piece is not found. */
   async workOrder(auth: PartnerAuth, groupId: string, workOrderId: string): Promise<PartnerWorkOrderResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      await this.find(tx, auth, groupId, ['accepted']);
+      await this.find(tx, auth, groupId, ACCEPTED);
       const piece = await tx.workOrder.findFirst({
         where: { id: workOrderId, groupId },
         include: { currentStep: { select: { key: true, name: true } }, group: true },
@@ -241,7 +243,7 @@ export class PartnerJobsService {
   /** A short-lived link to the instructions of one of the partner's steps on a job it has accepted. */
   async sop(auth: PartnerAuth, groupId: string, stepKey: string): Promise<{ url: string; expires_at: string }> {
     const version = await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      await this.find(tx, auth, groupId, ['accepted']);
+      await this.find(tx, auth, groupId, ACCEPTED);
       const group = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: groupId } });
       const step = partnerPath(await versionSteps(tx, group), group).find((one) => one.key === stepKey);
       if (!step?.sopFileVersionId) return null;
@@ -256,7 +258,7 @@ export class PartnerJobsService {
   /** A short-lived link to the job's design file; only once the partner has accepted the job. */
   async design(auth: PartnerAuth, groupId: string): Promise<{ url: string; expires_at: string }> {
     const version = await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      await this.find(tx, auth, groupId, ['accepted']);
+      await this.find(tx, auth, groupId, ACCEPTED);
       const group = await tx.workOrderGroup.findUniqueOrThrow({
         where: { id: groupId },
         select: { fileVersion: { select: { id: true, fileId: true } } },
@@ -273,9 +275,9 @@ export class PartnerJobsService {
    * The partner's current row of the job; another partner's job, one it declined or lost, or one of
    * an order waiting for payment, is not found.
    */
-  private async find(tx: Tx, auth: PartnerAuth, groupId: string, statuses: string[]): Promise<JobAssignment> {
+  private async find(tx: Tx, auth: PartnerAuth, groupId: string, held: Prisma.JobAssignmentWhereInput): Promise<JobAssignment> {
     const row = await tx.jobAssignment.findFirst({
-      where: { groupId, partnerId: auth.partnerId, status: { in: statuses }, group: notWaitingForPayment },
+      where: { groupId, partnerId: auth.partnerId, ...held, group: notWaitingForPayment },
     });
     if (!row) {
       throw new NotFoundException('Job not found');
