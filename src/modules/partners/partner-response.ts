@@ -506,7 +506,6 @@ export const partnerJobCommentResponseSchema = z.strictObject({
 });
 export type PartnerJobCommentResponse = z.infer<typeof partnerJobCommentResponseSchema>;
 
-
 /**
  * A move on a job the partner holds, as staff see it but for who made it and what they wrote: names,
  * `comment`, `override_reason` and each answer's `note` show only on moves the partner's own people made,
