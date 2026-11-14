@@ -31,8 +31,8 @@ const surface = {
 };
 
 /**
- * The demo's skill list (Workflow 2 spec, goal 9). Only steps done in-house may require one, and every
- * demo step is a partner's, so none does yet: staff set it on a step they take in-house.
+ * The demo's skill list (Workflow 2 spec, goal 9). Only steps done in-house may require one; the prints'
+ * final QC and packing are in-house, but none requires one yet, so any staff member can move the demo.
  */
 const SKILLS = ['Casting', 'Final QC'];
 
@@ -102,8 +102,14 @@ const WORKFLOWS: Record<string, { key: string; name: string; steps: Record<strin
         rework_targets: ['finish'],
         customer: { visible: true, name: 'Finishing' },
       },
-      { ...finalQc, defects: [{ defect: 'scratch', outcome: 'rework', rework_to: 'finish' }], rework_targets: ['finish'] },
-      { key: 'packing', name: 'Packing' },
+      // The workspace checks and packs prints itself: a print partner's part ends at finish, its payout step.
+      {
+        ...finalQc,
+        defects: [{ defect: 'scratch', outcome: 'rework', rework_to: 'finish' }],
+        rework_targets: ['finish'],
+        done_by: 'workspace',
+      },
+      { key: 'packing', name: 'Packing', done_by: 'workspace' },
     ],
   },
   // A set is put together once every part is ready (held by Workflow); a crack scraps the set.

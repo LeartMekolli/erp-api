@@ -21,8 +21,8 @@ import { orderCountsResponseSchema, orderResponseSchema } from '../src/modules/o
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { OrdersService } from '../src/modules/orders/orders.service';
 import { JobsService } from '../src/modules/partners/jobs.service';
-import { partnerMoveHistoryResponseSchema } from '../src/modules/partners/partner-response';
-import type { PartnerMoveHistoryResponse } from '../src/modules/partners/partner-response';
+import { partnerJobDetailResponseSchema, partnerMoveHistoryResponseSchema } from '../src/modules/partners/partner-response';
+import type { PartnerJobDetailResponse, PartnerMoveHistoryResponse } from '../src/modules/partners/partner-response';
 import { InvoicesService } from '../src/modules/payments/invoices.service';
 import { PaidByHandService } from '../src/modules/payments/paid-by-hand.service';
 import { PaymentAccountService } from '../src/modules/payments/payment-account.service';
@@ -104,15 +104,15 @@ describe('demo orders seed', () => {
     await seedPayments({ prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) }, tenant.id, KEYS);
 
     const first = await seedDemoOrders(deps(), tenant.id, owner.id);
-    expect(first).toMatchObject({ customers: 6, orders: 22, notInvoiced: 0 });
+    expect(first).toMatchObject({ customers: 6, orders: 23, notInvoiced: 0 });
 
     const token = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     const get = (path: string) => request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${token}`).expect(200);
     const counts = (await get('/orders/counts')).body as { all: number; states: Record<string, number>; needs_you: Record<string, number> };
     expectDocumented(orderCountsResponseSchema, counts);
     expect(counts).toEqual({
-      all: 22,
-      states: { awaiting_payment: 2, in_production: 10, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
+      all: 23,
+      states: { awaiting_payment: 2, in_production: 11, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
       needs_you: { total: 10, late: 2, to_ship: 4, to_collect: 3, due_soon: 2 },
       // The awaiting payment tile shows an amount: something is owed on the demo's orders to collect.
       to_collect_amounts: [{ currency: 'EUR', amount: expect.stringMatching(/^[1-9]\d*\.\d{2}$/) }],
@@ -129,7 +129,7 @@ describe('demo orders seed', () => {
     expect(orders.some((order) => order.lines.length === 3)).toBe(true);
     expect(orders.some((order) => order.customer.name.length === 40)).toBe(true);
     // Numbered from 1001 oldest first, as `-placed_at` lists them newest first.
-    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 22 }, (_, index) => 1022 - index));
+    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 23 }, (_, index) => 1023 - index));
 
     // One order with quality problems: a scrapped piece, two being redone, a comment for staff and one with the partner.
     const qualityId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:quality-issues' } })).id);
@@ -175,6 +175,30 @@ describe('demo orders seed', () => {
     const actions = (history.body as PartnerMoveHistoryResponse).data;
     expect(new Set(actions.map((action) => action.actor.kind))).toEqual(new Set(['own', 'workspace', 'other_partner']));
     expect(actions.some((action) => action.kind === 'fail' && action.actor.kind === 'other_partner' && action.comment === null && action.pieces.length === 2)).toBe(true);
+
+    // One print job whose final QC and packing the workspace does: Layerline's part is done for all but the
+    // piece staff sent back to it.
+    const inHouse = await prisma.inTenant(tenant.id, async (tx) =>
+      tx.workflowStep.findMany({ where: { version: { workflow: { key: 'printed_parts' } }, key: { in: ['final_qc', 'packing'] } }, select: { doneBy: true } }),
+    );
+    expect(inHouse.map((step) => step.doneBy)).toEqual(['workspace', 'workspace']);
+    const inHouseId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:in-house-qc' } })).id);
+    const inHouseGroup = orders.find((order) => order.id === inHouseId)!.lines[0].group_id!;
+    const layerline = await prisma.inTenant(tenant.id, async (tx) => {
+      const partner = await tx.partner.findFirstOrThrow({ where: { name: 'Layerline Prints' } });
+      const membership = await tx.organisationMembership.findFirstOrThrow({ where: { organisationType: 'partner', organisationId: partner.id, role: 'owner' } });
+      return { id: partner.id, token: (await tokens.issueForUser(tenant.id, membership.userId)).accessToken };
+    });
+    const job = await request(app.getHttpServer())
+      .get(`/partner-portal/partners/${layerline.id}/jobs/${inHouseGroup}`)
+      .set('Authorization', `Bearer ${layerline.token}`)
+      .expect(200);
+    expectDocumented(partnerJobDetailResponseSchema, job.body);
+    const inHousePieces = (job.body as PartnerJobDetailResponse).work_orders;
+    expect(inHousePieces.filter((piece) => piece.stage === 'done')).toHaveLength(7);
+    const sentBack = inHousePieces.filter((piece) => piece.stage === 'yours');
+    expect(sentBack).toHaveLength(1);
+    expect(sentBack[0]).toMatchObject({ in_rework: false, last_move: { kind: 'correction' } });
 
     const second = await seedDemoOrders(deps(), tenant.id, owner.id);
     expect(second).toMatchObject({ customers: 0, orders: 0, notInvoiced: 0 });
