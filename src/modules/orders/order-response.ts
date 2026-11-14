@@ -364,3 +364,18 @@ export const orderCommentResponseSchema = z.strictObject({
   created_at: z.string(),
 });
 export type OrderCommentResponse = z.infer<typeof orderCommentResponseSchema>;
+
+/**
+ * 409 when a staff comment's `readers` is not who would read it now, say a partner accepted the line meanwhile:
+ * nothing was saved. A problem response whose `code` and `partner` are its extension members.
+ */
+export const readersChangedResponseSchema = z.strictObject({
+  type: z.string(),
+  title: z.string(),
+  status: z.literal(409),
+  detail: z.string(),
+  code: z.literal('readers_changed'),
+  /** The partner that would read it now besides staff; null when only staff would. */
+  partner: orderCommentResponseSchema.shape.partner,
+});
+export type ReadersChangedResponse = z.infer<typeof readersChangedResponseSchema>;

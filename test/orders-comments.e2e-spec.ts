@@ -7,7 +7,7 @@ import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { orderCommentResponseSchema } from '../src/modules/orders/order-response';
+import { orderCommentResponseSchema, readersChangedResponseSchema } from '../src/modules/orders/order-response';
 import { partnerJobCommentResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -267,6 +267,36 @@ describe('orders: comments', () => {
     for (const secret of ['Polish the back', 'Will do']) {
       expect({ secret, found: moved.text.includes(secret) }).toEqual({ secret, found: false });
     }
+  });
+
+  it('saves nothing when the comment would reach other readers than staff were told', async () => {
+    const tenant = await freshTenant();
+    const [zero, one] = tenant.order.lines;
+    const post = (body: object) => tenant.staff.post(staffPath(tenant), body);
+
+    // Told rightly, it saves as before.
+    expect((await post({ body: 'Polish the back harder', line_id: zero.id, readers: tenant.castco.id }).expect(201)).body).toMatchObject({
+      partner: { id: tenant.castco.id, name: 'CastCo' },
+    });
+    expect((await post({ body: 'Pack in the grey box', line_id: one.id, readers: 'staff' }).expect(201)).body).toMatchObject({ partner: null });
+    await post({ body: 'Courier booked', readers: 'staff' }).expect(201);
+
+    // On the order only staff read it, whatever staff were told.
+    const onOrder = await post({ body: 'Luna pays on Friday', readers: tenant.castco.id }).expect(409);
+    expectDocumented(readersChangedResponseSchema, onOrder.body);
+    expect(onOrder.body).toMatchObject({ code: 'readers_changed', partner: null });
+
+    // MetalWorks accepts line 1 after staff were told only they would read it: nothing is saved, and the 409 names MetalWorks.
+    await tenant.metalworks.person.post(`/partner-portal/partners/${tenant.metalworks.id}/jobs/${one.group_id}/accept`).expect(200);
+    const accepted = await post({ body: 'Luna is a difficult customer', line_id: one.id, readers: 'staff' }).expect(409);
+    expectDocumented(readersChangedResponseSchema, accepted.body);
+    expect(accepted.body).toMatchObject({ code: 'readers_changed', partner: { id: tenant.metalworks.id, name: 'MetalWorks' } });
+    const saved = list<StaffComment>(await tenant.staff.get(staffPath(tenant)).expect(200)).map((comment) => comment.body);
+    expect(saved).toEqual(['Polish the back harder', 'Pack in the grey box', 'Courier booked']);
+    expect(list<PartnerComment>(await tenant.metalworks.person.get(jobPath(tenant, tenant.metalworks, 1)).expect(200))).toEqual([]);
+
+    // Neither `staff` nor a partner id is a 400.
+    await post({ body: 'Hello', readers: 'customer' }).expect(400);
   });
 
   it('gives the customer no comments, and keeps its people\'s earlier ones for staff', async () => {
