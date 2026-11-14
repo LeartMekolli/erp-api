@@ -7,7 +7,7 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentCustomer } from '../identity/auth-context';
 import type { CustomerAuth } from '../identity/auth-context';
 import { CustomerAccess } from '../identity/route-markers';
-import { customerOrderResponseSchema, portalShippingMethodsResponseSchema } from './order-response';
+import { customerOrderResponseSchema, portalShippingMethodsResponseSchema, priceChangedResponseSchema } from './order-response';
 import type { CustomerOrderResponse, PortalShippingMethodsResponse } from './order-response';
 import { OrdersService, customerCancelOrderSchema } from './orders.service';
 import type { CustomerCancelOrder } from './orders.service';
@@ -48,7 +48,7 @@ export class PortalOrdersController {
       'service: no rate for it is a 400 on `shipping_method`, a service that fails a 503.',
     body: placeOrderSchema,
     response: customerOrderResponseSchema,
-    errors: [400, 404, 409, 503],
+    errors: [400, 404, { status: 409, schema: priceChangedResponseSchema }, 503],
   })
   @CustomerAccess('buyer')
   @Post('orders')

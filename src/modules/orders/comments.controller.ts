@@ -10,7 +10,7 @@ import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
 import { CommentsService, staffCommentSchema } from './comments.service';
 import type { StaffComment } from './comments.service';
-import { orderCommentResponseSchema } from './order-response';
+import { orderCommentResponseSchema, readersChangedResponseSchema } from './order-response';
 import type { OrderCommentResponse } from './order-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
@@ -49,7 +49,7 @@ export class OrderCommentsController {
       "saved: the 409 has `code: 'readers_changed'` and the `partner` that would read it now, or null for staff alone.",
     body: staffCommentSchema,
     response: orderCommentResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, { status: 409, schema: readersChangedResponseSchema }],
   })
   @RequirePermission('order.write')
   @Post()

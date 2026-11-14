@@ -7,7 +7,7 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
-import { bulkShipResponseSchema, orderCountsResponseSchema, orderResponseSchema } from './order-response';
+import { bulkShipResponseSchema, orderCountsResponseSchema, orderResponseSchema, priceChangedResponseSchema } from './order-response';
 import type { BulkShipResponse, OrderCountsResponse, OrderResponse } from './order-response';
 import { OrdersService, cancelOrderSchema, orderCountsQuerySchema, orderListQuerySchema, shipManySchema, shipOrderSchema } from './orders.service';
 import type { CancelOrder, OrderCountsQuery, OrderListQuery, ShipMany, ShipOrder } from './orders.service';
@@ -34,7 +34,7 @@ export class OrdersController {
       'priced now by the courier service: no rate for it is a 400 on `shipping_method`, a service that fails a 503.',
     body: staffPlaceOrderSchema,
     response: orderResponseSchema,
-    errors: [400, 404, 409, 503],
+    errors: [400, 404, { status: 409, schema: priceChangedResponseSchema }, 503],
   })
   @RequirePermission('order.write')
   @Post()

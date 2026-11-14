@@ -21,9 +21,16 @@ export interface ApiDocOptions {
   response?: z.ZodType;
   /**
    * Error statuses the route can answer, documented as problem+json. 401 and 403 on protected
-   * routes, and 409 on tenant POSTs, are added by the builder.
+   * routes, and 409 on tenant POSTs, are added by the builder. A refusal whose `code` carries
+   * extension members gives its schema, `{ status: 409, schema: priceChangedResponseSchema }`.
    */
-  errors?: number[];
+  errors?: (number | ApiDocError)[];
+}
+
+/** A coded refusal with extension members: shown as its schema or the plain problem, since the status has other refusals too. */
+export interface ApiDocError {
+  status: number;
+  schema: z.ZodType;
 }
 
 /** Added by the document builder to every tenant POST, which IdempotencyInterceptor covers. */
