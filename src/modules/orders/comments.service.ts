@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
 import { toPage } from '../../common/pagination/page';
@@ -19,12 +19,14 @@ const body = z.string().trim().min(1).max(COMMENT_MAX_LENGTH);
 /**
  * Staff write on the order or a line, and where decides who reads it: comments can't be edited or deleted,
  * so nobody picks a reader. On a line a partner has accepted, that partner reads it too, and it stays that
- * partner's when the line changes hands; anywhere else, staff alone.
+ * partner's when the line changes hands; anywhere else, staff alone. `readers` is who staff were told would
+ * read it, `staff` or that partner's id: when it isn't who would now, nothing is saved.
  */
 export const staffCommentSchema = z.strictObject({
   body,
   line_id: z.uuid().optional(),
   attachments: z.array(z.uuid()).max(COMMENT_MAX_ATTACHMENTS).optional(),
+  readers: z.union([z.literal('staff'), z.uuid()]).optional(),
 });
 export type StaffComment = z.infer<typeof staffCommentSchema>;
 
@@ -46,6 +48,7 @@ interface Draft {
   body: string;
   lineId?: string;
   attachments?: string[];
+  readers?: string;
 }
 
 const WITH = {
@@ -73,7 +76,14 @@ export class CommentsService {
   }
 
   staffPost(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, orderId: string, input: StaffComment): Promise<OrderCommentResponse> {
-    const draft: Draft = { authorUserId: auth.userId, authorKind: 'staff', body: input.body, lineId: input.line_id, attachments: input.attachments };
+    const draft: Draft = {
+      authorUserId: auth.userId,
+      authorKind: 'staff',
+      body: input.body,
+      lineId: input.line_id,
+      attachments: input.attachments,
+      readers: input.readers,
+    };
     return this.post(auth.tenantId, (tx) => this.staffScope(tx, orderId), draft, staffView);
   }
 
@@ -118,6 +128,14 @@ export class CommentsService {
       let partnerId = draft.partnerId;
       if (lineId && !found.lineId) {
         partnerId = await this.holder(tx, await this.requireLine(tx, found.orderId, lineId));
+      }
+      if (draft.readers && draft.readers !== (partnerId ?? 'staff')) {
+        const partner = partnerId ? await tx.partner.findUniqueOrThrow({ where: { id: partnerId }, select: { id: true, name: true } }) : null;
+        throw new ConflictException({
+          code: 'readers_changed',
+          message: partner ? `${partner.name} has accepted this line and would read this comment too` : 'Only staff would read this comment',
+          partner,
+        });
       }
       const files = await this.requireFiles(tx, [...new Set(draft.attachments ?? [])]);
       const created = await tx.orderComment.create({
@@ -182,8 +200,12 @@ export class CommentsService {
     return (line ?? part)!.groupId;
   }
 
-  /** The partner that has accepted the job a line is made as, which reads what staff write there; none before. */
+  /**
+   * The partner that has accepted the job a line is made as, which reads what staff write there; none before.
+   * Locks the job's group as every change of hands does, so it stays the holder until the comment is saved.
+   */
   private async holder(tx: Tx, groupId: string | null): Promise<string | undefined> {
+    if (groupId) await tx.$queryRaw`SELECT id FROM work_order_group WHERE id = ${groupId}::uuid FOR UPDATE`;
     const held = groupId ? await tx.jobAssignment.findFirst({ where: { groupId, status: 'accepted' }, select: { partnerId: true } }) : null;
     return held?.partnerId;
   }
