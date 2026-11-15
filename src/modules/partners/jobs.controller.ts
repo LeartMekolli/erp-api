@@ -146,7 +146,8 @@ export class JobsController {
     summary: 'What a partner is owed, per job it has or had, newest first, a page at a time.',
     description:
       "A job is owed once every live piece has passed its workflow's payout step: the cost frozen when it was handed " +
-      'over, or what staff set instead. `total` counts only what is owed now, across every page; paying it comes with Payments.',
+      'over, or what staff set instead. `due_total` is what Pay would transfer and `not_yet_total` what the jobs not owed ' +
+      'yet will be, across every page.',
     query: paginationQuerySchema,
     response: partnerOwedResponseSchema,
     errors: [400, 404],

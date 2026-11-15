@@ -5,15 +5,17 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
+import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { feedEntrySchema } from '../src/modules/notifications/feed.controller';
 import { partnerOwedResponseSchema, portalOwedResponseSchema } from '../src/modules/partners/partner-response';
 import type { FakePaymentProvider } from '../src/modules/payments/fake-payment-provider';
 import { LedgerService } from '../src/modules/payments/ledger.service';
 import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
-import { payoutPageResponseSchema, payoutResponseSchema } from '../src/modules/payments/payment-response';
+import { payoutPageResponseSchema, payoutResponseSchema, portalPayoutPageResponseSchema } from '../src/modules/payments/payment-response';
 import { PayoutReminderHandler } from '../src/modules/payments/payout-reminder.handler';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -33,8 +35,16 @@ interface OwedJob {
   customer_paid?: boolean | null;
 }
 interface Owed {
-  total: string;
+  due_total: string;
+  not_yet_total: string;
+  not_yet_count: number;
+  currency: string;
   jobs: OwedJob[];
+}
+interface FeedEntry {
+  event_key: string;
+  job: { id: string; partner_id: string } | null;
+  payout: { id: string; partner_id: string } | null;
 }
 interface Payout {
   id: string;
@@ -82,14 +92,16 @@ describe('payments: paying partners', () => {
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
 
-  async function partnerPerson(tenantId: string, partnerId: string, role: string) {
+  /** A person of the partner with this role; their user id. */
+  async function partnerPersonId(tenantId: string, partnerId: string, role: string) {
     const user = await createTestUser(prisma, tenantId, { roles: [] });
     await prisma.inTenant(tenantId, async (tx) => {
       await tx.user.update({ where: { id: user.id }, data: { kind: 'partner' } });
       await tx.organisationMembership.create({ data: { userId: user.id, organisationType: 'partner', organisationId: partnerId, role } });
     });
-    return as((await tokens.issueForUser(tenantId, user.id)).accessToken);
+    return user.id;
   }
+  const signedIn = async (tenantId: string, userId: string) => as((await tokens.issueForUser(tenantId, userId)).accessToken);
 
   /**
    * The priced cast part; tax at 19 %; the workspace's payment keys; CastCo approved, with an owner and
@@ -125,7 +137,8 @@ describe('payments: paying partners', () => {
     const agreement = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [] })).versionId;
     await staff.put(`/partners/${castco}/agreement`, { file_version_id: agreement, signed_on: '2026-10-24' }).expect(200);
     await staff.post(`/partners/${castco}/approve`).expect(200);
-    const castcoOwner = await partnerPerson(tenant.id, castco, 'owner');
+    const castcoOwnerId = await partnerPersonId(tenant.id, castco, 'owner');
+    const castcoOwner = await signedIn(tenant.id, castcoOwnerId);
 
     // CastCo's payout account, made through a link and ready at the provider.
     await castcoOwner.post(`/partner-portal/partners/${castco}/payout-account/link`).expect(200);
@@ -172,6 +185,9 @@ describe('payments: paying partners', () => {
       member: as((await tokens.issueForUser(tenant.id, member.id)).accessToken),
       castco,
       castcoOwner,
+      castcoOwnerId,
+      castcoAdminId: await partnerPersonId(tenant.id, castco, 'admin'),
+      castcoMemberId: await partnerPersonId(tenant.id, castco, 'member'),
       accountId: account.providerAccountId,
       direct,
       fromOrder,
@@ -197,6 +213,14 @@ describe('payments: paying partners', () => {
     );
   const raised = (tenant: Tenant, eventKey: string) =>
     prisma.inTenant(tenant.id, (tx) => tx.notification.count({ where: { eventKey } }));
+  /** The person's feed entries of this event, once there is one. */
+  const feedOf = (person: Tenant['staff'], eventKey: string) =>
+    waitFor(async () => {
+      const response = await person.get('/notifications').expect(200);
+      expectDocumented(pageSchema(feedEntrySchema), response.body);
+      const entries = (response.body as { data: FeedEntry[] }).data.filter((entry) => entry.event_key === eventKey);
+      return entries.length > 0 ? entries : undefined;
+    });
   const partnerCosts = (tenant: Tenant) =>
     prisma.inTenant(tenant.id, (tx) => app.get(LedgerService).balance(tx, 'partner_costs', { partnerId: tenant.castco }));
   /** One of the job's pieces taken back before the payout step: the job is no longer owed. */
@@ -241,14 +265,27 @@ describe('payments: paying partners', () => {
     const before = await owed(tenant);
     expect(forJob(before, tenant.fromOrder.group)).toMatchObject({ state: 'owed', paid: '0.00', due: tenant.fromOrder.cost, customer_paid: false });
     expect(forJob(before, tenant.direct.group)).toMatchObject({ paid: '0.00', due: tenant.direct.cost, customer_paid: null });
+    // The total due is what Pay will transfer.
+    expect(before).toMatchObject({ due_total: tenant.total, not_yet_total: '0.00', not_yet_count: 0, currency: 'EUR' });
     const portalOwed = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/owed`).expect(200);
     expectDocumented(portalOwedResponseSchema, portalOwed.body);
     expect((portalOwed.body as Owed).jobs.every((job) => !('customer_paid' in job) && job.due !== undefined)).toBe(true);
+    expect(portalOwed.body as Owed).toMatchObject({ due_total: tenant.total, currency: 'EUR' });
+
+    // CastCo's owner and member also work for MetalWorks, both as admins there.
+    const metalworks = ((await tenant.staff.post('/partners', { name: 'MetalWorks', display_name: 'MetalWorks' }).expect(201)).body as { id: string }).id;
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.organisationMembership.createMany({
+        data: [tenant.castcoOwnerId, tenant.castcoMemberId].map((userId) => ({ userId, organisationType: 'partner', organisationId: metalworks, role: 'admin' })),
+      }),
+    );
 
     const res = await pay(tenant).expect(202);
 
     expectDocumented(payoutResponseSchema, res.body);
     expect(res.body).toMatchObject({ status: 'pending', amount: tenant.total });
+    // A pending payout counts as paid: nothing is due while the transfer is on its way.
+    expect((await owed(tenant)).due_total).toBe('0.00');
     const payout = await settled(tenant, (res.body as Payout).id);
     expect(payout).toMatchObject({ status: 'paid', providerTransferId: expect.any(String), failure: null, settledAt: expect.any(Date) });
     expect(fake.transfersTo(tenant.accountId).map((transfer) => transfer.amount.toFixed(2))).toEqual([tenant.total]);
@@ -258,12 +295,27 @@ describe('payments: paying partners', () => {
     expect((await partnerCosts(tenant)).toFixed(2)).toBe(tenant.total);
     // The partner is told once the payout has committed.
     await waitFor(async () => ((await raised(tenant, 'payout.paid')) === 1 ? true : undefined));
+    // Only those who may open CastCo's earnings: its admins and owners, never its member, though an admin elsewhere.
+    const recipients = await waitFor(() =>
+      prisma.inTenant(tenant.id, async (tx) => {
+        const rows = await tx.notificationRecipient.findMany({ where: { notification: { eventKey: 'payout.paid' } }, select: { userId: true } });
+        return rows.length > 0 ? rows.map((row) => row.userId).sort() : undefined;
+      }),
+    );
+    expect(recipients).toEqual([tenant.castcoOwnerId, tenant.castcoAdminId].sort());
+    expect(recipients).not.toContain(tenant.castcoMemberId);
+
+    // The notice names the payout and the partner it was paid to, even for someone who works for two partners.
+    expect(await feedOf(tenant.castcoOwner, 'payout.paid')).toEqual([
+      expect.objectContaining({ payout: { id: payout.id, partner_id: tenant.castco }, job: null }),
+    ]);
 
     // Both sides see it, with its jobs; the partner never sees the order behind them.
     const mine = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/payouts`).expect(200);
-    expectDocumented(payoutPageResponseSchema, mine.body);
+    expectDocumented(portalPayoutPageResponseSchema, mine.body);
     const seen = (mine.body as { data: Payout[] }).data;
     expect(seen).toEqual([expect.objectContaining({ status: 'paid', amount: tenant.total })]);
+    expect(seen[0]).not.toHaveProperty('failure');
     expect(seen[0].jobs.map((job) => job.group_id).sort()).toEqual([tenant.direct.group, tenant.fromOrder.group].sort());
     expect(mine.text).not.toContain('Brightline');
     const staffSeen = await tenant.staff.get(`/partners/${tenant.castco}/payouts`).expect(200);
@@ -273,6 +325,7 @@ describe('payments: paying partners', () => {
     // Paid: nothing is due, and nothing is paid twice.
     const after = await owed(tenant);
     expect(forJob(after, tenant.direct.group)).toMatchObject({ paid: tenant.direct.cost, due: '0.00' });
+    expect(after.due_total).toBe('0.00');
     await pay(tenant).expect(409);
     expect(fake.transfersTo(tenant.accountId)).toHaveLength(1);
   });
@@ -304,8 +357,25 @@ describe('payments: paying partners', () => {
 
     expect(failed).toMatchObject({ status: 'failed', failure: 'Insufficient funds in the platform balance', providerTransferId: null });
     await waitFor(async () => ((await raised(tenant, 'payout.failed')) === 1 ? true : undefined));
-    expect(forJob(await owed(tenant), tenant.direct.group)).toMatchObject({ paid: '0.00', due: tenant.direct.cost });
+    // Staff's notice names the partner, so it opens that partner's payouts.
+    expect(await feedOf(tenant.staff, 'payout.failed')).toEqual([
+      expect.objectContaining({ payout: { id: failed.id, partner_id: tenant.castco }, job: null }),
+    ]);
+    const due = await owed(tenant);
+    expect(forJob(due, tenant.direct.group)).toMatchObject({ paid: '0.00', due: tenant.direct.cost });
+    expect(due.due_total).toBe(tenant.total);
     expect((await partnerCosts(tenant)).toFixed(2)).toBe('0.00');
+
+    // Staff see why the provider refused; the partner sees only that it failed.
+    const staffSeen = await tenant.staff.get(`/partners/${tenant.castco}/payouts`).expect(200);
+    expect((staffSeen.body as { data: Payout[] }).data).toEqual([
+      expect.objectContaining({ status: 'failed', failure: 'Insufficient funds in the platform balance' }),
+    ]);
+    const mine = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/payouts`).expect(200);
+    expectDocumented(portalPayoutPageResponseSchema, mine.body);
+    expect((mine.body as { data: Payout[] }).data).toEqual([expect.objectContaining({ status: 'failed' })]);
+    expect((mine.body as { data: Payout[] }).data[0]).not.toHaveProperty('failure');
+    expect(mine.text).not.toContain('Insufficient funds');
 
     const retried = await settled(tenant, ((await pay(tenant).expect(202)).body as Payout).id);
     expect(retried).toMatchObject({ status: 'paid' });
@@ -328,7 +398,14 @@ describe('payments: paying partners', () => {
 
     // A correction takes Brightline's job back before the payout step: what was paid for it comes off the next payout.
     await takeBack(tenant, tenant.fromOrder.group);
-    expect(forJob(await owed(tenant), tenant.fromOrder.group)).toMatchObject({ state: 'not_yet', due: d(tenant.fromOrder.cost).neg().toFixed(2) });
+    const takenBack = await owed(tenant);
+    expect(forJob(takenBack, tenant.fromOrder.group)).toMatchObject({ state: 'not_yet', due: d(tenant.fromOrder.cost).neg().toFixed(2) });
+    // Its amount counts as still being earned, and what was paid for it comes off what is due.
+    expect(takenBack).toMatchObject({
+      due_total: d(tenant.fromOrder.cost).neg().toFixed(2),
+      not_yet_total: tenant.fromOrder.cost,
+      not_yet_count: 1,
+    });
     await pay(tenant).expect(409);
     const moreForDirect = d(raisedTo).plus(tenant.fromOrder.cost).plus('10.00').toFixed(2);
     await tenant.staff

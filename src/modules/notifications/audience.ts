@@ -1,6 +1,8 @@
 import type { Notification, Prisma } from '../../generated/prisma/client';
+import { PARTNER_ROLES, atLeast } from '../partners/partner-roles';
 import { SettingsService } from '../settings/settings.service';
 import { EVENTS, EventKey } from './catalogue';
+import type { Audience } from './catalogue';
 
 /** One address a notification goes to; `userId` when it is a user, who also gets a feed entry. */
 export interface Target {
@@ -22,7 +24,7 @@ export async function resolveAudience(
   settings: SettingsService,
 ): Promise<Target[]> {
   const event = notification.eventKey as EventKey;
-  const audience = EVENTS[event].audience;
+  const audience: Audience = EVENTS[event].audience;
   const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: notification.tenantId } });
   const targets: Target[] = [];
 
@@ -65,11 +67,18 @@ export async function resolveAudience(
           ? await tx.payout.findFirst({ where: { id: notification.subjectId }, select: { partnerId: true } })
           : await tx.jobAssignment.findFirst({ where: { id: notification.subjectId }, select: { partnerId: true } });
       if (subject) {
+        const minRole = audience.minRole ?? 'member';
         const people = await tx.user.findMany({
           where: {
             status: 'active',
             kind: 'partner',
-            memberships: { some: { organisationType: 'partner', organisationId: subject.partnerId } },
+            memberships: {
+              some: {
+                organisationType: 'partner',
+                organisationId: subject.partnerId,
+                role: { in: PARTNER_ROLES.filter((role) => atLeast(role, minRole)) },
+              },
+            },
           },
           orderBy: { id: 'asc' },
         });

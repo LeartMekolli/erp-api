@@ -5,6 +5,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
+import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { owedJobResponseSchema, partnerOwedResponseSchema, portalOwedResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
@@ -27,13 +28,18 @@ interface OwedJob {
   assignment_id: string;
   group_id: string;
   state: 'not_yet' | 'owed';
+  holding: 'with_you' | 'taken_back' | 'cancelled';
   amount: string;
   override_reason?: string | null;
 }
 interface Owed {
-  total: string;
+  due_total: string;
+  not_yet_total: string;
+  not_yet_count: number;
+  currency: string;
   jobs: OwedJob[];
 }
+const d = (value: string) => new Prisma.Decimal(value);
 interface Piece {
   id: string;
   status: string;
@@ -216,8 +222,13 @@ describe('partners: what they are owed', () => {
     const portal = `/partner-portal/partners/${tenant.castco}`;
 
     // Nothing passed yet: not owed, but staff see what it will be.
-    expect(forJob(await owed(tenant, tenant.castco), group)).toMatchObject({ state: 'not_yet', amount: cost, override_reason: null });
-    expect((await owed(tenant, tenant.castco)).total).toBe('0.00');
+    expect(forJob(await owed(tenant, tenant.castco), group)).toMatchObject({ state: 'not_yet', holding: 'with_you', amount: cost, override_reason: null });
+    expect(await owed(tenant, tenant.castco)).toMatchObject({
+      due_total: '0.00',
+      not_yet_total: d(cost).plus(tenant.second.cost).toFixed(2),
+      not_yet_count: 2,
+      currency: 'EUR',
+    });
 
     let ids = (await live(tenant.castcoAdmin, tenant.castco, group)).map((piece) => piece.id);
     await pass(tenant, tenant.castcoAdmin, tenant.castco, ids, ['print_pattern', 'casting_tree']);
@@ -241,7 +252,8 @@ describe('partners: what they are owed', () => {
     await pass(tenant, tenant.castcoAdmin, tenant.castco, ids.slice(9), ['final_qc']);
     let all = await owed(tenant, tenant.castco);
     expect(forJob(all, group)).toMatchObject({ state: 'owed', amount: cost, override_reason: null });
-    expect(all.total).toBe(cost);
+    // Its amount moves from what is still being earned to what is due.
+    expect(all).toMatchObject({ due_total: cost, not_yet_total: tenant.second.cost, not_yet_count: 1 });
 
     // Done work is paid, not moved: MetalWorks would be owed at once for rings it never touched.
     const before = (await tenant.staff.get(`/partners/jobs/${group}`).expect(200)).body as object;
@@ -256,7 +268,7 @@ describe('partners: what they are owed', () => {
       .expect(200);
     all = await owed(tenant, tenant.castco);
     expect(forJob(all, group)).toMatchObject({ state: 'not_yet', amount: cost });
-    expect(all.total).toBe('0.00');
+    expect(all).toMatchObject({ due_total: '0.00', not_yet_count: 2 });
     await pass(tenant, tenant.castcoAdmin, tenant.castco, [ids[3]], ['polishing', 'final_qc']);
     expect(forJob(await owed(tenant, tenant.castco), group)).toMatchObject({ state: 'owed', amount: cost });
 
@@ -272,7 +284,7 @@ describe('partners: what they are owed', () => {
     expect(set.body).toMatchObject({ group_id: group, state: 'owed', amount: '180.00', override_reason: 'Agreed rush surcharge' });
     all = await owed(tenant, tenant.castco);
     expect(forJob(all, group)).toMatchObject({ state: 'owed', amount: '180.00', override_reason: 'Agreed rush surcharge' });
-    expect(all.total).toBe('180.00');
+    expect(all.due_total).toBe('180.00');
     const history = (await tenant.staff.get(`/partners/jobs/${group}`).expect(200)).body as { data: { owed_override: object | null }[] };
     expect(history.data.at(-1)!.owed_override).toEqual({ amount: '180.00', reason: 'Agreed rush surcharge' });
 
@@ -303,23 +315,24 @@ describe('partners: what they are owed', () => {
 
     // CastCo is owed the 40.00 at once; its first job is still being made.
     const castco = await owed(tenant, tenant.castco);
-    expect(castco.jobs.map((job) => [job.group_id, job.state, job.amount, job.override_reason])).toEqual([
-      [group, 'owed', '40.00', reason],
-      [tenant.first.group, 'not_yet', tenant.first.cost, null],
+    expect(castco.jobs.map((job) => [job.group_id, job.state, job.holding, job.amount, job.override_reason])).toEqual([
+      [group, 'owed', 'taken_back', '40.00', reason],
+      [tenant.first.group, 'not_yet', 'with_you', tenant.first.cost, null],
     ]);
-    expect(castco.total).toBe('40.00');
+    const totals = { due_total: '40.00', not_yet_total: tenant.first.cost, not_yet_count: 1, currency: 'EUR' };
+    expect(castco).toMatchObject(totals);
 
-    // A page at a time; the total still covers every page.
+    // A page at a time; the totals still cover every page.
     const firstPage = await tenant.staff.get(`/partners/${tenant.castco}/owed?limit=1`).expect(200);
     expectDocumented(partnerOwedResponseSchema, firstPage.body);
     const page = firstPage.body as Owed & { next_cursor: string | null };
     expect(page.jobs.map((job) => job.group_id)).toEqual([group]);
-    expect(page.total).toBe('40.00');
+    expect(page).toMatchObject(totals);
     expect(page.next_cursor).toEqual(expect.any(String));
     const secondPage = (await tenant.staff.get(`/partners/${tenant.castco}/owed?limit=1&cursor=${page.next_cursor}`).expect(200))
       .body as Owed & { next_cursor: string | null };
     expect(secondPage.jobs.map((job) => job.group_id)).toEqual([tenant.first.group]);
-    expect(secondPage.total).toBe('40.00');
+    expect(secondPage).toMatchObject(totals);
     expect(secondPage.next_cursor).toBeNull();
 
     // MetalWorks is owed its own cost, frozen at the move, once it has passed every ring through final QC.
@@ -329,16 +342,16 @@ describe('partners: what they are owed', () => {
     await pass(tenant, tenant.metalworksAdmin, tenant.metalworks, ids, ['casting_tree', 'casting', 'polishing', 'final_qc']);
     const metalworks = await owed(tenant, tenant.metalworks);
     expect(metalworks.jobs).toEqual([expect.objectContaining({ group_id: group, state: 'owed', amount: metalworksCost })]);
-    expect(metalworks.total).toBe(metalworksCost);
+    expect(metalworks).toMatchObject({ due_total: metalworksCost, not_yet_total: '0.00', not_yet_count: 0 });
 
     // CastCo's admin sees its own, without staff's reasons and without the customer.
     const mine = await tenant.castcoAdmin.get(`/partner-portal/partners/${tenant.castco}/owed`).expect(200);
     expectDocumented(portalOwedResponseSchema, mine.body);
-    expect((mine.body as Owed).jobs.map((job) => [job.group_id, job.state, job.amount])).toEqual([
-      [group, 'owed', '40.00'],
-      [tenant.first.group, 'not_yet', tenant.first.cost],
+    expect((mine.body as Owed).jobs.map((job) => [job.group_id, job.state, job.holding, job.amount])).toEqual([
+      [group, 'owed', 'taken_back', '40.00'],
+      [tenant.first.group, 'not_yet', 'with_you', tenant.first.cost],
     ]);
-    expect((mine.body as Owed).total).toBe('40.00');
+    expect(mine.body as Owed).toMatchObject(totals);
     for (const secret of [reason, 'Luna Jewels', 'MetalWorks', tenant.second.quote.id, tenant.second.quote.total]) {
       expect({ secret, found: mine.text.includes(secret) }).toEqual({ secret, found: false });
     }
@@ -348,5 +361,19 @@ describe('partners: what they are owed', () => {
     expect((theirs.body as Owed).jobs.map((job) => job.group_id)).toEqual([group]);
     await tenant.castcoMember.get(`/partner-portal/partners/${tenant.castco}/owed`).expect(403);
     await tenant.castcoAdmin.get(`/partner-portal/partners/${tenant.metalworks}/owed`).expect(404);
+
+    // CastCo's first job, taken back with no amount set: owed nothing, and told apart from a paid job.
+    await tenant.staff.post(`/partners/jobs/${tenant.first.group}/reassign`, { partner_id: tenant.metalworks }).expect(201);
+    const takenBack = await owed(tenant, tenant.castco);
+    expect(forJob(takenBack, tenant.first.group)).toMatchObject({ holding: 'taken_back', state: 'owed', amount: '0.00', due: '0.00' });
+    expect(takenBack).toMatchObject({ due_total: '40.00', not_yet_total: '0.00', not_yet_count: 0 });
+
+    // The same hand-over had its order line cancelled instead: the same.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.jobAssignment.updateMany({ where: { groupId: tenant.first.group, partnerId: tenant.castco }, data: { status: 'cancelled' } }),
+    );
+    const cancelled = await owed(tenant, tenant.castco);
+    expect(forJob(cancelled, tenant.first.group)).toMatchObject({ holding: 'cancelled', state: 'owed', amount: '0.00', due: '0.00' });
+    expect(cancelled).toMatchObject({ due_total: '40.00', not_yet_total: '0.00', not_yet_count: 0 });
   });
 });

@@ -7,8 +7,8 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { PartnerAccess, RequirePermission } from '../identity/route-markers';
-import { payoutPageResponseSchema, payoutResponseSchema } from './payment-response';
-import type { PayoutPageResponse, PayoutResponse } from './payment-response';
+import { payoutPageResponseSchema, payoutResponseSchema, portalPayoutPageResponseSchema } from './payment-response';
+import type { PayoutPageResponse, PayoutResponse, PortalPayoutPageResponse } from './payment-response';
 import { PayoutsService } from './payouts.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
@@ -52,16 +52,19 @@ export class PayoutsController {
 
   @ApiDoc({
     summary: "The partner's payouts, newest first, a page at a time, each with what it paid per job.",
+    description: 'Never why the provider refused a transfer; only staff see that.',
     query: paginationQuerySchema,
-    response: payoutPageResponseSchema,
+    response: portalPayoutPageResponseSchema,
     errors: [400, 404],
   })
   @PartnerAccess('admin')
   @Get('partner-portal/partners/:partnerId/payouts')
-  portalList(
+  async portalList(
     @CurrentPartner() partner: PartnerAuth,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
-  ): Promise<PayoutPageResponse> {
-    return this.payouts.list(partner.tenantId, partner.partnerId, query);
+  ): Promise<PortalPayoutPageResponse> {
+    const page = await this.payouts.list(partner.tenantId, partner.partnerId, query);
+    // The provider's own words can tell of the workspace's balance.
+    return { ...page, data: page.data.map(({ failure: _failure, ...payout }) => payout) };
   }
 }

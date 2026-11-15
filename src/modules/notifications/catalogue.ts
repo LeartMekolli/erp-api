@@ -1,4 +1,5 @@
 import type { TenantPermission } from '../identity/permissions';
+import type { PartnerRole } from '../partners/partner-roles';
 
 /** Who a notification reaches, resolved server-side (D71, plan N4). */
 export type Audience =
@@ -7,8 +8,8 @@ export type Audience =
   | { kind: 'permission'; permission: TenantPermission }
   /** The user who uploaded the file version the notification is about. */
   | { kind: 'uploader' }
-  /** The people of the partner the job assignment is for. */
-  | { kind: 'partner' }
+  /** The people of the partner the job assignment or payout is for; with `minRole`, only those of that role or higher. */
+  | { kind: 'partner'; minRole?: PartnerRole }
   /** The people of the customer the order is for. */
   | { kind: 'customer' };
 
@@ -738,7 +739,8 @@ export const EVENTS = {
   },
   // A partner was paid what was due (Payments spec). Never names a customer or an order.
   'payout.paid': {
-    audience: { kind: 'partner' },
+    // Only those who may open the partner's earnings.
+    audience: { kind: 'partner', minRole: 'admin' },
     channels: ['email', 'feed'],
     subjectType: 'payout',
     variables: {

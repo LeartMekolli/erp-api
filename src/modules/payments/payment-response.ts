@@ -156,6 +156,10 @@ export type PayoutResponse = z.infer<typeof payoutResponseSchema>;
 export const payoutPageResponseSchema = pageSchema(payoutResponseSchema);
 export type PayoutPageResponse = z.infer<typeof payoutPageResponseSchema>;
 
+/** The partner's own payouts: the same, without why the provider refused a transfer. */
+export const portalPayoutPageResponseSchema = pageSchema(payoutResponseSchema.omit({ failure: true }));
+export type PortalPayoutPageResponse = z.infer<typeof portalPayoutPageResponseSchema>;
+
 /** Where the customer pays for a waiting order. */
 export const payLinkResponseSchema = z.strictObject({ url: z.string() });
 export type PayLinkResponse = z.infer<typeof payLinkResponseSchema>;
