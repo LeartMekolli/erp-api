@@ -23,6 +23,8 @@ export const feedEntrySchema = z.strictObject({
   subject: z.strictObject({ type: z.string(), id: z.string() }),
   /** The job a notice about a hand-over is for, with its partner, so the app can open it; null for any other notice. */
   job: z.strictObject({ id: z.uuid(), partner_id: z.uuid() }).nullable(),
+  /** The payout a notice is about, with the partner it was paid to, so the app can open that partner's earnings; null for any other notice. */
+  payout: z.strictObject({ id: z.uuid(), partner_id: z.uuid() }).nullable(),
   title: z.string(),
   body: z.string(),
   created_at: z.string(),
@@ -63,7 +65,7 @@ export class FeedController {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
 
-    const { rows, jobs } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const { rows, jobs, payouts } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       const rows = await tx.notificationRecipient.findMany({
         where: {
           userId: auth.userId,
@@ -80,7 +82,15 @@ export class FeedController {
         handOverIds.length > 0
           ? await tx.jobAssignment.findMany({ where: { id: { in: handOverIds } }, select: { id: true, groupId: true, partnerId: true } })
           : [];
-      return { rows, jobs: new Map(handOvers.map((row) => [row.id, { id: row.groupId, partner_id: row.partnerId }])) };
+      // A notice about a payout opens its partner's earnings: one query for the page.
+      const payoutIds = rows.flatMap((row) => (row.notification.subjectType === 'payout' ? [row.notification.subjectId] : []));
+      const paid =
+        payoutIds.length > 0 ? await tx.payout.findMany({ where: { id: { in: payoutIds } }, select: { id: true, partnerId: true } }) : [];
+      return {
+        rows,
+        jobs: new Map(handOvers.map((row) => [row.id, { id: row.groupId, partner_id: row.partnerId }])),
+        payouts: new Map(paid.map((row) => [row.id, { id: row.id, partner_id: row.partnerId }])),
+      };
     });
 
     const page = toPage(rows, query.limit, secret);
@@ -90,6 +100,7 @@ export class FeedController {
         event_key: row.notification.eventKey,
         subject: { type: row.notification.subjectType, id: row.notification.subjectId },
         job: row.notification.subjectType === 'job_assignment' ? (jobs.get(row.notification.subjectId) ?? null) : null,
+        payout: row.notification.subjectType === 'payout' ? (payouts.get(row.notification.subjectId) ?? null) : null,
         title: row.title,
         body: row.body,
         created_at: row.createdAt.toISOString(),

@@ -5,10 +5,12 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
+import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { JOB_REGISTRY, JOBS, JobRegistry, SCHEDULED_JOBS } from '../src/jobs/registry';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { feedEntrySchema } from '../src/modules/notifications/feed.controller';
 import { partnerOwedResponseSchema, portalOwedResponseSchema } from '../src/modules/partners/partner-response';
 import type { FakePaymentProvider } from '../src/modules/payments/fake-payment-provider';
 import { LedgerService } from '../src/modules/payments/ledger.service';
@@ -38,6 +40,11 @@ interface Owed {
   not_yet_count: number;
   currency: string;
   jobs: OwedJob[];
+}
+interface FeedEntry {
+  event_key: string;
+  job: { id: string; partner_id: string } | null;
+  payout: { id: string; partner_id: string } | null;
 }
 interface Payout {
   id: string;
@@ -206,6 +213,14 @@ describe('payments: paying partners', () => {
     );
   const raised = (tenant: Tenant, eventKey: string) =>
     prisma.inTenant(tenant.id, (tx) => tx.notification.count({ where: { eventKey } }));
+  /** The person's feed entries of this event, once there is one. */
+  const feedOf = (person: Tenant['staff'], eventKey: string) =>
+    waitFor(async () => {
+      const response = await person.get('/notifications').expect(200);
+      expectDocumented(pageSchema(feedEntrySchema), response.body);
+      const entries = (response.body as { data: FeedEntry[] }).data.filter((entry) => entry.event_key === eventKey);
+      return entries.length > 0 ? entries : undefined;
+    });
   const partnerCosts = (tenant: Tenant) =>
     prisma.inTenant(tenant.id, (tx) => app.get(LedgerService).balance(tx, 'partner_costs', { partnerId: tenant.castco }));
   /** One of the job's pieces taken back before the payout step: the job is no longer owed. */
@@ -282,6 +297,15 @@ describe('payments: paying partners', () => {
     expect(recipients).toEqual([tenant.castcoOwnerId, tenant.castcoAdminId].sort());
     expect(recipients).not.toContain(tenant.castcoMemberId);
 
+    // The notice names the payout and the partner it was paid to, even for someone who works for two partners.
+    const other = ((await tenant.staff.post('/partners', { name: 'MetalWorks', display_name: 'MetalWorks' }).expect(201)).body as { id: string }).id;
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.organisationMembership.create({ data: { userId: tenant.castcoOwnerId, organisationType: 'partner', organisationId: other, role: 'admin' } }),
+    );
+    expect(await feedOf(tenant.castcoOwner, 'payout.paid')).toEqual([
+      expect.objectContaining({ payout: { id: payout.id, partner_id: tenant.castco }, job: null }),
+    ]);
+
     // Both sides see it, with its jobs; the partner never sees the order behind them.
     const mine = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/payouts`).expect(200);
     expectDocumented(portalPayoutPageResponseSchema, mine.body);
@@ -329,6 +353,10 @@ describe('payments: paying partners', () => {
 
     expect(failed).toMatchObject({ status: 'failed', failure: 'Insufficient funds in the platform balance', providerTransferId: null });
     await waitFor(async () => ((await raised(tenant, 'payout.failed')) === 1 ? true : undefined));
+    // Staff's notice names the partner, so it opens that partner's payouts.
+    expect(await feedOf(tenant.staff, 'payout.failed')).toEqual([
+      expect.objectContaining({ payout: { id: failed.id, partner_id: tenant.castco }, job: null }),
+    ]);
     const due = await owed(tenant);
     expect(forJob(due, tenant.direct.group)).toMatchObject({ paid: '0.00', due: tenant.direct.cost });
     expect(due.due_total).toBe(tenant.total);

@@ -16,6 +16,7 @@ interface FeedEntry {
   event_key: string;
   subject: { type: string; id: string };
   job: { id: string; partner_id: string } | null;
+  payout: { id: string; partner_id: string } | null;
   title: string;
   body: string;
   created_at: string;
@@ -103,6 +104,7 @@ describe('notification feed', () => {
       event_key: 'user.roles_changed',
       subject: { type: 'user', id: me.userId },
       job: null,
+      payout: null,
       title: 'Third',
       body: 'Third body',
       created_at: expect.any(String),
