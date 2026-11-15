@@ -40,6 +40,7 @@ interface OwedJob {
   assignment_id: string;
   group_id: string;
   amount: string;
+  order: { id: string; number: number; line_position: number } | null;
 }
 
 const KEYS = {
@@ -249,6 +250,10 @@ describe('claims: remakes', () => {
     await w.castco.person.post(`/partner-portal/partners/${w.castco.id}/jobs/${group}/accept`).expect(200);
     expect((await claimLine(w, claim)).owedReduction).toBeNull();
     expect((await owedFor(w, w.castco.id, order.lines[0].group_id)).amount).toBe(original.amount);
+    // Staff see the remake is for the claimed order's line, as the original job is.
+    const claimed = { id: order.id, number: order.number, line_position: 0 };
+    expect((await owedFor(w, w.castco.id, group)).order).toEqual(claimed);
+    expect(original.order).toEqual(claimed);
   });
 
   it("hands a declined remake to another workshop and lowers the first one's owed (Review Focus 4)", async () => {
@@ -269,6 +274,8 @@ describe('claims: remakes', () => {
     const cost = d(offered.cost);
     expect(cost.gt(0)).toBe(true);
     await w.metalworks.person.post(`/partner-portal/partners/${w.metalworks.id}/jobs/${group}/accept`).expect(200);
+    // Whoever remakes it, the job names the claimed order's line.
+    expect((await owedFor(w, w.metalworks.id, group)).order).toEqual({ id: order.id, number: order.number, line_position: 0 });
 
     // CastCo is owed that much less for the original job, never below 0, and the line says so.
     const reduced = Prisma.Decimal.min(cost, d(before.amount));

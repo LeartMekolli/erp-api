@@ -19,6 +19,8 @@ import { WorkOrdersService } from '../workflow/work-orders.service';
 import type { CancelledGroup } from '../workflow/work-orders.service';
 import { EligibilityService, liveOpen } from './eligibility.service';
 import type { Job, Verdict } from './eligibility.service';
+import { jobOrders } from './job-orders';
+import type { JobOrder } from './job-orders';
 import { owedFor, passedPayout } from './owed';
 import type { JobAssignmentResponse, JobHistoryResponse, OwedJobResponse, PartnerOwedResponse } from './partner-response';
 import { lockPartner } from './partners.service';
@@ -663,7 +665,8 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
     where: { assignmentId: { in: rows.map((row) => row.id) }, payout: { status: { in: ['pending', 'paid'] } } },
   });
   const paidFor = new Map(held.map((entry) => [entry.assignmentId, entry._sum.amount ?? new Prisma.Decimal(0)]));
-  const customerPaid = await customerPaidFor(tx, rows.map((row) => row.groupId));
+  const orders = await jobOrders(tx, rows.map((row) => row.groupId));
+  const customerPaid = await customerPaidFor(tx, orders);
   return rows.flatMap((row) => {
     const group = byId.get(row.groupId)!;
     const owed = owedFor(row, group.pieces);
@@ -675,6 +678,7 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
         group_id: row.groupId,
         product: group.product ? { name: group.product.name } : null,
         quantity: group.quantity,
+        order: orders.get(row.groupId)?.order ?? null,
         state: owed.state,
         holding: HOLDING[row.status as keyof typeof HOLDING],
         amount: owed.amount.toFixed(2),
@@ -687,14 +691,12 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
   });
 }
 
-/** Per job from an order, its line's or its part's: whether a payment for that order was received. */
-async function customerPaidFor(tx: Tx, groupIds: string[]): Promise<Map<string, boolean>> {
-  const lines = await tx.orderLine.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, orderId: true } });
-  const parts = await tx.orderLinePart.findMany({ where: { groupId: { in: groupIds } }, select: { groupId: true, line: { select: { orderId: true } } } });
-  const orderOf = new Map<string, string>([
-    ...lines.flatMap((line) => (line.groupId ? [[line.groupId, line.orderId] as [string, string]] : [])),
-    ...parts.flatMap((part) => (part.groupId ? [[part.groupId, part.line.orderId] as [string, string]] : [])),
-  ]);
+/**
+ * Per job from an order, its line's or its part's: whether a payment for that order was received. A
+ * claim remake has none: it is not what the customer paid for.
+ */
+async function customerPaidFor(tx: Tx, orders: Map<string, JobOrder>): Promise<Map<string, boolean>> {
+  const orderOf = new Map([...orders].flatMap(([groupId, found]) => (found.remake ? [] : [[groupId, found.order.id] as const])));
   const paidOrders = await tx.ledgerJournal.findMany({
     where: { kind: 'payment_received', orderId: { in: [...new Set(orderOf.values())] } },
     select: { orderId: true },

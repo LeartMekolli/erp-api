@@ -33,6 +33,12 @@ interface OwedJob {
   paid: string;
   due: string;
   customer_paid?: boolean | null;
+  order?: JobOrder | null;
+}
+interface JobOrder {
+  id: string;
+  number: number;
+  line_position: number;
 }
 interface Owed {
   due_total: string;
@@ -51,7 +57,7 @@ interface Payout {
   amount: string;
   status: string;
   failure: string | null;
-  jobs: { group_id: string; amount: string }[];
+  jobs: { group_id: string; amount: string; order?: JobOrder | null }[];
 }
 
 const KEYS = {
@@ -176,8 +182,8 @@ describe('payments: paying partners', () => {
           shipping_method: 'courier',
         })
         .expect(201)
-    ).body as { lines: { group_id: string }[] };
-    const fromOrder = await owedJob(order.lines[0].group_id);
+    ).body as { id: string; number: number; lines: { group_id: string }[] };
+    const fromOrder = { ...(await owedJob(order.lines[0].group_id)), order: { id: order.id, number: order.number, line_position: 0 } };
 
     return {
       id: tenant.id,
@@ -265,11 +271,14 @@ describe('payments: paying partners', () => {
     const before = await owed(tenant);
     expect(forJob(before, tenant.fromOrder.group)).toMatchObject({ state: 'owed', paid: '0.00', due: tenant.fromOrder.cost, customer_paid: false });
     expect(forJob(before, tenant.direct.group)).toMatchObject({ paid: '0.00', due: tenant.direct.cost, customer_paid: null });
+    // Which order each job is from, so staff can open it: none for a job straight from a quote.
+    expect(forJob(before, tenant.fromOrder.group).order).toEqual(tenant.fromOrder.order);
+    expect(forJob(before, tenant.direct.group).order).toBeNull();
     // The total due is what Pay will transfer.
     expect(before).toMatchObject({ due_total: tenant.total, not_yet_total: '0.00', not_yet_count: 0, currency: 'EUR' });
     const portalOwed = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/owed`).expect(200);
     expectDocumented(portalOwedResponseSchema, portalOwed.body);
-    expect((portalOwed.body as Owed).jobs.every((job) => !('customer_paid' in job) && job.due !== undefined)).toBe(true);
+    expect((portalOwed.body as Owed).jobs.every((job) => !('customer_paid' in job) && !('order' in job) && job.due !== undefined)).toBe(true);
     expect(portalOwed.body as Owed).toMatchObject({ due_total: tenant.total, currency: 'EUR' });
 
     // CastCo's owner and member also work for MetalWorks, both as admins there.
@@ -284,6 +293,12 @@ describe('payments: paying partners', () => {
 
     expectDocumented(payoutResponseSchema, res.body);
     expect(res.body).toMatchObject({ status: 'pending', amount: tenant.total });
+    const ordersOf = (jobs: Payout['jobs']) => jobs.map((job) => [job.group_id, job.order]).sort();
+    const expectedOrders = [
+      [tenant.direct.group, null],
+      [tenant.fromOrder.group, tenant.fromOrder.order],
+    ].sort();
+    expect(ordersOf((res.body as Payout).jobs)).toEqual(expectedOrders);
     // A pending payout counts as paid: nothing is due while the transfer is on its way.
     expect((await owed(tenant)).due_total).toBe('0.00');
     const payout = await settled(tenant, (res.body as Payout).id);
@@ -317,9 +332,11 @@ describe('payments: paying partners', () => {
     expect(seen).toEqual([expect.objectContaining({ status: 'paid', amount: tenant.total })]);
     expect(seen[0]).not.toHaveProperty('failure');
     expect(seen[0].jobs.map((job) => job.group_id).sort()).toEqual([tenant.direct.group, tenant.fromOrder.group].sort());
+    expect(seen[0].jobs.every((job) => !('order' in job))).toBe(true);
     expect(mine.text).not.toContain('Brightline');
     const staffSeen = await tenant.staff.get(`/partners/${tenant.castco}/payouts`).expect(200);
     expectDocumented(payoutPageResponseSchema, staffSeen.body);
+    expect(ordersOf((staffSeen.body as { data: Payout[] }).data[0].jobs)).toEqual(expectedOrders);
     expect(await tenant.member.get(`/partners/${tenant.castco}/payouts`).expect(200)).toBeTruthy();
 
     // Paid: nothing is due, and nothing is paid twice.

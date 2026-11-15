@@ -52,7 +52,7 @@ export class PayoutsController {
 
   @ApiDoc({
     summary: "The partner's payouts, newest first, a page at a time, each with what it paid per job.",
-    description: 'Never why the provider refused a transfer; only staff see that.',
+    description: 'Never why the provider refused a transfer, nor the order behind a job; only staff see those.',
     query: paginationQuerySchema,
     response: portalPayoutPageResponseSchema,
     errors: [400, 404],
@@ -64,7 +64,10 @@ export class PayoutsController {
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
   ): Promise<PortalPayoutPageResponse> {
     const page = await this.payouts.list(partner.tenantId, partner.partnerId, query);
-    // The provider's own words can tell of the workspace's balance.
-    return { ...page, data: page.data.map(({ failure: _failure, ...payout }) => payout) };
+    // The provider's own words can tell of the workspace's balance, and the orders are the workspace's.
+    return {
+      ...page,
+      data: page.data.map(({ failure: _failure, jobs, ...payout }) => ({ ...payout, jobs: jobs.map(({ order: _order, ...job }) => job) })),
+    };
   }
 }

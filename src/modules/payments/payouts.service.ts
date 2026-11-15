@@ -8,6 +8,8 @@ import type { PaymentEvent, Prisma } from '../../generated/prisma/client';
 import { JobsService as QueueService } from '../../jobs/jobs.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
+import { jobOrders } from '../partners/job-orders';
+import type { JobOrder } from '../partners/job-orders';
 import { JobsService } from '../partners/jobs.service';
 import { lockPartner } from '../partners/partners.service';
 import { buildJournal } from './ledger';
@@ -57,14 +59,14 @@ export class PayoutsService implements OnModuleInit {
 
   /** A pending payout of everything due; 409 without a ready account or with nothing to pay. */
   async pay(auth: Pick<TenantAuth, 'tenantId' | 'userId'>, partnerId: string): Promise<PayoutResponse> {
-    const payout = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+    const { payout, orders } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockPartner(tx, partnerId);
       const account = await tx.partnerPayoutAccount.findUnique({ where: { partnerId }, select: { state: true } });
       if (account?.state !== 'ready') throw new ConflictException('The partner has no ready payout account');
       const { lines, total } = payoutLines(await this.partnerJobs.dues(tx, partnerId));
       if (!total.gt(0)) throw new ConflictException('Nothing to pay');
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { defaultCurrency: true } });
-      return tx.payout.create({
+      const created = await tx.payout.create({
         data: {
           partnerId,
           amount: total,
@@ -75,9 +77,10 @@ export class PayoutsService implements OnModuleInit {
         },
         include: withJobs,
       });
+      return { payout: created, orders: await ordersOf(tx, [created]) };
     });
     await this.queue.enqueue('payments.payout.transfer', { tenantId: auth.tenantId, payoutId: payout.id });
-    return toResponse(payout);
+    return toResponse(payout, orders);
   }
 
   async list(tenantId: string, partnerId: string, query: PaginationQuery): Promise<PayoutPageResponse> {
@@ -95,7 +98,8 @@ export class PayoutsService implements OnModuleInit {
         include: withJobs,
       });
       const page = toPage(rows, query.limit, secret);
-      return { data: page.data.map(toResponse), next_cursor: page.next_cursor };
+      const orders = await ordersOf(tx, page.data);
+      return { data: page.data.map((payout) => toResponse(payout, orders)), next_cursor: page.next_cursor };
     });
   }
 
@@ -237,7 +241,12 @@ export class PayoutsService implements OnModuleInit {
   }
 }
 
-function toResponse(payout: PayoutWithJobs): PayoutResponse {
+/** The order behind each job of these payouts, for staff: one lookup for the page. */
+function ordersOf(tx: Tx, payouts: PayoutWithJobs[]): Promise<Map<string, JobOrder>> {
+  return jobOrders(tx, [...new Set(payouts.flatMap((payout) => payout.jobs.map((job) => job.assignment.groupId)))]);
+}
+
+function toResponse(payout: PayoutWithJobs, orders: Map<string, JobOrder>): PayoutResponse {
   return {
     id: payout.id,
     partner_id: payout.partnerId,
@@ -252,6 +261,7 @@ function toResponse(payout: PayoutWithJobs): PayoutResponse {
       group_id: job.assignment.groupId,
       product: job.assignment.group.product ? { name: job.assignment.group.product.name } : null,
       quantity: job.assignment.group.quantity,
+      order: orders.get(job.assignment.groupId)?.order ?? null,
       amount: job.amount.toFixed(2),
     })),
   };

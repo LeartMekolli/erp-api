@@ -8,6 +8,7 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { customerOrderResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
+import { partnerOwedResponseSchema } from '../src/modules/partners/partner-response';
 import { pricedAssembly } from './assembly-fixtures';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -40,6 +41,7 @@ interface Line {
 }
 interface Order {
   id: string;
+  number: number;
   state: string;
   lines_total: string;
   lines: Line[];
@@ -269,6 +271,23 @@ describe('orders: assemblies', () => {
     ]);
     for (const secret of ['MetalWorks', 'partner', 'cost', 'margin', 'group_id', placed.lines[0].parts[0].total, placed.lines[0].parts[1].total]) {
       expect({ secret, found: seen.text.includes(secret) }).toEqual({ secret, found: false });
+    }
+  });
+
+  it("names the set's order on each part's job, as staff see what the partner is owed", async () => {
+    const tenant = await freshTenant();
+    // The set is the order's second line, so a part's job names its line's position, not its own.
+    const placed = (await order(tenant, [(await castQuote(tenant)).id, (await setQuote(tenant)).id]).expect(201)).body as Order;
+    const [pendantPart, bailPart] = placed.lines[1].parts;
+    await handTo(tenant, pendantPart.group_id, tenant.metalworks);
+    await handTo(tenant, bailPart.group_id, tenant.metalworks);
+
+    const owed = await tenant.staff.get(`/partners/${tenant.metalworks.id}/owed`).expect(200);
+
+    expectDocumented(partnerOwedResponseSchema, owed.body);
+    const jobs = (owed.body as { jobs: { group_id: string; order: object | null }[] }).jobs;
+    for (const part of [pendantPart, bailPart]) {
+      expect(jobs.find((job) => job.group_id === part.group_id)?.order).toEqual({ id: placed.id, number: placed.number, line_position: 1 });
     }
   });
 
