@@ -127,7 +127,8 @@ export class JobsController {
     summary: 'Set what a partner is owed for a job instead of its cost, with a reason.',
     description:
       'For the partner that has the job, or one it was taken from mid-way (else 404). The job is still owed only once ' +
-      'every live piece has passed the payout step; for a partner replaced mid-way, at once.',
+      'every live piece has passed the payout step; for a partner replaced mid-way, at once. The job names the order ' +
+      'it is from, for a claim remake the claimed one.',
     body: setOwedSchema,
     response: owedJobResponseSchema,
     errors: [400, 404],

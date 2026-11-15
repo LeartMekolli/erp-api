@@ -13,7 +13,8 @@ const orderOfLine = { position: true, order: { select: { id: true, number: true 
 
 /**
  * Per job, by group id: its order line's order, its line part's line's, or for a claim remake the
- * claimed line's. A job from a quote has none. Three reads for any number of jobs.
+ * claimed line's. A group is started from one source only, so at most one read finds it. A job from a
+ * quote has none. Three reads for any number of jobs.
  */
 export async function jobOrders(tx: Tx, groupIds: string[]): Promise<Map<string, JobOrder>> {
   if (groupIds.length === 0) return new Map();

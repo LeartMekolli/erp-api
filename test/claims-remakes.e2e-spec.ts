@@ -8,6 +8,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { claimDecisionResponseSchema, claimResponseSchema } from '../src/modules/claims/claim-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { payoutPageResponseSchema } from '../src/modules/payments/payment-response';
 import { pricedAssembly } from './assembly-fixtures';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -168,7 +169,7 @@ describe('claims: remakes', () => {
           .expect(201)
       ).body as Claim;
 
-    return { id: tenant.id, staff, castco, metalworks, workshop, luna, buyer, delivered, claim };
+    return { id: tenant.id, ownerId: owner.id, staff, castco, metalworks, workshop, luna, buyer, delivered, claim };
   }
   type Workspace = Awaited<ReturnType<typeof workspace>>;
 
@@ -274,8 +275,30 @@ describe('claims: remakes', () => {
     const cost = d(offered.cost);
     expect(cost.gt(0)).toBe(true);
     await w.metalworks.person.post(`/partner-portal/partners/${w.metalworks.id}/jobs/${group}/accept`).expect(200);
-    // Whoever remakes it, the job names the claimed order's line.
-    expect((await owedFor(w, w.metalworks.id, group)).order).toEqual({ id: order.id, number: order.number, line_position: 0 });
+    // Whoever remakes it, the job names the claimed order's line, on what MetalWorks is owed and is paid.
+    const claimed = { id: order.id, number: order.number, line_position: 0 };
+    const remade = await owedFor(w, w.metalworks.id, group);
+    expect(remade.order).toEqual(claimed);
+    // A settled payout for it, written straight away: paying is Payments' to test.
+    await prisma.inTenant(w.id, (tx) =>
+      tx.payout.create({
+        data: {
+          partnerId: w.metalworks.id,
+          amount: offered.cost,
+          currency: 'EUR',
+          status: 'paid',
+          providerTransferId: `tr_${randomBytes(6).toString('hex')}`,
+          createdByUserId: w.ownerId,
+          settledAt: new Date(),
+          jobs: { create: [{ assignmentId: remade.assignment_id, amount: offered.cost }] },
+        },
+      }),
+    );
+    const payouts = await w.staff.get(`/partners/${w.metalworks.id}/payouts`).expect(200);
+    expectDocumented(payoutPageResponseSchema, payouts.body);
+    expect((payouts.body as { data: { jobs: { group_id: string; order: object | null }[] }[] }).data[0].jobs).toEqual([
+      expect.objectContaining({ group_id: group, order: claimed }),
+    ]);
 
     // CastCo is owed that much less for the original job, never below 0, and the line says so.
     const reduced = Prisma.Decimal.min(cost, d(before.amount));
