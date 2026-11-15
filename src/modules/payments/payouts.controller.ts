@@ -52,7 +52,7 @@ export class PayoutsController {
 
   @ApiDoc({
     summary: "The partner's payouts, newest first, a page at a time, each with what it paid per job.",
-    description: 'Never why the provider refused a transfer: that tells staff only.',
+    description: 'Never why the provider refused a transfer; only staff see that.',
     query: paginationQuerySchema,
     response: portalPayoutPageResponseSchema,
     errors: [400, 404],

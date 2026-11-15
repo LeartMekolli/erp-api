@@ -362,7 +362,13 @@ describe('partners: what they are owed', () => {
     await tenant.castcoMember.get(`/partner-portal/partners/${tenant.castco}/owed`).expect(403);
     await tenant.castcoAdmin.get(`/partner-portal/partners/${tenant.metalworks}/owed`).expect(404);
 
-    // CastCo's first job, its order line cancelled with no amount set: owed nothing, and told apart from a paid job.
+    // CastCo's first job, taken back with no amount set: owed nothing, and told apart from a paid job.
+    await tenant.staff.post(`/partners/jobs/${tenant.first.group}/reassign`, { partner_id: tenant.metalworks }).expect(201);
+    const takenBack = await owed(tenant, tenant.castco);
+    expect(forJob(takenBack, tenant.first.group)).toMatchObject({ holding: 'taken_back', state: 'owed', amount: '0.00', due: '0.00' });
+    expect(takenBack).toMatchObject({ due_total: '40.00', not_yet_total: '0.00', not_yet_count: 0 });
+
+    // The same hand-over had its order line cancelled instead: the same.
     await prisma.inTenant(tenant.id, (tx) =>
       tx.jobAssignment.updateMany({ where: { groupId: tenant.first.group, partnerId: tenant.castco }, data: { status: 'cancelled' } }),
     );

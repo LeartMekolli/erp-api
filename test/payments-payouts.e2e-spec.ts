@@ -272,6 +272,14 @@ describe('payments: paying partners', () => {
     expect((portalOwed.body as Owed).jobs.every((job) => !('customer_paid' in job) && job.due !== undefined)).toBe(true);
     expect(portalOwed.body as Owed).toMatchObject({ due_total: tenant.total, currency: 'EUR' });
 
+    // CastCo's owner and member also work for MetalWorks, both as admins there.
+    const metalworks = ((await tenant.staff.post('/partners', { name: 'MetalWorks', display_name: 'MetalWorks' }).expect(201)).body as { id: string }).id;
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.organisationMembership.createMany({
+        data: [tenant.castcoOwnerId, tenant.castcoMemberId].map((userId) => ({ userId, organisationType: 'partner', organisationId: metalworks, role: 'admin' })),
+      }),
+    );
+
     const res = await pay(tenant).expect(202);
 
     expectDocumented(payoutResponseSchema, res.body);
@@ -287,7 +295,7 @@ describe('payments: paying partners', () => {
     expect((await partnerCosts(tenant)).toFixed(2)).toBe(tenant.total);
     // The partner is told once the payout has committed.
     await waitFor(async () => ((await raised(tenant, 'payout.paid')) === 1 ? true : undefined));
-    // Only those who may open the partner's earnings: its admins and owners, never a member.
+    // Only those who may open CastCo's earnings: its admins and owners, never its member, though an admin elsewhere.
     const recipients = await waitFor(() =>
       prisma.inTenant(tenant.id, async (tx) => {
         const rows = await tx.notificationRecipient.findMany({ where: { notification: { eventKey: 'payout.paid' } }, select: { userId: true } });
@@ -298,10 +306,6 @@ describe('payments: paying partners', () => {
     expect(recipients).not.toContain(tenant.castcoMemberId);
 
     // The notice names the payout and the partner it was paid to, even for someone who works for two partners.
-    const other = ((await tenant.staff.post('/partners', { name: 'MetalWorks', display_name: 'MetalWorks' }).expect(201)).body as { id: string }).id;
-    await prisma.inTenant(tenant.id, (tx) =>
-      tx.organisationMembership.create({ data: { userId: tenant.castcoOwnerId, organisationType: 'partner', organisationId: other, role: 'admin' } }),
-    );
     expect(await feedOf(tenant.castcoOwner, 'payout.paid')).toEqual([
       expect.objectContaining({ payout: { id: payout.id, partner_id: tenant.castco }, job: null }),
     ]);

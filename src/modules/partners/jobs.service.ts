@@ -52,11 +52,12 @@ export const setOwedSchema = z.object({
   reason: z.string().trim().min(1).max(500),
 });
 
-/** The hand-overs a partner can be owed for: the job it has, those taken from it mid-way, and those whose order line was cancelled. */
-const OWED_STATUSES = ['accepted', 'replaced', 'cancelled'];
-
-/** Whether the partner still has the job, by its hand-over's status: one per status in `OWED_STATUSES`. */
+/**
+ * The hand-overs a partner can be owed for, and whether it still has the job: the job it has, those taken
+ * from it mid-way, and those whose order line was cancelled.
+ */
 const HOLDING = { accepted: 'with_you', replaced: 'taken_back', cancelled: 'cancelled' } as const;
+const OWED_STATUSES = Object.keys(HOLDING);
 
 /** How long an offer stays open when the workspace hasn't set `partners.routing`. */
 const DEFAULT_OFFER_HOURS = 24;

@@ -84,12 +84,12 @@ export class FeedController {
           : [];
       // A notice about a payout opens its partner's earnings: one query for the page.
       const payoutIds = rows.flatMap((row) => (row.notification.subjectType === 'payout' ? [row.notification.subjectId] : []));
-      const paid =
+      const payoutRows =
         payoutIds.length > 0 ? await tx.payout.findMany({ where: { id: { in: payoutIds } }, select: { id: true, partnerId: true } }) : [];
       return {
         rows,
         jobs: new Map(handOvers.map((row) => [row.id, { id: row.groupId, partner_id: row.partnerId }])),
-        payouts: new Map(paid.map((row) => [row.id, { id: row.id, partner_id: row.partnerId }])),
+        payouts: new Map(payoutRows.map((row) => [row.id, { id: row.id, partner_id: row.partnerId }])),
       };
     });
 
