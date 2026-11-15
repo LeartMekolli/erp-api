@@ -257,15 +257,16 @@ describe('orders: state and cancelling', () => {
 
     // MetalWorks is owed 25.00 for the cancelled job, at once.
     const owed = (await tenant.staff.get(`/partners/${tenant.metalworks}/owed`).expect(200)).body as {
-      total: string;
-      jobs: { group_id: string; state: string; amount: string; override_reason: string | null }[];
+      due_total: string;
+      jobs: { group_id: string; state: string; holding: string; amount: string; override_reason: string | null }[];
     };
     expect(owed.jobs.find((job) => job.group_id === first.group_id)).toMatchObject({
       state: 'owed',
+      holding: 'cancelled',
       amount: '25.00',
       override_reason: 'Patterns already printed',
     });
-    expect(owed.total).toBe('25.00');
+    expect(owed.due_total).toBe('25.00');
     const firstHistory = (await tenant.staff.get(`/partners/jobs/${first.group_id}`).expect(200)).body as { data: { status: string }[] };
     expect(firstHistory.data.map((row) => row.status)).toEqual(['cancelled']);
 
