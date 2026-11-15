@@ -33,7 +33,7 @@ export class PartnerJobsController {
     summary: 'What the partner is owed, per job it has or had, newest first, a page at a time.',
     description:
       'A job is owed once every live piece has passed the payout step: its cost, or an amount the workspace set. ' +
-      '`total` counts only what is owed now, across every page.',
+      '`due_total` is what the next payout pays and `not_yet_total` what the jobs not owed yet will be, across every page.',
     query: paginationQuerySchema,
     response: portalOwedResponseSchema,
     errors: [400, 404],
@@ -44,17 +44,17 @@ export class PartnerJobsController {
     @CurrentPartner() partner: PartnerAuth,
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
   ): Promise<PortalOwedResponse> {
-    const { total, jobs, next_cursor } = await this.assignments.owed(partner.tenantId, partner.partnerId, query);
+    const { jobs, ...totals } = await this.assignments.owed(partner.tenantId, partner.partnerId, query);
     // Staff's reasons stay with staff.
     return {
-      total,
-      next_cursor,
+      ...totals,
       jobs: jobs.map((job) => ({
         assignment_id: job.assignment_id,
         group_id: job.group_id,
         product: job.product,
         quantity: job.quantity,
         state: job.state,
+        holding: job.holding,
         amount: job.amount,
         paid: job.paid,
         due: job.due,

@@ -375,7 +375,15 @@ export const owedJobResponseSchema = z.strictObject({
   quantity: z.number().int(),
   /** `not_yet` until every live piece has passed the payout step. */
   state: z.enum(['not_yet', 'owed']),
-  /** What is owed, or will be: the cost frozen at the hand-over, or what staff set instead. */
+  /**
+   * Whether the partner still has the job: `with_you` while it does, `taken_back` once staff moved it to
+   * another partner, `cancelled` once its order line was cancelled.
+   */
+  holding: z.enum(['with_you', 'taken_back', 'cancelled']),
+  /**
+   * What is owed, or will be: the cost frozen at the hand-over, or what staff set instead. A job taken
+   * back or cancelled is owed what staff set, `0.00` if nothing.
+   */
   amount: z.string(),
   /** Why staff set the amount; null when it is the cost. */
   override_reason: z.string().nullable(),
@@ -388,12 +396,21 @@ export const owedJobResponseSchema = z.strictObject({
 });
 export type OwedJobResponse = z.infer<typeof owedJobResponseSchema>;
 
-/**
- * What staff see a partner is owed: a page of hand-overs, newest first; `total` counts only what is
- * owed now, across every page.
- */
+/** The totals of what a partner is owed, across every page of its hand-overs. */
+const owedTotals = {
+  /** What the next payout pays across every page, as Pay works it out; `0.00` or negative when nothing can be paid. */
+  due_total: z.string(),
+  /** What the jobs still `not_yet` will be owed, across every page. */
+  not_yet_total: z.string(),
+  /** How many jobs are still `not_yet`, across every page. */
+  not_yet_count: z.number().int(),
+  /** The workspace's currency; every amount here is in it. */
+  currency: z.string().length(3),
+};
+
+/** What staff see a partner is owed: its totals, and a page of hand-overs, newest first. */
 export const partnerOwedResponseSchema = z.strictObject({
-  total: z.string(),
+  ...owedTotals,
   jobs: z.array(owedJobResponseSchema),
   next_cursor: z.string().nullable(),
 });
@@ -401,7 +418,7 @@ export type PartnerOwedResponse = z.infer<typeof partnerOwedResponseSchema>;
 
 /** What a partner sees it is owed: the same, without staff's reasons. */
 export const portalOwedResponseSchema = z.strictObject({
-  total: z.string(),
+  ...owedTotals,
   jobs: z.array(owedJobResponseSchema.omit({ override_reason: true, customer_paid: true })),
   next_cursor: z.string().nullable(),
 });

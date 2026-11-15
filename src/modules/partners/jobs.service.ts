@@ -12,7 +12,7 @@ import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ONE_PARTNER, defaultDueOn, lockOrderOfGroup, otherLinePartners, workspaceToday } from '../orders/order-lines';
 import { WAITING_FOR_PAYMENT, waitingGroupIds } from '../orders/payment-hold';
-import { dueFor } from '../payments/payouts';
+import { dueFor, payoutLines } from '../payments/payouts';
 import { SettingsService } from '../settings/settings.service';
 import { payoutStepId } from '../workflow/partner-steps';
 import { WorkOrdersService } from '../workflow/work-orders.service';
@@ -54,6 +54,9 @@ export const setOwedSchema = z.object({
 
 /** The hand-overs a partner can be owed for: the job it has, those taken from it mid-way, and those whose order line was cancelled. */
 const OWED_STATUSES = ['accepted', 'replaced', 'cancelled'];
+
+/** Whether the partner still has the job, by its hand-over's status: one per status in `OWED_STATUSES`. */
+const HOLDING = { accepted: 'with_you', replaced: 'taken_back', cancelled: 'cancelled' } as const;
 
 /** How long an offer stays open when the workspace hasn't set `partners.routing`. */
 const DEFAULT_OFFER_HOURS = 24;
@@ -451,20 +454,28 @@ export class JobsService implements OnModuleInit {
       if (!(await tx.partner.findUnique({ where: { id: partnerId }, select: { id: true } }))) {
         throw new NotFoundException('Partner not found');
       }
-      // The total covers every hand-over, so all are judged; the jobs and their pieces load in one query.
+      // The totals cover every hand-over, so all are judged; the jobs and their pieces load in one query.
       const rows = await tx.jobAssignment.findMany({
         where: { partnerId, status: { in: OWED_STATUSES } },
         orderBy: { id: 'desc' },
       });
       const jobs = await owedJobs(tx, rows);
-      const total = jobs
-        .filter((job) => job.state === 'owed')
-        .reduce((sum, job) => sum.plus(job.amount), new Prisma.Decimal(0));
+      // What is due is worked out as Pay works it out, so the two never disagree.
+      const due = payoutLines(jobs.map((job) => ({ assignmentId: job.assignment_id, due: new Prisma.Decimal(job.due) }))).total;
+      const notYet = jobs.filter((job) => job.state === 'not_yet');
+      const { defaultCurrency } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { defaultCurrency: true } });
       // Newest first by hand-over id, as the database orders uuids.
       const rest = after ? jobs.filter((job) => job.assignment_id < after.id) : jobs;
       const data = rest.slice(0, query.limit);
       const next_cursor = rest.length > query.limit ? encodeCursor({ id: data.at(-1)!.assignment_id }, secret) : null;
-      return { total: total.toFixed(2), jobs: data, next_cursor };
+      return {
+        due_total: due.toFixed(2),
+        not_yet_total: notYet.reduce((sum, job) => sum.plus(job.amount), new Prisma.Decimal(0)).toFixed(2),
+        not_yet_count: notYet.length,
+        currency: defaultCurrency,
+        jobs: data,
+        next_cursor,
+      };
     });
   }
 
@@ -664,6 +675,7 @@ async function owedJobs(tx: Tx, rows: JobAssignment[]): Promise<OwedJobResponse[
         product: group.product ? { name: group.product.name } : null,
         quantity: group.quantity,
         state: owed.state,
+        holding: HOLDING[row.status as keyof typeof HOLDING],
         amount: owed.amount.toFixed(2),
         override_reason: row.owedOverride !== null ? row.owedOverrideReason : null,
         paid: paid.toFixed(2),
