@@ -148,6 +148,13 @@ describe('notification catalogue', () => {
     }
   });
 
+  it("tells every person of the partner of its jobs, and only its admins and owners of a payout, as only they see its earnings", () => {
+    for (const event of ['partner.job.offered', 'partner.job.direct', 'partner.job.reassigned', 'partner.job.reworked'] as const) {
+      expect([event, EVENTS[event].audience]).toStrictEqual([event, { kind: 'partner' }]);
+    }
+    expect(EVENTS['payout.paid'].audience).toStrictEqual({ kind: 'partner', minRole: 'admin' });
+  });
+
   it.each(events)('%s: every sample is non-empty', (event) => {
     for (const variable of Object.values(variablesOf(event))) {
       expect(variable.sample.length).toBeGreaterThan(0);

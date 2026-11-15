@@ -85,14 +85,16 @@ describe('payments: paying partners', () => {
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
 
-  async function partnerPerson(tenantId: string, partnerId: string, role: string) {
+  /** A person of the partner with this role; their user id. */
+  async function partnerPersonId(tenantId: string, partnerId: string, role: string) {
     const user = await createTestUser(prisma, tenantId, { roles: [] });
     await prisma.inTenant(tenantId, async (tx) => {
       await tx.user.update({ where: { id: user.id }, data: { kind: 'partner' } });
       await tx.organisationMembership.create({ data: { userId: user.id, organisationType: 'partner', organisationId: partnerId, role } });
     });
-    return as((await tokens.issueForUser(tenantId, user.id)).accessToken);
+    return user.id;
   }
+  const signedIn = async (tenantId: string, userId: string) => as((await tokens.issueForUser(tenantId, userId)).accessToken);
 
   /**
    * The priced cast part; tax at 19 %; the workspace's payment keys; CastCo approved, with an owner and
@@ -128,7 +130,8 @@ describe('payments: paying partners', () => {
     const agreement = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [] })).versionId;
     await staff.put(`/partners/${castco}/agreement`, { file_version_id: agreement, signed_on: '2026-10-24' }).expect(200);
     await staff.post(`/partners/${castco}/approve`).expect(200);
-    const castcoOwner = await partnerPerson(tenant.id, castco, 'owner');
+    const castcoOwnerId = await partnerPersonId(tenant.id, castco, 'owner');
+    const castcoOwner = await signedIn(tenant.id, castcoOwnerId);
 
     // CastCo's payout account, made through a link and ready at the provider.
     await castcoOwner.post(`/partner-portal/partners/${castco}/payout-account/link`).expect(200);
@@ -175,6 +178,9 @@ describe('payments: paying partners', () => {
       member: as((await tokens.issueForUser(tenant.id, member.id)).accessToken),
       castco,
       castcoOwner,
+      castcoOwnerId,
+      castcoAdminId: await partnerPersonId(tenant.id, castco, 'admin'),
+      castcoMemberId: await partnerPersonId(tenant.id, castco, 'member'),
       accountId: account.providerAccountId,
       direct,
       fromOrder,
@@ -266,6 +272,15 @@ describe('payments: paying partners', () => {
     expect((await partnerCosts(tenant)).toFixed(2)).toBe(tenant.total);
     // The partner is told once the payout has committed.
     await waitFor(async () => ((await raised(tenant, 'payout.paid')) === 1 ? true : undefined));
+    // Only those who may open the partner's earnings: its admins and owners, never a member.
+    const recipients = await waitFor(() =>
+      prisma.inTenant(tenant.id, async (tx) => {
+        const rows = await tx.notificationRecipient.findMany({ where: { notification: { eventKey: 'payout.paid' } }, select: { userId: true } });
+        return rows.length > 0 ? rows.map((row) => row.userId).sort() : undefined;
+      }),
+    );
+    expect(recipients).toEqual([tenant.castcoOwnerId, tenant.castcoAdminId].sort());
+    expect(recipients).not.toContain(tenant.castcoMemberId);
 
     // Both sides see it, with its jobs; the partner never sees the order behind them.
     const mine = await tenant.castcoOwner.get(`/partner-portal/partners/${tenant.castco}/payouts`).expect(200);
