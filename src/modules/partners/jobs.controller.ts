@@ -127,7 +127,8 @@ export class JobsController {
     summary: 'Set what a partner is owed for a job instead of its cost, with a reason.',
     description:
       'For the partner that has the job, or one it was taken from mid-way (else 404). The job is still owed only once ' +
-      'every live piece has passed the payout step; for a partner replaced mid-way, at once.',
+      'every live piece has passed the payout step; for a partner replaced mid-way, at once. The job names the order ' +
+      'it is from, for a claim remake the claimed one.',
     body: setOwedSchema,
     response: owedJobResponseSchema,
     errors: [400, 404],
@@ -147,7 +148,7 @@ export class JobsController {
     description:
       "A job is owed once every live piece has passed its workflow's payout step: the cost frozen when it was handed " +
       'over, or what staff set instead. `due_total` is what Pay would transfer and `not_yet_total` what the jobs not owed ' +
-      'yet will be, across every page.',
+      'yet will be, across every page. Each job names the order it is from, for a claim remake the claimed one.',
     query: paginationQuerySchema,
     response: partnerOwedResponseSchema,
     errors: [400, 404],

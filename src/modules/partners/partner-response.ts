@@ -363,6 +363,15 @@ export const partnerChoicesResponseSchema = z.strictObject({
 });
 export type PartnerChoicesResponse = z.infer<typeof partnerChoicesResponseSchema>;
 
+/** The order a job is from and the position of its line there, for staff to open it. */
+export const jobOrderSchema = z.strictObject({
+  id: z.uuid(),
+  number: z.number().int(),
+  /** The line's position in the order, from 0. */
+  line_position: z.number().int(),
+});
+export type JobOrderResponse = z.infer<typeof jobOrderSchema>;
+
 /**
  * What a partner is owed for one hand-over of a job (Partners spec, goal 14): owed once every live piece
  * has passed the payout step, or at once for a partner replaced mid-way (P16).
@@ -373,6 +382,11 @@ export const owedJobResponseSchema = z.strictObject({
   group_id: z.uuid(),
   product: z.strictObject({ name: z.string() }).nullable(),
   quantity: z.number().int(),
+  /**
+   * The order the job is from: its line's, its part's line's, or for a claim remake the claimed line's;
+   * null for a job from a quote. Staff only.
+   */
+  order: jobOrderSchema.nullable(),
   /** `not_yet` until every live piece has passed the payout step. */
   state: z.enum(['not_yet', 'owed']),
   /**
@@ -416,10 +430,10 @@ export const partnerOwedResponseSchema = z.strictObject({
 });
 export type PartnerOwedResponse = z.infer<typeof partnerOwedResponseSchema>;
 
-/** What a partner sees it is owed: the same, without staff's reasons. */
+/** What a partner sees it is owed: the same, without staff's reasons or the order behind a job. */
 export const portalOwedResponseSchema = z.strictObject({
   ...owedTotals,
-  jobs: z.array(owedJobResponseSchema.omit({ override_reason: true, customer_paid: true })),
+  jobs: z.array(owedJobResponseSchema.omit({ override_reason: true, customer_paid: true, order: true })),
   next_cursor: z.string().nullable(),
 });
 export type PortalOwedResponse = z.infer<typeof portalOwedResponseSchema>;

@@ -7,7 +7,7 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentPartner, CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { PartnerAuth, TenantAuth } from '../identity/auth-context';
 import { PartnerAccess, RequirePermission } from '../identity/route-markers';
-import { payoutPageResponseSchema, payoutResponseSchema, portalPayoutPageResponseSchema } from './payment-response';
+import { payRefusedResponseSchema, payoutPageResponseSchema, payoutResponseSchema, portalPayoutPageResponseSchema } from './payment-response';
 import type { PayoutPageResponse, PayoutResponse, PortalPayoutPageResponse } from './payment-response';
 import { PayoutsService } from './payouts.service';
 
@@ -22,10 +22,11 @@ export class PayoutsController {
     summary: 'Pay a partner everything due, in one transfer to its payout account.',
     description:
       'What is due is what each job is owed now less what payouts have paid for it, so a raised amount or a job taken ' +
-      'back shows here. Answers 202 with the payout `pending`; the transfer follows. A partner without a ready payout ' +
-      'account, or with nothing due, is a 409; pressing Pay again while one is pending finds nothing due.',
+      'back shows here. Answers 202 with the payout `pending`; the transfer follows. Without a ready payout account the ' +
+      "409 has `code: 'payout_account_not_ready'`; with nothing due, `code: 'nothing_due'`. Pressing Pay again while " +
+      'one is pending finds nothing due.',
     response: payoutResponseSchema,
-    errors: [400, 404, 409],
+    errors: [400, 404, { status: 409, schema: payRefusedResponseSchema }],
   })
   @RequirePermission('payment.payout')
   @Post('partners/:id/payouts')
@@ -52,7 +53,7 @@ export class PayoutsController {
 
   @ApiDoc({
     summary: "The partner's payouts, newest first, a page at a time, each with what it paid per job.",
-    description: 'Never why the provider refused a transfer; only staff see that.',
+    description: 'Never why the provider refused a transfer, nor the order behind a job; only staff see those.',
     query: paginationQuerySchema,
     response: portalPayoutPageResponseSchema,
     errors: [400, 404],
@@ -64,7 +65,10 @@ export class PayoutsController {
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: PaginationQuery,
   ): Promise<PortalPayoutPageResponse> {
     const page = await this.payouts.list(partner.tenantId, partner.partnerId, query);
-    // The provider's own words can tell of the workspace's balance.
-    return { ...page, data: page.data.map(({ failure: _failure, ...payout }) => payout) };
+    // The provider's own words can tell of the workspace's balance, and the orders are the workspace's.
+    return {
+      ...page,
+      data: page.data.map(({ failure: _failure, jobs, ...payout }) => ({ ...payout, jobs: jobs.map(({ order: _order, ...job }) => job) })),
+    };
   }
 }

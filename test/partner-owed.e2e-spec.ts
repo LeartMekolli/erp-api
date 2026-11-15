@@ -282,6 +282,8 @@ describe('partners: what they are owed', () => {
       .expect(200);
     expectDocumented(owedJobResponseSchema, set.body);
     expect(set.body).toMatchObject({ group_id: group, state: 'owed', amount: '180.00', override_reason: 'Agreed rush surcharge' });
+    // Started straight from a quote: no order behind it.
+    expect((set.body as { order: object | null }).order).toBeNull();
     all = await owed(tenant, tenant.castco);
     expect(forJob(all, group)).toMatchObject({ state: 'owed', amount: '180.00', override_reason: 'Agreed rush surcharge' });
     expect(all.due_total).toBe('180.00');

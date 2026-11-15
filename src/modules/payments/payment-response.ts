@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
 import type { Prisma } from '../../generated/prisma/client';
 import { orderPaymentResponseSchema } from '../orders/order-response';
-import { PAYOUT_ACCOUNT_STATES } from '../partners/partner-response';
+import { PAYOUT_ACCOUNT_STATES, jobOrderSchema } from '../partners/partner-response';
 import { ACCOUNTS, JOURNAL_KINDS } from './ledger';
 import { PAYMENT_TERMS } from './payment-state';
 
@@ -127,7 +127,17 @@ export type PayoutAccountResponse = z.infer<typeof payoutAccountResponseSchema>;
 export const payoutLinkResponseSchema = z.strictObject({ url: z.string(), expires_at: z.iso.datetime() });
 export type PayoutLinkResponse = z.infer<typeof payoutLinkResponseSchema>;
 
-/** One transfer to a partner of what was due, with what it holds for each job; never the order behind a job. */
+/** One job a payout pays for, and what it holds for it. */
+const payoutJobSchema = z.strictObject({
+  assignment_id: z.uuid(),
+  group_id: z.uuid(),
+  product: z.strictObject({ name: z.string() }).nullable(),
+  quantity: z.number().int(),
+  /** Negative when the payout takes back what an earlier one paid for the job. */
+  amount: z.string(),
+});
+
+/** One transfer to a partner of what was due, with what it holds for each job and the order each is from, for staff. */
 export const payoutResponseSchema = z.strictObject({
   id: z.uuid(),
   partner_id: z.uuid(),
@@ -140,13 +150,9 @@ export const payoutResponseSchema = z.strictObject({
   created_at: z.iso.datetime(),
   settled_at: z.iso.datetime().nullable(),
   jobs: z.array(
-    z.strictObject({
-      assignment_id: z.uuid(),
-      group_id: z.uuid(),
-      product: z.strictObject({ name: z.string() }).nullable(),
-      quantity: z.number().int(),
-      /** Negative when the payout takes back what an earlier one paid for the job. */
-      amount: z.string(),
+    payoutJobSchema.extend({
+      /** The order the job is from, as on what the partner is owed; null for a job from a quote. */
+      order: jobOrderSchema.nullable(),
     }),
   ),
 });
@@ -156,8 +162,25 @@ export type PayoutResponse = z.infer<typeof payoutResponseSchema>;
 export const payoutPageResponseSchema = pageSchema(payoutResponseSchema);
 export type PayoutPageResponse = z.infer<typeof payoutPageResponseSchema>;
 
-/** The partner's own payouts: the same, without why the provider refused a transfer. */
-export const portalPayoutPageResponseSchema = pageSchema(payoutResponseSchema.omit({ failure: true }));
+/** A payout as the partner sees it: never why the provider refused it, nor the order behind a job. */
+export const portalPayoutResponseSchema = payoutResponseSchema.omit({ failure: true, jobs: true }).extend({ jobs: z.array(payoutJobSchema) });
+export type PortalPayoutResponse = z.infer<typeof portalPayoutResponseSchema>;
+
+/**
+ * 409 when Pay transfers nothing: the partner has no ready payout account, or nothing is due. A problem
+ * response whose `code` is its extension member.
+ */
+export const payRefusedResponseSchema = z.strictObject({
+  type: z.string(),
+  title: z.string(),
+  status: z.literal(409),
+  detail: z.string(),
+  code: z.enum(['payout_account_not_ready', 'nothing_due']),
+});
+export type PayRefusedResponse = z.infer<typeof payRefusedResponseSchema>;
+
+/** The partner's own payouts, newest first, a page at a time. */
+export const portalPayoutPageResponseSchema = pageSchema(portalPayoutResponseSchema);
 export type PortalPayoutPageResponse = z.infer<typeof portalPayoutPageResponseSchema>;
 
 /** Where the customer pays for a waiting order. */
