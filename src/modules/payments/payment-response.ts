@@ -166,6 +166,19 @@ export type PayoutPageResponse = z.infer<typeof payoutPageResponseSchema>;
 export const portalPayoutResponseSchema = payoutResponseSchema.omit({ failure: true, jobs: true }).extend({ jobs: z.array(payoutJobSchema) });
 export type PortalPayoutResponse = z.infer<typeof portalPayoutResponseSchema>;
 
+/**
+ * 409 when Pay transfers nothing: the partner has no ready payout account, or nothing is due. A problem
+ * response whose `code` is its extension member.
+ */
+export const payRefusedResponseSchema = z.strictObject({
+  type: z.string(),
+  title: z.string(),
+  status: z.literal(409),
+  detail: z.string(),
+  code: z.enum(['payout_account_not_ready', 'nothing_due']),
+});
+export type PayRefusedResponse = z.infer<typeof payRefusedResponseSchema>;
+
 /** The partner's own payouts, newest first, a page at a time. */
 export const portalPayoutPageResponseSchema = pageSchema(portalPayoutResponseSchema);
 export type PortalPayoutPageResponse = z.infer<typeof portalPayoutPageResponseSchema>;

@@ -62,9 +62,11 @@ export class PayoutsService implements OnModuleInit {
     const { payout, orders } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
       await lockPartner(tx, partnerId);
       const account = await tx.partnerPayoutAccount.findUnique({ where: { partnerId }, select: { state: true } });
-      if (account?.state !== 'ready') throw new ConflictException('The partner has no ready payout account');
+      if (account?.state !== 'ready') {
+        throw new ConflictException({ code: 'payout_account_not_ready', message: 'The partner has no ready payout account' });
+      }
       const { lines, total } = payoutLines(await this.partnerJobs.dues(tx, partnerId));
-      if (!total.gt(0)) throw new ConflictException('Nothing to pay');
+      if (!total.gt(0)) throw new ConflictException({ code: 'nothing_due', message: 'Nothing to pay' });
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { defaultCurrency: true } });
       const created = await tx.payout.create({
         data: {

@@ -15,7 +15,12 @@ import { partnerOwedResponseSchema, portalOwedResponseSchema } from '../src/modu
 import type { FakePaymentProvider } from '../src/modules/payments/fake-payment-provider';
 import { LedgerService } from '../src/modules/payments/ledger.service';
 import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
-import { payoutPageResponseSchema, payoutResponseSchema, portalPayoutPageResponseSchema } from '../src/modules/payments/payment-response';
+import {
+  payRefusedResponseSchema,
+  payoutPageResponseSchema,
+  payoutResponseSchema,
+  portalPayoutPageResponseSchema,
+} from '../src/modules/payments/payment-response';
 import { PayoutReminderHandler } from '../src/modules/payments/payout-reminder.handler';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -343,7 +348,9 @@ describe('payments: paying partners', () => {
     const after = await owed(tenant);
     expect(forJob(after, tenant.direct.group)).toMatchObject({ paid: tenant.direct.cost, due: '0.00' });
     expect(after.due_total).toBe('0.00');
-    await pay(tenant).expect(409);
+    const again = await pay(tenant).expect(409);
+    expectDocumented(payRefusedResponseSchema, again.body);
+    expect(again.body).toMatchObject({ code: 'nothing_due' });
     expect(fake.transfersTo(tenant.accountId)).toHaveLength(1);
   });
 
@@ -353,6 +360,10 @@ describe('payments: paying partners', () => {
     const results = await Promise.all([pay(tenant), pay(tenant)]);
 
     expect(results.map((res) => res.status).sort()).toEqual([202, 409]);
+    // The second press finds the first one's payout already holding everything due.
+    const refused = results.find((res) => res.status === 409)!;
+    expectDocumented(payRefusedResponseSchema, refused.body);
+    expect(refused.body).toMatchObject({ code: 'nothing_due' });
     const accepted = results.find((res) => res.status === 202)!;
     await settled(tenant, (accepted.body as Payout).id);
     expect(fake.transfersTo(tenant.accountId)).toHaveLength(1);
@@ -466,6 +477,8 @@ describe('payments: paying partners', () => {
     await tenant.castcoOwner.post(`/partners/${tenant.castco}/payouts`).expect(403);
     await prisma.inTenant(tenant.id, (tx) => tx.partnerPayoutAccount.update({ where: { partnerId: tenant.castco }, data: { state: 'restricted' } }));
     const refused = await pay(tenant).expect(409);
+    expectDocumented(payRefusedResponseSchema, refused.body);
+    expect(refused.body).toMatchObject({ code: 'payout_account_not_ready' });
     expect(JSON.stringify(refused.body)).toContain('no ready payout account');
     await tenant.staff.post(`/partners/${newId()}/payouts`).expect(404);
     expect(await prisma.inTenant(tenant.id, (tx) => tx.payout.count())).toBe(0);
