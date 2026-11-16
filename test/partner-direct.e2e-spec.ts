@@ -244,6 +244,7 @@ describe('partners: customers picking a workshop, and direct jobs', () => {
     const before = await counts(tenant);
     const blocked = await tenant.staff.post('/workflow/groups', { quote_id: quote.id }).expect(409);
     expect((blocked.body as { title?: string; detail?: string }).detail ?? '').toMatch(/pick again/i);
+    expect(blocked.body).toMatchObject({ code: 'partner_unavailable', errors: [expect.objectContaining({ path: 'quote_id' })] });
     expect(await counts(tenant)).toEqual(before);
 
     // Once it can take jobs again, the same quote starts.

@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import { decodeCursor } from '../../common/pagination/cursor';
-import { toPage } from '../../common/pagination/page';
+import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
@@ -16,6 +16,7 @@ import { PRODUCT_KINDS, partSizeSchema } from './product-response';
 import type { CategoryResponse, ProductResponse } from './product-response';
 import { sizingSchema } from './scaling';
 import type { ScalableMeasure, Sizing } from './scaling';
+import { visibleTo } from './visibility';
 
 const keySchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, 'lowercase letters, digits and _, starting with a letter');
 const nameSchema = z.string().trim().min(1).max(200);
@@ -33,6 +34,8 @@ export const createCategorySchema = z.object({
     .refine((types) => new Set(types).size === types.length, 'measures must not repeat')
     .default([]),
 });
+
+export const productListQuerySchema = paginationQuerySchema.extend({ customer_id: z.uuid().optional() });
 
 export const createProductSchema = z.object({
   category_id: z.uuid(),
@@ -222,17 +225,22 @@ export class ProductsService {
     }
   }
 
-  async list(tenantId: string, query: { limit: number; cursor?: string }): Promise<Page<ProductResponse>> {
+  /** With `customer_id`, only the products that customer can see and quote. */
+  async list(tenantId: string, query: { limit: number; cursor?: string; customer_id?: string }): Promise<Page<ProductResponse>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
-    const rows = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.product.findMany({
-        where: after ? { id: { lt: after.id } } : {},
+    const rows = await this.prisma.inTenant(tenantId, async (tx) => {
+      await this.checkCustomer(tx, query.customer_id);
+      return tx.product.findMany({
+        where: {
+          ...(query.customer_id ? visibleTo(query.customer_id) : {}),
+          ...(after ? { id: { lt: after.id } } : {}),
+        },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
         include: productInclude,
-      }),
-    );
+      });
+    });
     const page = toPage(rows, query.limit, secret);
     return { data: page.data.map(toProduct), next_cursor: page.next_cursor };
   }
@@ -254,6 +262,10 @@ export class ProductsService {
       }
       await this.checkMaterial(tx, patch.material_id ?? undefined);
       await this.checkCustomer(tx, patch.customer_id ?? undefined);
+      if (patch.customer_id !== undefined && patch.customer_id !== current.customerId && current.fileVersionId) {
+        const message = "The product carries a customer's own design file; pin another file before changing its customer";
+        await this.refuseOthersFile(tx, current.fileVersionId, patch.customer_id, message);
+      }
       const row = await tx.product.update({
         where: { id },
         data: {
@@ -369,6 +381,7 @@ export class ProductsService {
       }
       const category = await this.findCategory(tx, product.categoryId);
       await this.checkVersion(tx, input.file_version_id, category.requiredMeasures);
+      await this.refuseOthersFile(tx, input.file_version_id, product.customerId, "A customer's design file can only be pinned on that customer's own product");
       const row = await tx.product.update({
         where: { id },
         data: { fileVersionId: input.file_version_id },
@@ -519,6 +532,17 @@ export class ProductsService {
   private async checkCustomer(tx: Prisma.TransactionClient, customerId: string | undefined): Promise<void> {
     if (customerId && !(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
       throw new NotFoundException('Customer not found');
+    }
+  }
+
+  /**
+   * A customer's file stays on that customer's own products: a pinned design reaches every order line
+   * of the product (`line-picks.ts`), so on anyone else's product it would reach another customer.
+   */
+  private async refuseOthersFile(tx: Prisma.TransactionClient, versionId: string, productCustomerId: string | null, message: string): Promise<void> {
+    const version = await tx.fileVersion.findUnique({ where: { id: versionId }, select: { file: { select: { ownerType: true, ownerId: true } } } });
+    if (version?.file.ownerType === 'customer' && version.file.ownerId !== productCustomerId) {
+      throw new ConflictException(message);
     }
   }
 

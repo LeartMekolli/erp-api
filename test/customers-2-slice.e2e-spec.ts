@@ -138,6 +138,14 @@ describe('Customers 2 walkthrough', () => {
       return as((await tokens.issueForUser(tenant.id, user.id)).accessToken);
     })();
 
+    // Each customer quotes with its own design, made on first use.
+    const customerDesigns = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!customerDesigns.has(customerId)) {
+        customerDesigns.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      }
+      return customerDesigns.get(customerId)!;
+    };
     const place = async (customerId: string, quantity: number): Promise<Order> => {
       const quote = ((
         await staff
@@ -146,7 +154,7 @@ describe('Customers 2 walkthrough', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: await designOf(customerId),
             customer_id: customerId,
           })
           .expect(201)

@@ -8,6 +8,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { customerAddressesResponseSchema } from '../src/modules/customers/addresses';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -62,6 +63,7 @@ describe('customers: saved addresses', () => {
     const cast = await pricedCastPart(w.staff, prisma, { id: w.id, staffUserId: w.owner.id, runMetal });
     await w.staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     await w.staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
+    const lunaDesign = await measuredDesign(prisma, w.id, w.owner.id, { customerId: w.luna });
     return async (status: number, extra: object = {}) => {
       const quote = ((
         await w.staff
@@ -70,7 +72,7 @@ describe('customers: saved addresses', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 2,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign.versionId,
             customer_id: w.luna,
           })
           .expect(201)

@@ -156,6 +156,7 @@ describe('orders: placing an order', () => {
     // Luna's own design: a customer may only quote with its own files.
     const designFile = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const design = designFile.versionId;
+    const solDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: sol })).versionId;
     const timezone = (await prisma.inTenant(tenant.id, (tx) => tx.tenant.findUniqueOrThrow({ where: { id: tenant.id } }))).timezone;
 
     const configuration = (extra: object = {}) => ({
@@ -165,10 +166,17 @@ describe('orders: placing an order', () => {
       quantity: 10,
       ...extra,
     });
-    /** A quote staff make for a customer, or an internal one without `customer_id`. */
-    const staffQuote = async (extra: object = {}) =>
-      ((await staff.post('/pricing/quotes', { ...configuration({ file_version_id: cast.versionId }), customer_id: luna, ...extra }).expect(201))
+    /**
+     * A quote staff make for a customer (Luna by default), or an internal one without `customer_id`.
+     * It carries that customer's own design, as the customer's rules ask; an internal quote carries
+     * the workspace's.
+     */
+    const staffQuote = async (extra: { customer_id?: string | undefined; [key: string]: unknown } = {}) => {
+      const customer = 'customer_id' in extra ? extra.customer_id : luna;
+      const file = customer === luna ? design : customer === sol ? solDesign : cast.versionId;
+      return ((await staff.post('/pricing/quotes', { ...configuration({ file_version_id: file }), customer_id: luna, ...extra }).expect(201))
         .body as { quote: Quote }).quote;
+    };
     const buyer = await person(tenant.id, 'customer', luna, 'buyer');
     /** A quote Luna's buyer makes in the customer app, optionally at a workshop it picked. */
     const lunaQuote = async (extra: object = {}) =>
@@ -341,7 +349,12 @@ describe('orders: placing an order', () => {
     const before = await counts(tenant);
 
     const refused = await order(tenant, [own.id, picked.id]).expect(409);
-    expect((refused.body as { errors: { path: string }[] }).errors[0].path).toBe('lines.1');
+    // Coded, so the page clears the pick and prices again; each reason names the line.
+    const body = refused.body as { code?: string; errors: { path: string; message: string }[] };
+    expect(body.code).toBe('partner_unavailable');
+    expect(body.errors.length).toBeGreaterThan(0);
+    expect(body.errors.every((error) => error.path === 'lines.1')).toBe(true);
+    expect(body.errors.map((error) => error.message)).not.toContain('The workshop the customer picked can no longer take this job; the customer needs to pick again');
     // Not line 0's group either: all of it, or nothing.
     expect(await counts(tenant)).toEqual(before);
   });
@@ -364,6 +377,8 @@ describe('orders: placing an order', () => {
     await order(tenant, [quote.id]).expect(201);
     const again = await order(tenant, [quote.id]).expect(409);
     expect((again.body as { errors: { path: string }[] }).errors[0].path).toBe('lines.0');
+    // Not a workshop that can't take the job: nothing to pick again.
+    expect(again.body).not.toHaveProperty('code');
   });
 
   it('lets only one of two identical orders through', async () => {
@@ -417,6 +432,23 @@ describe('orders: placing an order', () => {
     expect(fresh.total.equals(old.total)).toBe(true);
     expect(fresh.expiresAt.getTime()).toBeGreaterThan(Date.now());
     expect(old.orderLine).toBeNull();
+  });
+
+  it('places a lapsed customer quote after its product was unpublished', async () => {
+    const tenant = await freshTenant();
+    const lapsed = await tenant.staffQuote();
+    await tenant.staff.patch(`/catalog/products/${tenant.cast.productId}`, { published: false }).expect(200);
+    // And its file went to another customer.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.file.update({ where: { id: tenant.designFile.fileId }, data: { ownerType: 'customer', ownerId: tenant.sol } }),
+    );
+    await lapse(tenant, lapsed.id);
+
+    const placed = await order(tenant, [lapsed.id]).expect(201);
+    expect((placed.body as Order).lines[0].total).toBe(lapsed.total);
+    // Priced again from the same inputs, though the customer could no longer quote it.
+    const ordered = await prisma.inTenant(tenant.id, (tx) => tx.orderLine.findUniqueOrThrow({ where: { id: (placed.body as Order).lines[0].id } }));
+    expect(ordered.quoteId).not.toBe(lapsed.id);
   });
 
   it('refuses a lapsed quote whose price changed, with the new price to confirm', async () => {
@@ -504,5 +536,52 @@ describe('orders: placing an order', () => {
     await other.staff
       .post('/orders', { customer_id: tenant.luna, lines: [{ quote_id: (await other.staffQuote()).id }], address, shipping_method: 'courier' })
       .expect(404);
+  });
+
+  it("lets a member upload a customer's model, quote and place an order as the customer would", async () => {
+    const tenant = await freshTenant();
+
+    const started = await tenant.member
+      .post('/files', { kind: 'design', name: 'ring.stl', content_type: 'model/stl', size: 684, declared_unit: 'mm', customer_id: tenant.luna })
+      .expect(201);
+    const versionId = (started.body as { version: { id: string } }).version.id;
+    // The bytes never reach storage here, so leave the version as the measuring job would.
+    await prisma.inTenant(tenant.id, async (tx) => {
+      await tx.fileVersion.update({ where: { id: versionId }, data: { status: 'measured', completedAt: new Date() } });
+      await tx.measure.createMany({
+        data: [
+          ['volume', '1000', 'mm3'],
+          ['surface_area', '600', 'mm2'],
+          ['bounding_box_x', '10', 'mm'],
+          ['bounding_box_y', '10', 'mm'],
+          ['bounding_box_z', '10', 'mm'],
+        ].map(([type, value, unit]) => ({ fileVersionId: versionId, type, value, unit })),
+      });
+    });
+
+    await tenant.member.get('/pricing/quotes/delivery-speeds').expect(200);
+    const quote = (
+      (
+        await tenant.member
+          .post('/pricing/quotes', {
+            product_id: tenant.cast.productId,
+            options: { material: 'silver_925', finish: 'polished' },
+            size: { scale: '1.5' },
+            quantity: 10,
+            file_version_id: versionId,
+            customer_id: tenant.luna,
+            delivery_speed: 'standard',
+          })
+          .expect(201)
+      ).body as { quote: Quote }
+    ).quote;
+
+    const placed = await tenant.member
+      .post('/orders', { customer_id: tenant.luna, lines: [{ quote_id: quote.id }], address, shipping_method: 'courier' })
+      .expect(201);
+    const placedId = (placed.body as Order).id;
+
+    const portal = await tenant.buyer.get(`/portal/customers/${tenant.luna}/orders`).expect(200);
+    expect((portal.body as { data: { id: string }[] }).data.map((row) => row.id)).toEqual([placedId]);
   });
 });

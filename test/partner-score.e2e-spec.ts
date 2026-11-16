@@ -135,7 +135,7 @@ describe('partners: ratings and score', () => {
     /** Luna's job of `quantity` rings, started; offered to CastCo and accepted, unless `offerTo` is null. */
     const job = async (quantity: number, offerTo: string | null = castco) => {
       const quoted = await staff
-        .post('/pricing/quotes', { ...configuration, file_version_id: cast.versionId, quantity, customer_id: luna })
+        .post('/pricing/quotes', { ...configuration, file_version_id: design, quantity, customer_id: luna })
         .expect(201);
       const quoteId = (quoted.body as { quote: { id: string } }).quote.id;
       const group = ((await staff.post('/workflow/groups', { quote_id: quoteId }).expect(201)).body as { id: string }).id;

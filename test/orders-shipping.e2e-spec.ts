@@ -10,6 +10,7 @@ import { resolveAudience } from '../src/modules/notifications/audience';
 import { customerOrderResponseSchema, orderResponseSchema } from '../src/modules/orders/order-response';
 import { SettingsService } from '../src/modules/settings/settings.service';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -71,6 +72,7 @@ describe('orders: shipping and notifications', () => {
     for (const customer of [luna, sol]) {
       await staff.put(`/customers/${customer}/payment-terms`, { terms: 'pay_later' }).expect(200);
     }
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     const buyer = await person(tenant.id, luna, 'buyer');
     const viewer = await person(tenant.id, luna, 'viewer');
     await person(tenant.id, luna, 'buyer', 'deactivated');
@@ -84,7 +86,7 @@ describe('orders: shipping and notifications', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 2,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign,
             customer_id: luna,
           })
           .expect(201)

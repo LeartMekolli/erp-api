@@ -11,6 +11,7 @@ import { customerOrderResponseSchema, orderResponseSchema } from '../src/modules
 import { paymentTermsResponseSchema } from '../src/modules/payments/payment-response';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { measuredDesign } from './catalog-fixtures';
 import { pricedCastPart } from './pricing-fixtures';
 
 interface Quote {
@@ -59,6 +60,9 @@ describe('payments: terms and the payment state of an order', () => {
       });
     });
 
+    // Luna's own design: staff may quote for a customer only with that customer's files.
+    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
+
     const placeOrder = async () => {
       const quote = ((
         await staff
@@ -67,7 +71,7 @@ describe('payments: terms and the payment state of an order', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 10,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: luna,
           })
           .expect(201)

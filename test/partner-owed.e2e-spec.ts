@@ -63,6 +63,7 @@ describe('partners: what they are owed', () => {
   const as = (token: string) => ({
     post: (path: string, body: object = {}) => http().post(path).set('Authorization', `Bearer ${token}`).send(body),
     put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
+    patch: (path: string, body: object) => http().patch(path).set('Authorization', `Bearer ${token}`).send(body),
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
 
@@ -88,6 +89,7 @@ describe('partners: what they are owed', () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = cast.steps;
 
     const workflowPath = `/workflow/workflows/${cast.workflow.workflowId}`;
@@ -132,13 +134,14 @@ describe('partners: what they are owed', () => {
     const castcoAdmin = await partnerPerson(tenant.id, castco, 'admin');
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     const job = async () => {
       const quoted = await staff
         .post('/pricing/quotes', {
           product_id: cast.productId,
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
-          file_version_id: cast.versionId,
+          file_version_id: lunaDesign,
           quantity: 10,
           customer_id: luna,
         })

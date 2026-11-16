@@ -124,6 +124,7 @@ describe('claims: remakes', () => {
     const metalworks = await workshop('MetalWorks');
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const buyer = await person(tenant.id, 'customer', luna, 'buyer');
 
     /**
@@ -138,7 +139,7 @@ describe('claims: remakes', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 10,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign.versionId,
             customer_id: luna,
           };
       const quote = ((await staff.post('/pricing/quotes', body).expect(201)).body as { quote: { id: string } }).quote.id;

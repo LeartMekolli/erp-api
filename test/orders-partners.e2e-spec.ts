@@ -116,7 +116,7 @@ describe('orders: the lines of one order and their partners', () => {
     });
     /** A quote staff make for Luna, at the workspace's own prices. */
     const staffQuote = async (quantity = 10) =>
-      ((await staff.post('/pricing/quotes', { ...configuration({ quantity, file_version_id: cast.versionId }), customer_id: luna }).expect(201))
+      ((await staff.post('/pricing/quotes', { ...configuration({ quantity, file_version_id: design }), customer_id: luna }).expect(201))
         .body as { quote: { id: string } }).quote;
     /** A quote Luna's buyer makes in the customer app, at the workshop it picked. */
     const pickedQuote = async (partnerId: string) =>

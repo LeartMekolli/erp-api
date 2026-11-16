@@ -15,6 +15,7 @@ import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { openOnInvoice } from '../src/modules/payments/credit-notes.service';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { measuredDesign } from './catalog-fixtures';
 import { pricedCastPart } from './pricing-fixtures';
 
 interface Order {
@@ -68,6 +69,12 @@ describe('orders: the staff list', () => {
     const sol = ((await staff.post('/customers', { name: 'Sol Rings' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
 
+    // Each customer's own design: staff may quote for a customer only with that customer's files.
+    const designs = new Map<string, string>();
+    for (const customerId of [luna, sol]) {
+      designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+    }
+
     const place = async (customerId: string) => {
       const quote = (
         (
@@ -77,7 +84,7 @@ describe('orders: the staff list', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity: 1,
-              file_version_id: cast.versionId,
+              file_version_id: designs.get(customerId),
               customer_id: customerId,
             })
             .expect(201)

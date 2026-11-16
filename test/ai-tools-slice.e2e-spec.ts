@@ -19,6 +19,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -164,6 +165,7 @@ describe('ai: customer tools, end to end', () => {
       });
     });
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const lunaDesign = await measuredDesign(prisma, tenant.id, staffUser.id, { customerId: luna });
     const quote = (
       (
         await staff
@@ -172,7 +174,7 @@ describe('ai: customer tools, end to end', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 3,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign.versionId,
             customer_id: luna,
           })
           .expect(201)

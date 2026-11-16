@@ -13,6 +13,7 @@ import type { TenantPermission } from '../src/modules/identity/permissions';
 import { exportDownloadSchema, exportResponseSchema } from '../src/modules/reporting/exports/export-response';
 import { ScheduledExportsService } from '../src/modules/reporting/exports/scheduled-exports.service';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -120,8 +121,15 @@ describe('reports: scheduled exports', () => {
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       return id;
     };
+    // Each customer's own design: staff quote a customer only with its own files.
+    const designs = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!designs.has(customerId)) designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      return designs.get(customerId)!;
+    };
     /** An order of `quantity` pieces, moved to the 15th of `month` at noon; its customer pays later. */
     const order = async (customerId: string, quantity: number, month: string) => {
+      const design = await designOf(customerId);
       const quote = ((
         await staff
           .post('/pricing/quotes', {
@@ -129,7 +137,7 @@ describe('reports: scheduled exports', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: customerId,
           })
           .expect(201)

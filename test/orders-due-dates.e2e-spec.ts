@@ -136,7 +136,7 @@ describe('orders: due dates on partner jobs', () => {
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
           quantity: 5,
-          file_version_id: tenant.cast.versionId,
+          file_version_id: tenant.design,
           customer_id: tenant.luna,
           delivery_speed,
         })

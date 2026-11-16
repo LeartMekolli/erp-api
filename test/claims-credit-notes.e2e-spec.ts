@@ -13,6 +13,7 @@ import { receivedJournal } from '../src/modules/payments/ledger';
 import { LedgerService } from '../src/modules/payments/ledger.service';
 import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -75,6 +76,7 @@ describe('claims: credit notes on open invoices', () => {
     await staff.put('/payments/account', KEYS).expect(200);
     const brightline = ((await staff.post('/customers', { name: 'Brightline' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later', days_to_pay: 30 }).expect(200);
+    const brightlineDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: brightline });
 
     /** Brightline's order of 2 pieces, made in-house, shipped and invoiced, delivered, and unpaid. */
     const delivered = async () => {
@@ -85,7 +87,7 @@ describe('claims: credit notes on open invoices', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 2,
-            file_version_id: cast.versionId,
+            file_version_id: brightlineDesign.versionId,
             customer_id: brightline,
           })
           .expect(201)

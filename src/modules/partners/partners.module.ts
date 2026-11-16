@@ -34,6 +34,7 @@ import { ReworkNoticeService } from './rework-notice.service';
 import { ScoreService } from './score.service';
 import { PortalSetupController, SetupController } from './setup.controller';
 import { SetupService } from './setup.service';
+import { StaffPartnerQuotesController } from './staff-partner-quotes.controller';
 
 /** Partner workshops, their people, setup and jobs (Partners spec). */
 @Module({
@@ -65,6 +66,7 @@ import { SetupService } from './setup.service';
     RatingsController,
     PortalRatingsController,
     PartnerScoreController,
+    StaffPartnerQuotesController,
   ],
   providers: [
     PartnersService,

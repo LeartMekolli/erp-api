@@ -105,6 +105,20 @@ export const deliverySpeedResponseSchema = z.strictObject({
 });
 export type DeliverySpeedResponse = z.infer<typeof deliverySpeedResponseSchema>;
 
+/** A delivery speed as someone who quotes or orders sees it: no surcharge, prices come with a quote. */
+export const speedChoiceSchema = z.strictObject({
+  key: z.string(),
+  name: z.string(),
+  /** Working days from placing an order to its promised date. */
+  working_days: z.number().int(),
+  /** The speed a quote gets when it names none. */
+  is_default: z.boolean(),
+});
+export type SpeedChoice = z.infer<typeof speedChoiceSchema>;
+
+export const speedChoicesResponseSchema = z.strictObject({ data: z.array(speedChoiceSchema) });
+export type SpeedChoicesResponse = z.infer<typeof speedChoicesResponseSchema>;
+
 export const minSizeSurchargeResponseSchema = z.strictObject({
   id: z.uuid(),
   /** Null when it applies to every category. */

@@ -93,6 +93,7 @@ export const SYSTEM_ROLES = {
     'role.read',
     'template.read',
     'file.read',
+    'file.write',
     'catalog.read',
     'quote.create',
     'customer.read',

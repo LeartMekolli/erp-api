@@ -81,6 +81,7 @@ describe('orders: comments', () => {
     await prisma.inTenant(tenant.id, (tx) => tx.user.update({ where: { id: owner.id }, data: { name: 'Ana' } }));
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = cast.steps;
     const { finalQc, packing } = cast.workflow.notPriced;
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
@@ -113,6 +114,7 @@ describe('orders: comments', () => {
       return id;
     };
     const luna = await customer('Luna Jewels');
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
 
     const quote = async (quantity: number) =>
       ((
@@ -122,7 +124,7 @@ describe('orders: comments', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign,
             customer_id: luna,
           })
           .expect(201)

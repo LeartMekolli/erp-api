@@ -10,12 +10,13 @@ describe('permissions', () => {
     expect([...SYSTEM_ROLES.owner].sort()).toEqual([...TENANT_PERMISSIONS].sort());
   });
 
-  it('keeps the member to reading, plus requesting quotes, placing orders and moving pieces', () => {
+  it('keeps the member to reading, plus uploading files, requesting quotes, placing orders and moving pieces', () => {
     // Reading includes payment.read, never the payment actions.
     expect([...SYSTEM_ROLES.member].sort()).toEqual([
       'catalog.read',
       'customer.read',
       'file.read',
+      'file.write',
       'order.read',
       'order.write',
       'partner.read',

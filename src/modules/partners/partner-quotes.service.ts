@@ -1,9 +1,9 @@
-import { ConflictException, ForbiddenException, Injectable, OnModuleInit } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import type { Prisma, Quote } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { customerBand, prioritySettings, privilegesOf } from '../customers/priority/bands';
-import type { CustomerAuth } from '../identity/auth-context';
+import type { TenantAuth } from '../identity/auth-context';
 import { NotificationsService } from '../notifications/notifications.service';
 import { defaultDueOn, workspaceToday } from '../orders/order-lines';
 import { QuotesService } from '../pricing/quotes.service';
@@ -18,6 +18,7 @@ import { lockPartner } from './partners.service';
 import { ScoreService } from './score.service';
 
 type Tx = Prisma.TransactionClient;
+type Requester = Pick<TenantAuth, 'tenantId' | 'userId'>;
 
 /**
  * Customers picking a workshop (Partners spec, goals 11 and 12; B2): the workshops that take direct
@@ -41,14 +42,23 @@ export class PartnerQuotesService implements OnModuleInit {
     this.workOrders.registerStartHook((tx, started) => this.startDirect(tx, started));
     // A lapsed quote at a picked workshop is priced again with the same choice (Orders spec, goal 2).
     this.quotes.registerRequoteChoice((partnerId) => this.choice(partnerId));
+    // A workshop picked for a customer by staff, under the same rule as the customer's own pick.
+    this.quotes.registerPartnerPick(async (tenantId, customerId, partnerId) => {
+      await this.mayPick(tenantId, customerId);
+      return this.choice(partnerId);
+    });
   }
 
   /** The workshops the customer may pick for the configuration, by name, each priced as a quote with it. */
-  async choices(auth: CustomerAuth, body: CustomerQuoteRequest): Promise<PartnerChoicesResponse> {
-    await this.mayPick(auth);
+  async choices(
+    requester: Requester,
+    context: QuoteContext,
+    body: CustomerQuoteRequest,
+  ): Promise<PartnerChoicesResponse> {
+    await this.mayPick(requester.tenantId, context.customerId);
     // Refused whether or not any workshop could be offered (Orders spec, B4).
-    await this.quotes.refuseAssemblyPick(auth.tenantId, body.product_id);
-    const { partners, scores } = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+    await this.quotes.refuseAssemblyPick(requester.tenantId, body.product_id);
+    const { partners, scores } = await this.prisma.inTenant(requester.tenantId, async (tx) => {
       const rows = await tx.partner.findMany({
         where: { status: 'approved', acceptsDirectOrders: true },
         orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
@@ -58,7 +68,7 @@ export class PartnerQuotesService implements OnModuleInit {
     });
     const data: PartnerChoicesResponse['data'] = [];
     for (const partner of partners) {
-      const priced = await this.quotes.preview(auth, body, this.context(auth), this.choice(partner.id));
+      const priced = await this.quotes.preview(requester, body, context, this.choice(partner.id));
       if (priced.accepted) {
         // Only the overall score: never its parts (Global Constraints).
         const score = scores.get(partner.id)!.overall;
@@ -69,9 +79,14 @@ export class PartnerQuotesService implements OnModuleInit {
   }
 
   /** A quote with the picked workshop's prices on its steps, refused with `partner_unavailable` when it can't take the job. */
-  async quote(auth: CustomerAuth, body: CustomerQuoteRequest, partnerId: string): Promise<QuoteResultResponse> {
-    await this.mayPick(auth);
-    return this.quotes.create(auth, body, this.context(auth), this.choice(partnerId));
+  async quote(
+    requester: Requester,
+    context: QuoteContext,
+    body: CustomerQuoteRequest,
+    partnerId: string,
+  ): Promise<QuoteResultResponse> {
+    await this.mayPick(requester.tenantId, context.customerId);
+    return this.quotes.create(requester, body, context, this.choice(partnerId));
   }
 
   /** The workshop takes direct orders and can take the job as quoted. An unknown one simply can't. */
@@ -106,6 +121,7 @@ export class PartnerQuotesService implements OnModuleInit {
     const reasons = [...(partner.acceptsDirectOrders ? [] : ['Does not take direct orders']), ...(verdict.ok ? [] : verdict.reasons)];
     if (reasons.length > 0) {
       throw new ConflictException({
+        code: 'partner_unavailable',
         message: 'The workshop the customer picked can no longer take this job; the customer needs to pick again',
         errors: reasons.map((reason) => ({ path: 'quote_id', message: reason })),
       });
@@ -139,17 +155,17 @@ export class PartnerQuotesService implements OnModuleInit {
     };
   }
 
-  private context(auth: CustomerAuth): QuoteContext {
-    return { customerId: auth.customerId, audience: 'customer' };
-  }
-
-  /** Only customers the workspace lets pick: by their own switch, or by their priority band (Customers 2 spec, goal 17). */
-  private async mayPick(auth: CustomerAuth): Promise<void> {
-    const may = await this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const customer = await tx.customer.findUniqueOrThrow({ where: { id: auth.customerId }, select: { mayPickPartner: true } });
+  /**
+   * Only customers the workspace lets pick: by their own switch, or by their priority band (Customers 2 spec, goal 17).
+   * An unknown customer is a 404, which only staff naming a `customer_id` can reach.
+   */
+  private async mayPick(tenantId: string, customerId: string): Promise<void> {
+    const may = await this.prisma.inTenant(tenantId, async (tx) => {
+      const customer = await tx.customer.findUnique({ where: { id: customerId }, select: { mayPickPartner: true } });
+      if (!customer) throw new NotFoundException('Customer not found');
       if (customer.mayPickPartner) return true;
       const settings = await prioritySettings(tx, this.settings);
-      return privilegesOf((await customerBand(tx, auth.customerId, settings)).key, settings).mayPickPartner;
+      return privilegesOf((await customerBand(tx, customerId, settings)).key, settings).mayPickPartner;
     });
     if (!may) {
       throw new ForbiddenException('The workspace has not let this customer pick a workshop');

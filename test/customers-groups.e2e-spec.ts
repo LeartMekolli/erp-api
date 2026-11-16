@@ -13,6 +13,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { addDays, weekOf } from '../src/modules/reporting/week-metrics';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -104,6 +105,9 @@ describe('customers: customer groups', () => {
     await w.staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
     const luna = await w.customer('Luna Jewels', w.wholesale);
     const sol = await w.customer('Sol Studio');
+    // Each customer's own design: staff quote only with the customer's own files.
+    const designs = new Map<string, string>();
+    for (const id of [luna, sol]) designs.set(id, (await measuredDesign(prisma, w.id, w.owner.id, { customerId: id })).versionId);
 
     const order = async (customerId: string, quantity: number) => {
       const quote = ((
@@ -113,7 +117,7 @@ describe('customers: customer groups', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: designs.get(customerId)!,
             customer_id: customerId,
           })
           .expect(201)

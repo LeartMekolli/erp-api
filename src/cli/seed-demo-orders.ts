@@ -370,6 +370,57 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
   const designId = context.designId!;
 
   /**
+   * The customer's own copy of the placeholder design, which staff quote its custom products on (a quote
+   * for a customer may only use that customer's files). Found by the file's name, kind and owner, else
+   * copied from the placeholder with its measures so pricing sees the same part. The storage key is
+   * unique, so the copy gets its own key; like the placeholder's, it points at no stored object (demo data).
+   */
+  const customerDesigns = new Map<string, string>();
+  const customerDesign = async (customerId: string): Promise<string> => {
+    const known = customerDesigns.get(customerId);
+    if (known) return known;
+    const id = await prisma.inTenant(tenantId, async (tx) => {
+      const source = await tx.fileVersion.findUniqueOrThrow({ where: { id: designId }, include: { file: true, measures: true } });
+      const existing = await tx.fileVersion.findFirst({
+        where: { file: { name: source.file.name, kind: 'design', ownerType: 'customer', ownerId: customerId } },
+        orderBy: { number: 'asc' },
+        select: { id: true },
+      });
+      if (existing) return existing.id;
+      const file = await tx.file.create({
+        data: {
+          kind: 'design',
+          name: source.file.name,
+          declaredUnit: source.file.declaredUnit,
+          ownerType: 'customer',
+          ownerId: customerId,
+          createdByUserId: staffUserId,
+        },
+      });
+      const version = await tx.fileVersion.create({
+        data: {
+          fileId: file.id,
+          number: 1,
+          storageKey: `seed/${tenantId}/customers/${customerId}/placeholder-part.stl`,
+          originalName: source.originalName,
+          contentType: source.contentType,
+          size: source.size,
+          checksum: source.checksum,
+          status: source.status,
+          uploadedByUserId: staffUserId,
+          completedAt: source.completedAt ?? new Date(),
+        },
+      });
+      await tx.measure.createMany({
+        data: source.measures.map((measure) => ({ fileVersionId: version.id, type: measure.type, value: measure.value, unit: measure.unit })),
+      });
+      return version.id;
+    });
+    customerDesigns.set(customerId, id);
+    return id;
+  };
+
+  /**
    * Passes the group's pieces through every step of their path, a step at a time, as staff at the workshop's
    * steps. With `toWorkspace`, stops once they reach a step the workspace does. Answers the last step passed.
    */
@@ -489,7 +540,7 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
           options: line.options ?? {},
           ...(line.size ? { size: line.size } : {}),
           quantity: line.quantity,
-          ...(product.kind === 'custom' ? { file_version_id: designId } : {}),
+          ...(product.kind === 'custom' ? { file_version_id: await customerDesign(customerId) } : {}),
         },
         { customerId, audience: 'staff' },
       );

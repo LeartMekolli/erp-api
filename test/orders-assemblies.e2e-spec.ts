@@ -92,6 +92,8 @@ describe('orders: assemblies', () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const set = await pricedAssembly(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    // The plain cast part is quoted for Luna beside the set; the set is published already.
+    await staff.patch(`/catalog/products/${set.cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = set.cast.steps;
     const { finalQc, packing } = set.cast.workflow.notPriced;
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
@@ -123,6 +125,8 @@ describe('orders: assemblies', () => {
       staff,
       buyer: await person(tenant.id, 'customer', luna, 'buyer'),
       luna,
+      // Luna's own design: staff quoting for a customer may only use that customer's files.
+      lunaDesign: (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId,
       metalworks: await workshop('MetalWorks'),
       castco: await workshop('CastCo'),
       ...set,
@@ -153,7 +157,7 @@ describe('orders: assemblies', () => {
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
           quantity: 2,
-          file_version_id: tenant.cast.versionId,
+          file_version_id: tenant.lunaDesign,
           customer_id: tenant.luna,
         })
         .expect(201)

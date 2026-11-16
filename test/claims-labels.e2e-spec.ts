@@ -131,6 +131,7 @@ describe('claims: labels', () => {
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const buyer = await person(tenant.id, 'customer', luna, 'buyer');
 
     const quote = async () =>
@@ -142,7 +143,7 @@ describe('claims: labels', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity: 10,
-              file_version_id: cast.versionId,
+              file_version_id: lunaDesign.versionId,
               customer_id: luna,
             })
             .expect(201)

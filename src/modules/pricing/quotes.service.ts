@@ -16,7 +16,7 @@ import { UnitsService } from '../catalog/units';
 import type { UnitDef } from '../catalog/units';
 import { visibleTo } from '../catalog/visibility';
 import type { TenantAuth } from '../identity/auth-context';
-import { planOf } from '../payments/plans/plan-of';
+import { planOf, planOffersSpeed } from '../payments/plans/plan-of';
 import type { PlanBenefits } from '../payments/plans/plan-of';
 import { missingStepTypes, resolveWorkflow } from '../workflow/coverage';
 import { partnerStepTypeIds } from '../workflow/partner-steps';
@@ -55,13 +55,20 @@ const quoteFields = {
   delivery_speed: keySchema.optional(),
 };
 
-export const quoteRequestSchema = z.object({
-  ...quoteFields,
-  /** A customer group key of the workspace; omitted: no group. Not with `customer_id`. */
-  customer_group: keySchema.optional(),
-  /** Quotes for that customer: its group applies and its people see the quote. */
-  customer_id: z.uuid().optional(),
-});
+export const quoteRequestSchema = z
+  .object({
+    ...quoteFields,
+    /** A customer group key of the workspace; omitted: no group. Not with `customer_id`. */
+    customer_group: keySchema.optional(),
+    /** Quotes for that customer: its group applies and its people see the quote. */
+    customer_id: z.uuid().optional(),
+    /** A workshop picked for the customer; needs `customer_id`. */
+    partner_id: z.uuid().optional(),
+  })
+  .refine((body) => !body.partner_id || body.customer_id, {
+    path: ['partner_id'],
+    message: 'a workshop is picked for a customer; send customer_id',
+  });
 export type QuoteRequest = z.infer<typeof quoteRequestSchema>;
 
 /** What a customer may send: no customer group, which comes from the customer, and nothing unknown. */
@@ -69,8 +76,10 @@ export const customerQuoteRequestSchema = z.strictObject(quoteFields);
 export type CustomerQuoteRequest = z.infer<typeof customerQuoteRequestSchema>;
 
 /**
- * Who a quote is for. `customer` is the customer's own request: only products
- * it may see and files it owns can be quoted.
+ * Who a quote is for. `customer` is the customer's own request and `staff` is staff quoting for
+ * that customer: both may only quote the products the customer may see and the files it owns.
+ * A quote with no customer has no context and may not use a customer's file. Pricing a saved quote
+ * again (`requote()`) skips both rules, so a quote that was valid when made still can be placed.
  */
 export interface QuoteContext {
   customerId: string;
@@ -237,6 +246,21 @@ export class QuotesService {
     this.requoteChoice = choice;
   }
 
+  /** Checks the customer may pick a workshop and builds the pick; Partners registers it. */
+  private partnerPicker?: (tenantId: string, customerId: string, partnerId: string) => Promise<PartnerChoice>;
+
+  registerPartnerPick(pick: (tenantId: string, customerId: string, partnerId: string) => Promise<PartnerChoice>): void {
+    this.partnerPicker = pick;
+  }
+
+  /** The workshop picked for a customer, or why it can't be: unknown customer 404, not allowed to pick 403. */
+  partnerPick(tenantId: string, customerId: string, partnerId: string): Promise<PartnerChoice> {
+    if (!this.partnerPicker) {
+      throw new InternalServerErrorException('This process cannot pick a workshop');
+    }
+    return this.partnerPicker(tenantId, customerId, partnerId);
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -250,17 +274,30 @@ export class QuotesService {
 
   /**
    * A saved quote's customer view, or why it cannot be quoted (nothing is saved then). With a
-   * context, the quote is for that customer and gets the customer's own group; a customer's own
-   * request may only name products it may see and files it owns, anything else is not found.
+   * context, the quote is for that customer and gets the customer's own group; a quote for a
+   * customer, whether its own request or staff's, may only name products it may see and files it
+   * owns. Without a context the quote is internal and may not use a customer's file. Anything
+   * else is not found.
    */
-  async create(
+  create(
     auth: Requester,
     body: CustomerQuoteRequest & { customer_group?: string },
     context?: QuoteContext,
     partner?: PartnerChoice,
   ): Promise<QuoteResultResponse> {
+    return this.save(auth, body, context, partner, false);
+  }
+
+  /** As `create`; `requote` (only `requote()` sets it) skips the product and file rules. */
+  private async save(
+    auth: Requester,
+    body: CustomerQuoteRequest & { customer_group?: string },
+    context: QuoteContext | undefined,
+    partner: PartnerChoice | undefined,
+    requote: boolean,
+  ): Promise<QuoteResultResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const priced = await this.priceRequest(tx, auth.tenantId, body, context, partner);
+      const priced = await this.priceRequest(tx, auth.tenantId, body, context, partner, requote);
       if (!priced.accepted) {
         return { accepted: false, reasons: priced.reasons };
       }
@@ -389,12 +426,13 @@ export class QuotesService {
       throw new InternalServerErrorException('This process cannot price a picked workshop again');
     }
     const partner = quote.partnerId ? this.requoteChoice!(quote.partnerId) : undefined;
-    return this.create(auth, body, context, partner);
+    return this.save(auth, body, context, partner, true);
   }
 
   /**
-   * Everything a quote checks and prices, before anything is saved: the customer's own products and
-   * files, the group and speed, the pricing run, and the picked workshop, which must take the job as
+   * Everything a quote checks and prices, before anything is saved: the products the customer may
+   * see and the files it owns (or, for an internal quote, files no customer owns; none of this when
+   * `requote`), the group and speed, the pricing run, and the picked workshop, which must take the job as
    * priced (else `partner_unavailable`).
    */
   private async priceRequest(
@@ -403,12 +441,13 @@ export class QuotesService {
     body: CustomerQuoteRequest & { customer_group?: string },
     context: QuoteContext | undefined,
     partner: PartnerChoice | undefined,
+    requote = false,
   ) {
     if (context && body.customer_group) {
       throw new BadRequestException("customer_group: a customer's quote gets the customer's own group");
     }
     const customer = context ? await this.findCustomer(tx, context.customerId) : null;
-    const onlyVisible = context?.audience === 'customer' ? visibleTo(context.customerId) : {};
+    const onlyVisible = context && !requote ? visibleTo(context.customerId) : {};
     // Row-level security hides other tenants' products, so a foreign id is simply not found.
     const product = await tx.product.findFirst({
       where: { id: body.product_id, ...onlyVisible },
@@ -420,9 +459,16 @@ export class QuotesService {
     if (partner && product.kind === 'assembly') {
       throw new BadRequestException("partner_id: a product made of parts is put together by the workspace; a workshop can't be picked for it");
     }
-    if (context?.audience === 'customer' && body.file_version_id) {
+    if (!requote && body.file_version_id) {
+      // With a customer, only its own files; without, nothing a customer owns (a plain `not` would
+      // drop files with no owner type, as NULL never compares).
       const owned = await tx.fileVersion.findFirst({
-        where: { id: body.file_version_id, file: { ownerType: 'customer', ownerId: context.customerId } },
+        where: {
+          id: body.file_version_id,
+          file: context
+            ? { ownerType: 'customer', ownerId: context.customerId }
+            : { OR: [{ ownerType: null }, { ownerType: { not: 'customer' } }] },
+        },
         select: { id: true },
       });
       if (!owned) {
@@ -441,7 +487,7 @@ export class QuotesService {
     // A customer's quote gets its plan's discount and only the speeds it offers (Payments 2, goal 8):
     // the workspace's default speed, and those the plan lists.
     const plan = context ? await planOf(tx, context.customerId) : null;
-    if (plan && speedKey && speedKey !== adjustments.defaultSpeedKey && !plan.speeds.has(speedKey)) {
+    if (plan && speedKey && !planOffersSpeed(plan, speedKey, adjustments.defaultSpeedKey)) {
       throw new BadRequestException(`delivery_speed: ${speedKey} is not offered on the customer's plan (${plan.name})`);
     }
 

@@ -9,6 +9,7 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
+import { speedChoicesResponseSchema } from '../src/modules/pricing/pricing-response';
 import { quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { measuredDesign } from './catalog-fixtures';
@@ -243,5 +244,85 @@ describe('portal: customers request their own quotes', () => {
       quote.id,
     ]);
     expect((await w.staff.get(`/pricing/quotes/${quote.id}`).expect(200)).body).toMatchObject({ customer_id: w.luna });
+  });
+
+  it("holds staff quoting for a customer to the customer's products", async () => {
+    const w = await workspace();
+    const asStaff = (extra: object) => w.staff.post('/pricing/quotes', silverPolished(w, { customer_id: w.luna, ...extra }));
+    await asStaff({ product_id: w.unpublished }).expect(404);
+    await asStaff({ product_id: w.solPrivate }).expect(404);
+    // Where the customer can quote, staff can, at the same price.
+    const theirs = (await w.ben.post(quotes(w.luna), silverPolished(w)).expect(201)).body as { quote: { total: string } };
+    const staffs = (await asStaff({}).expect(201)).body as { quote: { total: string } };
+    expect(staffs.quote.total).toBe(theirs.quote.total);
+    expect(await quoteCount(w.tenantId)).toBe(2);
+  });
+
+  it("holds staff quoting for a customer to the customer's own files", async () => {
+    const w = await workspace();
+    const notFound = (body: object) =>
+      w.staff.post('/pricing/quotes', body).then((response) => {
+        expect({ status: response.status, detail: (response.body as { detail: string }).detail }).toEqual({
+          status: 404,
+          detail: 'File version not found',
+        });
+      });
+    await notFound(silverPolished(w, { customer_id: w.luna, file_version_id: w.solVersion }));
+    await notFound(silverPolished(w, { customer_id: w.luna, file_version_id: w.setup.versionId }));
+    // No customer: no customer's file either.
+    await notFound(silverPolished(w, { file_version_id: w.lunaVersion }));
+    await w.staff.post('/pricing/quotes', silverPolished(w, { file_version_id: w.setup.versionId })).expect(201);
+    expect(await quoteCount(w.tenantId)).toBe(1);
+  });
+
+  it('lists the delivery speeds to anyone at the customer', async () => {
+    const w = await workspace();
+    const responseSchema = speedChoicesResponseSchema;
+    const keys = (body: unknown) => (body as { data: { key: string }[] }).data.map((speed) => speed.key);
+    const portalRead = (w: Workspace) => w.anna.get(`/portal/customers/${w.luna}/delivery-speeds`).expect(200);
+
+    // On the default plan a customer sees only the workspace's default speed; staff without a customer see all.
+    const everything = await w.staff.get('/pricing/quotes/delivery-speeds').expect(200);
+    expect(keys(everything.body)).toEqual(['rush', 'standard']);
+    const before = await portalRead(w);
+    expectDocumented(responseSchema, before.body);
+    expect(keys(before.body)).toEqual(['standard']);
+    expect(JSON.stringify(before.body)).not.toContain('surcharge_percent');
+    expect((await w.staff.get(`/pricing/quotes/delivery-speeds?customer_id=${w.luna}`).expect(200)).body).toEqual(before.body);
+
+    // Once the plan lists rush, the customer, and staff quoting for it, see it too.
+    const plans = (await w.staff.get('/payments/plans').expect(200)).body as { data: { id: string; is_default: boolean }[] };
+    const starter = plans.data.find((plan) => plan.is_default)!.id;
+    await w.staff.patch(`/payments/plans/${starter}`, { speeds: [{ key: 'rush', surcharge_percent: null }] }).expect(200);
+    for (const [client, customerId] of [
+      [w.anna, w.luna],
+      [w.ben, w.sol],
+    ] as const) {
+      const response = await client.get(`/portal/customers/${customerId}/delivery-speeds`).expect(200);
+      expectDocumented(responseSchema, response.body);
+      expect(keys(response.body)).toEqual(['rush', 'standard']);
+      expect((await w.staff.get(`/pricing/quotes/delivery-speeds?customer_id=${customerId}`).expect(200)).body).toEqual(response.body);
+    }
+    await w.sam.get(`/portal/customers/${w.luna}/delivery-speeds`).expect(404);
+
+    // Every listed speed quotes, for the customer and for staff.
+    for (const key of keys((await portalRead(w)).body)) {
+      await w.ben.post(quotes(w.luna), silverPolished(w, { delivery_speed: key })).expect(201);
+      await w.staff.post('/pricing/quotes', silverPolished(w, { customer_id: w.luna, delivery_speed: key })).expect(201);
+    }
+
+    await w.staff.get(`/pricing/quotes/delivery-speeds?customer_id=${newId()}`).expect(404);
+    await w.staff.get('/pricing/quotes/delivery-speeds?customer_id=nope').expect(400);
+  });
+
+  it('lists the products a customer can see for staff', async () => {
+    const w = await workspace();
+    const ids = async (customerId: string) =>
+      ((await w.staff.get(`/catalog/products?customer_id=${customerId}`).expect(200)).body as { data: { id: string }[] }).data
+        .map((product) => product.id)
+        .sort();
+    expect(await ids(w.luna)).toEqual([w.setup.productId].sort());
+    expect(await ids(w.sol)).toEqual([w.setup.productId, w.solPrivate].sort());
+    await w.staff.get(`/catalog/products?customer_id=${newId()}`).expect(404);
   });
 });

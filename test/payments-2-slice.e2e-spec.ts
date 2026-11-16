@@ -164,8 +164,8 @@ describe('payments: plans and credits, end to end', () => {
       ...(delivery_speed ? { delivery_speed } : {}),
     });
     /** A staff quote for the customer, read back with its breakdown: the adjustments as [kind, percent]. */
-    const staffAdjustments = async (customerId: string, delivery_speed: string) => {
-      const created = await staff.post('/pricing/quotes', { ...cube(cast.versionId, delivery_speed), customer_id: customerId }).expect(201);
+    const staffAdjustments = async (customerId: string, designVersionId: string, delivery_speed: string) => {
+      const created = await staff.post('/pricing/quotes', { ...cube(designVersionId, delivery_speed), customer_id: customerId }).expect(201);
       const view = await staff.get(`/pricing/quotes/${(created.body as { quote: { id: string } }).quote.id}`).expect(200);
       return (view.body as { breakdown: { adjustments: Adjustment[] } }).breakdown.adjustments.map((line) => [line.kind, line.percent]);
     };
@@ -263,7 +263,7 @@ describe('payments: plans and credits, end to end', () => {
       status: 'active',
     });
     expect(await balance(brightline)).toMatchObject({ by_source: { allowance: 100, campaign: 50, pack: 100 } });
-    expect(await staffAdjustments(brightline, 'express')).toEqual([
+    expect(await staffAdjustments(brightline, brightlineDesign, 'express')).toEqual([
       ['customer_group', '-10'],
       ['plan', '5'],
       ['delivery_speed', '25'],
@@ -282,7 +282,7 @@ describe('payments: plans and credits, end to end', () => {
       tx.creditGrant.findMany({ where: { customerId: brightline, sourceKey: { startsWith: 'topup:' } } }),
     );
     expect(topUps.map((grant) => grant.amount)).toEqual([300]);
-    expect(await staffAdjustments(brightline, 'rush')).toEqual([
+    expect(await staffAdjustments(brightline, brightlineDesign, 'rush')).toEqual([
       ['customer_group', '-10'],
       ['plan', '10'],
       ['delivery_speed', '20'],

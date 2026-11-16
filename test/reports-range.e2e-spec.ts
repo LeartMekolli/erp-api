@@ -10,6 +10,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { addDays, weekMetricsSchema, weekOf } from '../src/modules/reporting/week-metrics';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { measuredDesign } from './catalog-fixtures';
 import { pricedCastPart } from './pricing-fixtures';
 
 const WEEK_MS = 7 * 86_400_000;
@@ -64,9 +65,12 @@ describe('reporting: numbers for any range', () => {
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
     await staff.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '0' }, { country: 'DE', region: null, percent: '19' }] }).expect(200);
 
+    /** Each customer's own design: staff may quote for a customer only with that customer's files. */
+    const designs = new Map<string, string>();
     const customer = async (name: string) => {
       const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
+      designs.set(id, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: id })).versionId);
       return id;
     };
     const luna = await customer('Luna Jewels');
@@ -79,7 +83,7 @@ describe('reporting: numbers for any range', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: designs.get(customerId),
             customer_id: customerId,
           })
           .expect(201)

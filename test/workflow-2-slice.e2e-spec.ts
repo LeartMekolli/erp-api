@@ -10,6 +10,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { ProgressEmailsService } from '../src/modules/orders/progress-emails.service';
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { sampling } from '../src/modules/workflow/sampling';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -158,6 +159,7 @@ describe('Workflow 2 walkthrough', () => {
       prisma.inTenant(tenant.id, (tx) => tx.plan.updateMany({ where: { isDefault: true }, data: { features: on ? ['progress_emails'] : [] } }));
     await progressEmails(true);
 
+    const design = (await measuredDesign(prisma, tenant.id, ownerUser.id, { customerId: luna })).versionId;
     const quote = async (productId: string, quantity: number) =>
       ((
         await owner
@@ -166,7 +168,7 @@ describe('Workflow 2 walkthrough', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: luna,
           })
           .expect(201)

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
-import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
+import { pageSchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -14,6 +14,7 @@ import {
   createCategorySchema,
   createProductSchema,
   designFileSchema,
+  productListQuerySchema,
   productOptionsInputSchema,
   updateProductSchema,
 } from './products.service';
@@ -74,15 +75,16 @@ export class ProductsController {
 
   @ApiDoc({
     summary: 'List products with their options and design file, newest first.',
-    query: paginationQuerySchema,
+    description: 'With `customer_id`, only the products that customer can see and quote.',
+    query: productListQuerySchema,
     response: pageSchema(productResponseSchema),
-    errors: [400],
+    errors: [400, 404],
   })
   @RequirePermission('catalog.read')
   @Get('products')
   list(
     @CurrentTenant() tenantId: string,
-    @Query(new ZodValidationPipe(paginationQuerySchema)) query: z.infer<typeof paginationQuerySchema>,
+    @Query(new ZodValidationPipe(productListQuerySchema)) query: z.infer<typeof productListQuerySchema>,
   ): Promise<Page<ProductResponse>> {
     return this.products.list(tenantId, query);
   }
@@ -102,7 +104,7 @@ export class ProductsController {
     summary: "Change a product's name, category, sizing or fixed material.",
     description:
       'Key and kind stay as created. Moving a ready-made product to a category whose required measures its design ' +
-      'file lacks is a 409.',
+      "file lacks is a 409, and so is changing the customer of a product that carries a customer's own design file.",
     body: updateProductSchema,
     response: productResponseSchema,
     errors: [400, 404, 409],
@@ -160,7 +162,8 @@ export class ProductsController {
     summary: "Pin a measured design file version as a ready-made product's own file.",
     description:
       'A 409 when the product is custom, the file is not a design, the version is not measured yet, or it lacks a ' +
-      "measure the product's category requires. A later upload never changes the product until it is pinned again.",
+      "measure the product's category requires; also when the file is a customer's own and the product isn't that " +
+      "customer's. A later upload never changes the product until it is pinned again.",
     body: designFileSchema,
     response: productResponseSchema,
     errors: [400, 404, 409],

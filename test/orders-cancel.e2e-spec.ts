@@ -97,6 +97,7 @@ describe('orders: state and cancelling', () => {
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     const sol = ((await staff.post('/customers', { name: 'Sol Studio' }).expect(201)).body as { id: string }).id;
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     // Pay later, so an order starts at once instead of waiting for payment.
     for (const customer of [luna, sol]) {
       await staff.put(`/customers/${customer}/payment-terms`, { terms: 'pay_later' }).expect(200);
@@ -111,7 +112,7 @@ describe('orders: state and cancelling', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 10,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign,
             customer_id: luna,
             ...extra,
           })

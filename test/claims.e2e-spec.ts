@@ -67,8 +67,11 @@ describe('claims: opening a claim', () => {
     await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
 
+    /** Each customer's own design: staff quote only with the customer's own files. */
+    const designs = new Map<string, string>();
     const customer = async (name: string) => {
       const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
+      designs.set(id, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: id })).versionId);
       // Pay later, so an order starts at once instead of waiting for payment.
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       return id;
@@ -92,7 +95,7 @@ describe('claims: opening a claim', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 3,
-            file_version_id: cast.versionId,
+            file_version_id: designs.get(customerId)!,
             customer_id: customerId,
           })
           .expect(201)

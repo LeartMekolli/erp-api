@@ -7,7 +7,9 @@ import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { speedChoicesResponseSchema } from '../src/modules/pricing/pricing-response';
 import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
+import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
@@ -329,6 +331,20 @@ describe('pricing: saved quotes', () => {
     expect(expiredSummary).toMatchObject({ expired: true, lines: summaryBefore.lines, unit_price: summaryBefore.unit_price });
   });
 
+  it('lets members list the delivery speeds without pricing.read', async () => {
+    const tenant = await freshTenant();
+    await walkthrough(tenant);
+    const response = await tenant.member.get('/pricing/quotes/delivery-speeds').expect(200);
+    expectDocumented(speedChoicesResponseSchema, response.body);
+    expect(response.body).toEqual({
+      data: [
+        { key: 'rush', name: 'Rush', working_days: expect.any(Number), is_default: false },
+        { key: 'standard', name: 'Standard', working_days: expect.any(Number), is_default: true },
+      ],
+    });
+    await tenant.member.get('/pricing/delivery-speeds').expect(403);
+  });
+
   it('lets members quote and read the summary, but not the staff breakdown', async () => {
     const tenant = await freshTenant();
     const setup = await walkthrough(tenant);
@@ -350,10 +366,19 @@ describe('pricing: saved quotes', () => {
     const plain = await quote(a.owner, silverPolished(setup));
     expect((await a.owner.get(`/pricing/quotes/${plain.id}`).expect(200)).body).toMatchObject({ customer_id: null });
 
-    await a.owner.post('/pricing/quotes', silverPolished(setup, { customer_id: foreign })).expect(404);
-    await a.owner.post('/pricing/quotes', silverPolished(setup, { customer_id: newId() })).expect(404);
+    // A file owned by the very id asked for, so only the customer can make it a 404.
+    const designOf = async (customerId: string) => (await measuredDesign(prisma, a.id, a.ownerId, { customerId })).versionId;
+    const unknown = newId();
+    for (const customerId of [foreign, unknown]) {
+      const refused = await a.owner
+        .post('/pricing/quotes', silverPolished(setup, { customer_id: customerId, file_version_id: await designOf(customerId) }))
+        .expect(404);
+      expect((refused.body as { detail: string }).detail).toBe('Customer not found');
+    }
     // The customer's group applies; naming one as well is a contradiction.
-    await a.owner.post('/pricing/quotes', silverPolished(setup, { customer_id: luna, customer_group: 'trade' })).expect(400);
+    await a.owner
+      .post('/pricing/quotes', silverPolished(setup, { customer_id: luna, customer_group: 'trade', file_version_id: await designOf(luna) }))
+      .expect(400);
     expect(await quoteCount(a.id)).toBe(1);
   });
 });

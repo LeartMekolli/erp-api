@@ -127,6 +127,7 @@ describe('Orders 3b: job summaries, production planning and couriers', () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = cast.steps;
     const workflowPath = `/workflow/workflows/${cast.workflow.workflowId}`;
     const current = ((await staff.get(workflowPath).expect(200)).body as { current_version: { steps: VersionStep[] } }).current_version;
@@ -182,8 +183,11 @@ describe('Orders 3b: job summaries, production planning and couriers', () => {
     const customer = async (name: string) => {
       const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
+      // A customer quotes with its own design.
+      designs.set(id, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: id })).versionId);
       return id;
     };
+    const designs = new Map<string, string>();
     const luna = await customer('Luna Jewels');
     const viewerUser = await createTestUser(prisma, tenant.id, { roles: [] });
     await prisma.inTenant(tenant.id, async (tx) => {
@@ -201,7 +205,7 @@ describe('Orders 3b: job summaries, production planning and couriers', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity,
-              file_version_id: cast.versionId,
+              file_version_id: designs.get(customerId),
               customer_id: customerId,
             })
             .expect(201)

@@ -1102,7 +1102,8 @@ export class OrdersService {
 
   /**
    * Starts a line, or a part of one under the line's group, from its quote; a refusal names the
-   * line, so the customer knows which to change.
+   * line, so the customer knows which to change. A coded refusal keeps its code and each of its
+   * reasons, now on the line: `partner_unavailable` asks for a new pick, which no other 409 does.
    */
   private async startLine(
     tx: Tx,
@@ -1117,8 +1118,11 @@ export class OrdersService {
     } catch (error) {
       if (error instanceof HttpException && error.getStatus() === 409) {
         const response = error.getResponse();
-        const message = typeof response === 'object' && response !== null && 'message' in response ? String(response.message) : error.message;
-        throw new ConflictException({ message, errors: [{ path: `lines.${position}`, message }] });
+        const body = (typeof response === 'object' && response !== null ? response : {}) as { message?: unknown; code?: unknown; errors?: unknown };
+        const message = body.message !== undefined ? String(body.message) : error.message;
+        const code = typeof body.code === 'string' ? { code: body.code } : {};
+        const reasons = Array.isArray(body.errors) && body.errors.length > 0 && 'code' in code ? (body.errors as { message: unknown }[]) : [{ message }];
+        throw new ConflictException({ ...code, message, errors: reasons.map((reason) => ({ path: `lines.${position}`, message: String(reason.message) })) });
       }
       throw error;
     }
