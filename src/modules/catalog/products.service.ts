@@ -262,6 +262,10 @@ export class ProductsService {
       }
       await this.checkMaterial(tx, patch.material_id ?? undefined);
       await this.checkCustomer(tx, patch.customer_id ?? undefined);
+      if (patch.customer_id !== undefined && patch.customer_id !== current.customerId && current.fileVersionId) {
+        const message = "The product carries a customer's own design file; pin another file before changing its customer";
+        await this.refuseOthersFile(tx, current.fileVersionId, patch.customer_id, message);
+      }
       const row = await tx.product.update({
         where: { id },
         data: {
@@ -377,6 +381,7 @@ export class ProductsService {
       }
       const category = await this.findCategory(tx, product.categoryId);
       await this.checkVersion(tx, input.file_version_id, category.requiredMeasures);
+      await this.refuseOthersFile(tx, input.file_version_id, product.customerId, "A customer's design file can only be pinned on that customer's own product");
       const row = await tx.product.update({
         where: { id },
         data: { fileVersionId: input.file_version_id },
@@ -527,6 +532,17 @@ export class ProductsService {
   private async checkCustomer(tx: Prisma.TransactionClient, customerId: string | undefined): Promise<void> {
     if (customerId && !(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
       throw new NotFoundException('Customer not found');
+    }
+  }
+
+  /**
+   * A customer's file stays on that customer's own products: a pinned design reaches every order line
+   * of the product (`line-picks.ts`), so on anyone else's product it would reach another customer.
+   */
+  private async refuseOthersFile(tx: Prisma.TransactionClient, versionId: string, productCustomerId: string | null, message: string): Promise<void> {
+    const version = await tx.fileVersion.findUnique({ where: { id: versionId }, select: { file: { select: { ownerType: true, ownerId: true } } } });
+    if (version?.file.ownerType === 'customer' && version.file.ownerId !== productCustomerId) {
+      throw new ConflictException(message);
     }
   }
 

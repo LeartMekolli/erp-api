@@ -104,7 +104,7 @@ export class ProductsController {
     summary: "Change a product's name, category, sizing or fixed material.",
     description:
       'Key and kind stay as created. Moving a ready-made product to a category whose required measures its design ' +
-      'file lacks is a 409.',
+      "file lacks is a 409, and so is changing the customer of a product that carries a customer's own design file.",
     body: updateProductSchema,
     response: productResponseSchema,
     errors: [400, 404, 409],
@@ -162,7 +162,8 @@ export class ProductsController {
     summary: "Pin a measured design file version as a ready-made product's own file.",
     description:
       'A 409 when the product is custom, the file is not a design, the version is not measured yet, or it lacks a ' +
-      "measure the product's category requires. A later upload never changes the product until it is pinned again.",
+      "measure the product's category requires; also when the file is a customer's own and the product isn't that " +
+      "customer's. A later upload never changes the product until it is pinned again.",
     body: designFileSchema,
     response: productResponseSchema,
     errors: [400, 404, 409],

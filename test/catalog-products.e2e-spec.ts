@@ -16,6 +16,7 @@ interface Product {
   id: string;
   options: { group_id: string; required: boolean; default_value_id: string | null; value_ids: string[] }[];
   design_file: { file_id: string; version_id: string } | null;
+  customer_id: string | null;
 }
 
 describe('catalog: categories and products', () => {
@@ -256,5 +257,39 @@ describe('catalog: categories and products', () => {
     expect((visible.body as { data: Product[] }).data.map((product) => product.id)).toEqual([id]);
     await a.owner.get(`/catalog/products?customer_id=${foreign}`).expect(404);
     await a.owner.get('/catalog/products?customer_id=nope').expect(400);
+  });
+
+  it("keeps a customer's design file on that customer's own products", async () => {
+    const tenant = await freshTenant();
+    const { categoryId } = await setup(tenant);
+    const customer = async (name: string) => ((await tenant.owner.post('/customers', { name }).expect(201)).body as { id: string }).id;
+    const luna = await customer('Luna Jewels');
+    const sol = await customer('Sol Rings');
+    const ring = async (key: string, customerId?: string) =>
+      ((await tenant.owner.post('/catalog/products', { ...ringModel(categoryId), key, customer_id: customerId }).expect(201)).body as Product).id;
+    const shared = await ring('shared_ring');
+    const solsRing = await ring('sol_ring', sol);
+    const lunasRing = await ring('luna_ring', luna);
+    const lunasFile = await measuredDesign(prisma, tenant.id, tenant.ownerId, { customerId: luna });
+    const unowned = await measuredDesign(prisma, tenant.id, tenant.ownerId);
+    const pin = (productId: string, versionId: string) =>
+      tenant.owner.put(`/catalog/products/${productId}/design-file`, { file_version_id: versionId });
+
+    // Pinned, it would reach every order line of the product, so only on Luna's own.
+    const onShared = await pin(shared, lunasFile.versionId).expect(409);
+    expect((onShared.body as { detail: string }).detail).toBe("A customer's design file can only be pinned on that customer's own product");
+    await pin(solsRing, lunasFile.versionId).expect(409);
+    await pin(lunasRing, lunasFile.versionId).expect(200);
+
+    // Nor does Luna's product take its file to Sol or to everyone.
+    const moved = await tenant.owner.patch(`/catalog/products/${lunasRing}`, { customer_id: sol }).expect(409);
+    expect((moved.body as { detail: string }).detail).toMatch(/customer's own design file/);
+    await tenant.owner.patch(`/catalog/products/${lunasRing}`, { customer_id: null }).expect(409);
+    expect(((await tenant.owner.get(`/catalog/products/${lunasRing}`).expect(200)).body as Product).customer_id).toBe(luna);
+
+    // A file that is no customer's moves freely.
+    await pin(lunasRing, unowned.versionId).expect(200);
+    await tenant.owner.patch(`/catalog/products/${lunasRing}`, { customer_id: sol }).expect(200);
+    await pin(shared, unowned.versionId).expect(200);
   });
 });
