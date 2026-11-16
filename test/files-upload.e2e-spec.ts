@@ -51,15 +51,17 @@ describe('files: starting uploads', () => {
   let maxBytes: number;
   const createdTenants: string[] = [];
 
-  async function freshTenant(): Promise<{ id: string; ownerToken: string; memberToken: string }> {
+  async function freshTenant(): Promise<{ id: string; ownerToken: string; memberToken: string; accountantToken: string }> {
     const tenant = await createTestTenant(prisma);
     createdTenants.push(tenant.id);
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+    const accountant = await createTestUser(prisma, tenant.id, { roles: ['accountant'] });
     return {
       id: tenant.id,
       ownerToken: (await tokens.issueForUser(tenant.id, owner.id)).accessToken,
       memberToken: (await tokens.issueForUser(tenant.id, member.id)).accessToken,
+      accountantToken: (await tokens.issueForUser(tenant.id, accountant.id)).accessToken,
     };
   }
 
@@ -263,13 +265,16 @@ describe('files: starting uploads', () => {
     expect(body.versions[1].measures).toEqual([{ type: 'width', value: '210.5', unit: 'mm' }]);
   });
 
-  it('lets a member read but not upload', async () => {
+  it('lets a member read and upload', async () => {
     const tenant = await freshTenant();
     const { file } = await created(tenant.ownerToken);
 
     await getFile(tenant.memberToken, file.id).expect(200);
-    await startUpload(tenant.memberToken, validFile).expect(403);
-    await addVersion(tenant.memberToken, file.id, validVersion).expect(403);
+    await startUpload(tenant.memberToken, validFile).expect(201);
+    await addVersion(tenant.memberToken, file.id, validVersion).expect(201);
+    // A role without file.write still may not.
+    await startUpload(tenant.accountantToken, validFile).expect(403);
+    await addVersion(tenant.accountantToken, file.id, validVersion).expect(403);
   });
 
   it("gives 404 for another tenant's file, on reading and on new versions", async () => {

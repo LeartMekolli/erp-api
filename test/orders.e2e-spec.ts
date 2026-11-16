@@ -530,4 +530,51 @@ describe('orders: placing an order', () => {
       .post('/orders', { customer_id: tenant.luna, lines: [{ quote_id: (await other.staffQuote()).id }], address, shipping_method: 'courier' })
       .expect(404);
   });
+
+  it("lets a member upload a customer's model, quote and place an order as the customer would", async () => {
+    const tenant = await freshTenant();
+
+    const started = await tenant.member
+      .post('/files', { kind: 'design', name: 'ring.stl', content_type: 'model/stl', size: 684, declared_unit: 'mm', customer_id: tenant.luna })
+      .expect(201);
+    const versionId = (started.body as { version: { id: string } }).version.id;
+    // The bytes never reach storage here, so leave the version as the measuring job would.
+    await prisma.inTenant(tenant.id, async (tx) => {
+      await tx.fileVersion.update({ where: { id: versionId }, data: { status: 'measured', completedAt: new Date() } });
+      await tx.measure.createMany({
+        data: [
+          ['volume', '1000', 'mm3'],
+          ['surface_area', '600', 'mm2'],
+          ['bounding_box_x', '10', 'mm'],
+          ['bounding_box_y', '10', 'mm'],
+          ['bounding_box_z', '10', 'mm'],
+        ].map(([type, value, unit]) => ({ fileVersionId: versionId, type, value, unit })),
+      });
+    });
+
+    await tenant.member.get('/pricing/quotes/delivery-speeds').expect(200);
+    const quote = (
+      (
+        await tenant.member
+          .post('/pricing/quotes', {
+            product_id: tenant.cast.productId,
+            options: { material: 'silver_925', finish: 'polished' },
+            size: { scale: '1.5' },
+            quantity: 10,
+            file_version_id: versionId,
+            customer_id: tenant.luna,
+            delivery_speed: 'standard',
+          })
+          .expect(201)
+      ).body as { quote: Quote }
+    ).quote;
+
+    const placed = await tenant.member
+      .post('/orders', { customer_id: tenant.luna, lines: [{ quote_id: quote.id }], address, shipping_method: 'courier' })
+      .expect(201);
+    const placedId = (placed.body as Order).id;
+
+    const portal = await tenant.buyer.get(`/portal/customers/${tenant.luna}/orders`).expect(200);
+    expect((portal.body as { data: { id: string }[] }).data.map((row) => row.id)).toEqual([placedId]);
+  });
 });

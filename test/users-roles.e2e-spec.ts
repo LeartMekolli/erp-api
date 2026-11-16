@@ -183,6 +183,7 @@ describe('users and roles administration', () => {
         'catalog.read',
         'customer.read',
         'file.read',
+        'file.write',
         'order.read',
         'order.write',
         'partner.read',

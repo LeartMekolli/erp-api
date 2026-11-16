@@ -86,15 +86,17 @@ describe('files: completing, measuring and downloading', () => {
   let storage: ObjectStorage;
   const createdTenants: string[] = [];
 
-  async function freshTenant(): Promise<{ id: string; ownerToken: string; memberToken: string }> {
+  async function freshTenant(): Promise<{ id: string; ownerToken: string; memberToken: string; accountantToken: string }> {
     const tenant = await createTestTenant(prisma);
     createdTenants.push(tenant.id);
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+    const accountant = await createTestUser(prisma, tenant.id, { roles: ['accountant'] });
     return {
       id: tenant.id,
       ownerToken: (await tokens.issueForUser(tenant.id, owner.id)).accessToken,
       memberToken: (await tokens.issueForUser(tenant.id, member.id)).accessToken,
+      accountantToken: (await tokens.issueForUser(tenant.id, accountant.id)).accessToken,
     };
   }
 
@@ -518,12 +520,12 @@ describe('files: completing, measuring and downloading', () => {
     await downloadUrl(tenantA.ownerToken, other.fileId, version.id).expect(404);
   });
 
-  it('lets a member download but not complete', async () => {
+  it('lets a member download and complete, but not a role without file.write', async () => {
     const tenant = await freshTenant();
     const { fileId, version } = await startUpload(tenant.ownerToken);
 
-    await complete(tenant.memberToken, fileId, version.id).expect(403);
-    await complete(tenant.ownerToken, fileId, version.id).expect(200);
+    await complete(tenant.accountantToken, fileId, version.id).expect(403);
+    await complete(tenant.memberToken, fileId, version.id).expect(200);
     await downloadUrl(tenant.memberToken, fileId, version.id).expect(200);
   });
 });
