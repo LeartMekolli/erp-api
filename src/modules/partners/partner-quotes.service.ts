@@ -121,6 +121,7 @@ export class PartnerQuotesService implements OnModuleInit {
     const reasons = [...(partner.acceptsDirectOrders ? [] : ['Does not take direct orders']), ...(verdict.ok ? [] : verdict.reasons)];
     if (reasons.length > 0) {
       throw new ConflictException({
+        code: 'partner_unavailable',
         message: 'The workshop the customer picked can no longer take this job; the customer needs to pick again',
         errors: reasons.map((reason) => ({ path: 'quote_id', message: reason })),
       });

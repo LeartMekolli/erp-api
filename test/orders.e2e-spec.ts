@@ -349,7 +349,12 @@ describe('orders: placing an order', () => {
     const before = await counts(tenant);
 
     const refused = await order(tenant, [own.id, picked.id]).expect(409);
-    expect((refused.body as { errors: { path: string }[] }).errors[0].path).toBe('lines.1');
+    // Coded, so the page clears the pick and prices again; each reason names the line.
+    const body = refused.body as { code?: string; errors: { path: string; message: string }[] };
+    expect(body.code).toBe('partner_unavailable');
+    expect(body.errors.length).toBeGreaterThan(0);
+    expect(body.errors.every((error) => error.path === 'lines.1')).toBe(true);
+    expect(body.errors.map((error) => error.message)).not.toContain('The workshop the customer picked can no longer take this job; the customer needs to pick again');
     // Not line 0's group either: all of it, or nothing.
     expect(await counts(tenant)).toEqual(before);
   });
@@ -372,6 +377,8 @@ describe('orders: placing an order', () => {
     await order(tenant, [quote.id]).expect(201);
     const again = await order(tenant, [quote.id]).expect(409);
     expect((again.body as { errors: { path: string }[] }).errors[0].path).toBe('lines.0');
+    // Not a workshop that can't take the job: nothing to pick again.
+    expect(again.body).not.toHaveProperty('code');
   });
 
   it('lets only one of two identical orders through', async () => {
