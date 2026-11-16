@@ -157,6 +157,7 @@ describe('payments: paying partners', () => {
 
     const brightline = ((await staff.post('/customers', { name: 'Brightline' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: brightline })).versionId;
     const quote = async () =>
       ((
         await staff
@@ -165,7 +166,7 @@ describe('payments: paying partners', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 10,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: brightline,
           })
           .expect(201)

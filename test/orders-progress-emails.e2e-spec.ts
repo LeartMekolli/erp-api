@@ -15,6 +15,7 @@ import { ProgressEmailsService } from '../src/modules/orders/progress-emails.ser
 import { SettingsService } from '../src/modules/settings/settings.service';
 import { workflowVersionResponseSchema } from '../src/modules/workflow/workflow-response';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -134,6 +135,7 @@ describe('orders: progress emails', () => {
       await tx.organisationMembership.create({ data: { userId: buyer.id, organisationType: 'customer', organisationId: luna, role: 'buyer' } });
     });
     await setProgressEmails(tenant.id, true);
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
 
     const quote = async (productId: string, quantity: number, customerId: string | undefined = luna) =>
       ((
@@ -143,7 +145,7 @@ describe('orders: progress emails', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign,
             customer_id: customerId,
           })
           .expect(201)

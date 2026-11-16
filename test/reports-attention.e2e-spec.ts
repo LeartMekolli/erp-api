@@ -11,6 +11,7 @@ import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { ATTENTION_KINDS } from '../src/modules/reporting/attention.service';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -86,6 +87,7 @@ describe('reporting: needs attention', () => {
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
 
+    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     const order = async (quantity: number) => {
       const quote = ((
         await staff
@@ -94,7 +96,7 @@ describe('reporting: needs attention', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: luna,
           })
           .expect(201)

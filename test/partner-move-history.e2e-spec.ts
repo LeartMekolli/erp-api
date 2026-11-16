@@ -132,13 +132,15 @@ describe("partners: the moves on a partner's job", () => {
     const castcoPerson = await partnerPerson(tenant.id, [castco], 'Cora Caster');
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    // Luna's own design: staff may quote for a customer only with that customer's files.
+    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     const job = async () => {
       const quoted = await staff
         .post('/pricing/quotes', {
           product_id: cast.productId,
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
-          file_version_id: cast.versionId,
+          file_version_id: design,
           quantity: 10,
           customer_id: luna,
         })

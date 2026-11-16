@@ -156,6 +156,7 @@ describe('orders: placing an order', () => {
     // Luna's own design: a customer may only quote with its own files.
     const designFile = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const design = designFile.versionId;
+    const solDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: sol })).versionId;
     const timezone = (await prisma.inTenant(tenant.id, (tx) => tx.tenant.findUniqueOrThrow({ where: { id: tenant.id } }))).timezone;
 
     const configuration = (extra: object = {}) => ({
@@ -165,10 +166,17 @@ describe('orders: placing an order', () => {
       quantity: 10,
       ...extra,
     });
-    /** A quote staff make for a customer, or an internal one without `customer_id`. */
-    const staffQuote = async (extra: object = {}) =>
-      ((await staff.post('/pricing/quotes', { ...configuration({ file_version_id: cast.versionId }), customer_id: luna, ...extra }).expect(201))
+    /**
+     * A quote staff make for a customer (Luna by default), or an internal one without `customer_id`.
+     * It carries that customer's own design, as the customer's rules ask; an internal quote carries
+     * the workspace's.
+     */
+    const staffQuote = async (extra: { customer_id?: string | undefined; [key: string]: unknown } = {}) => {
+      const customer = 'customer_id' in extra ? extra.customer_id : luna;
+      const file = customer === luna ? design : customer === sol ? solDesign : cast.versionId;
+      return ((await staff.post('/pricing/quotes', { ...configuration({ file_version_id: file }), customer_id: luna, ...extra }).expect(201))
         .body as { quote: Quote }).quote;
+    };
     const buyer = await person(tenant.id, 'customer', luna, 'buyer');
     /** A quote Luna's buyer makes in the customer app, optionally at a workshop it picked. */
     const lunaQuote = async (extra: object = {}) =>
@@ -423,6 +431,10 @@ describe('orders: placing an order', () => {
     const tenant = await freshTenant();
     const lapsed = await tenant.staffQuote();
     await tenant.staff.patch(`/catalog/products/${tenant.cast.productId}`, { published: false }).expect(200);
+    // And its file went to another customer.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.file.update({ where: { id: tenant.designFile.fileId }, data: { ownerType: 'customer', ownerId: tenant.sol } }),
+    );
     await lapse(tenant, lapsed.id);
 
     const placed = await order(tenant, [lapsed.id]).expect(201);

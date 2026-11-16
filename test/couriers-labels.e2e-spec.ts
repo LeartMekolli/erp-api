@@ -14,6 +14,7 @@ import { bulkShipResponseSchema, customerOrderResponseSchema, orderResponseSchem
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
 import { webhookAckResponseSchema } from '../src/modules/payments/payment-response';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -83,6 +84,7 @@ describe('couriers: labels and tracking', () => {
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const viewerUser = await createTestUser(prisma, tenant.id, { roles: [] });
     await prisma.inTenant(tenant.id, async (tx) => {
       await tx.user.update({ where: { id: viewerUser.id }, data: { kind: 'customer' } });
@@ -98,7 +100,7 @@ describe('couriers: labels and tracking', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity: 2,
-              file_version_id: cast.versionId,
+              file_version_id: lunaDesign.versionId,
               customer_id: luna,
             })
             .expect(201)

@@ -139,9 +139,11 @@ describe('portal: customers order and follow their orders', () => {
     /** A quote Luna's buyer makes in the customer app, optionally at a workshop it picked. */
     const lunaQuote = async (extra: object = {}) =>
       ((await buyer.post(`/portal/customers/${luna}/quotes`, configuration(extra)).expect(201)).body as { quote: Quote }).quote;
-    /** A quote staff make for Sol, with the workspace's own design. */
+    // Sol's own design: staff quote a customer only with its own files.
+    const solDesignFile = await measuredDesign(prisma, tenant.id, owner.id, { customerId: sol });
+    /** A quote staff make for Sol, with Sol's own design. */
     const solQuote = async () =>
-      ((await staff.post('/pricing/quotes', { ...configuration({ file_version_id: cast.versionId }), customer_id: sol }).expect(201))
+      ((await staff.post('/pricing/quotes', { ...configuration({ file_version_id: solDesignFile.versionId }), customer_id: sol }).expect(201))
         .body as { quote: Quote }).quote;
 
     return {
@@ -155,6 +157,7 @@ describe('portal: customers order and follow their orders', () => {
       luna,
       sol,
       design,
+      solDesignFile,
       lunaQuote,
       solQuote,
     };
@@ -250,12 +253,16 @@ describe('portal: customers order and follow their orders', () => {
     expect(ownLine).toMatchObject({ options, size: { scale: '1.5' }, design_file: staffOwn.design_file });
     expect(ownLine.design_file?.file_version_id).toBe(tenant.design);
 
-    // Staff order for Sol with the workspace's own file: staff see it, the customer doesn't.
+    // Staff order for Sol whose file went to Luna after quoting: staff see it, Sol doesn't.
+    const solQuote = await tenant.solQuote();
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.file.update({ where: { id: tenant.solDesignFile.fileId }, data: { ownerType: 'customer', ownerId: tenant.luna } }),
+    );
     const placed = await tenant.staff
-      .post('/orders', { customer_id: tenant.sol, lines: [{ quote_id: (await tenant.solQuote()).id }], address, shipping_method: 'courier' })
+      .post('/orders', { customer_id: tenant.sol, lines: [{ quote_id: solQuote.id }], address, shipping_method: 'courier' })
       .expect(201);
     const staffLine = (placed.body as { lines: Picked[] }).lines[0];
-    expect(staffLine.design_file?.file_version_id).toBe(tenant.cast.versionId);
+    expect(staffLine.design_file?.file_version_id).toBe(tenant.solDesignFile.versionId);
     const portal = await tenant.solBuyer.get(`/portal/customers/${tenant.sol}/orders/${(placed.body as { id: string }).id}`).expect(200);
     expectDocumented(customerOrderResponseSchema, portal.body);
     expect((portal.body as { lines: Picked[] }).lines[0]).toMatchObject({ options, size: { scale: '1.5' }, design_file: null });

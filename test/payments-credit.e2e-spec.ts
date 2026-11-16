@@ -11,6 +11,7 @@ import { orderResponseSchema } from '../src/modules/orders/order-response';
 import { paymentCustomerResponseSchema } from '../src/modules/payments/payment-response';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { measuredDesign } from './catalog-fixtures';
 import { pricedCastPart } from './pricing-fixtures';
 
 interface StaffOrder {
@@ -74,6 +75,8 @@ describe('payments: pay later and the credit limit', () => {
     const terms = (credit_limit: string | null) =>
       staff.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later', days_to_pay: 30, credit_limit }).expect(200);
     await terms(null);
+    // Brightline's own design: staff may quote for a customer only with that customer's files.
+    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: brightline })).versionId;
 
     /** Brightline's order of one line, placed by staff; the quote is made first, so orders can be placed at once. */
     const quote = async (quantity = 10) =>
@@ -84,7 +87,7 @@ describe('payments: pay later and the credit limit', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: brightline,
           })
           .expect(201)

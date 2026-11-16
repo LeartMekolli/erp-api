@@ -64,6 +64,12 @@ describe('customers: band privileges', () => {
     const customer = async (name: string) => ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
     const timezone = (await prisma.tenant.findUniqueOrThrow({ where: { id: tenant.id } })).timezone;
     const today = () => localDate(new Date(), timezone);
+    /** Each customer's own design, made on first use: staff quote only with the customer's own files. */
+    const designs = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!designs.has(customerId)) designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      return designs.get(customerId)!;
+    };
     return {
       id: tenant.id,
       ownerId: owner.id,
@@ -82,7 +88,7 @@ describe('customers: band privileges', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity: 3,
-              file_version_id: cast.versionId,
+              file_version_id: await designOf(customerId),
               customer_id: customerId,
             })
             .expect(201)

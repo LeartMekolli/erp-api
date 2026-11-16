@@ -143,6 +143,7 @@ describe('payments: the money flow, end to end', () => {
     const buyer = await person(tenant.id, 'customer', anna, 'buyer');
     const brightline = ((await staff.post('/customers', { name: 'Brightline' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later', days_to_pay: 30, credit_limit: '5000.00' }).expect(200);
+    const brightlineDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: brightline })).versionId;
 
     const address = { name: 'Customer', line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' };
     const view = async (orderId: string) => (await staff.get(`/orders/${orderId}`).expect(200)).body as Order;
@@ -173,7 +174,7 @@ describe('payments: the money flow, end to end', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 10,
-            file_version_id: cast.versionId,
+            file_version_id: brightlineDesign,
             customer_id: brightline,
           })
           .expect(201)

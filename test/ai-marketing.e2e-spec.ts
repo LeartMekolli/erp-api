@@ -16,6 +16,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -110,8 +111,11 @@ describe('ai: marketing insights', () => {
     await staff.patch(`/payments/plans/${starter.id}`, { features: [...starter.features, 'ai_marketing'] }).expect(200);
 
     const expiresOn = new Date(Date.now() + 30 * DAY_MS).toISOString().slice(0, 10);
+    /** Each customer's own design: staff quote only with the customer's own files. */
+    const designs = new Map<string, string>();
     const customer = async (name: string) => {
       const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
+      designs.set(id, (await measuredDesign(prisma, tenant.id, staffUser.id, { customerId: id })).versionId);
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       await staff.post(`/payments/customers/${id}/credits`, { amount: 20, expires_on: expiresOn, reason: 'AI trial' }).expect(201);
       return id;
@@ -125,7 +129,7 @@ describe('ai: marketing insights', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity,
-              file_version_id: cast.versionId,
+              file_version_id: designs.get(customerId)!,
               customer_id: customerId,
             })
             .expect(201)

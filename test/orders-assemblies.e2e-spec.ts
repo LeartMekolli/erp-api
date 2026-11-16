@@ -125,6 +125,8 @@ describe('orders: assemblies', () => {
       staff,
       buyer: await person(tenant.id, 'customer', luna, 'buyer'),
       luna,
+      // Luna's own design: staff quoting for a customer may only use that customer's files.
+      lunaDesign: (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId,
       metalworks: await workshop('MetalWorks'),
       castco: await workshop('CastCo'),
       ...set,
@@ -155,7 +157,7 @@ describe('orders: assemblies', () => {
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
           quantity: 2,
-          file_version_id: tenant.cast.versionId,
+          file_version_id: tenant.lunaDesign,
           customer_id: tenant.luna,
         })
         .expect(201)

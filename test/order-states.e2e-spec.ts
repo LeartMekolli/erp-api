@@ -7,6 +7,7 @@ import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { OrderStatesService } from '../src/modules/orders/order-states.service';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { expectStoredStates } from './stored-states';
@@ -50,6 +51,11 @@ describe('orders: stored states', () => {
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     const sol = ((await staff.post('/customers', { name: 'Sol Studio' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    // Each customer quotes with its own design.
+    const designs = {
+      [luna]: (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId,
+      [sol]: (await measuredDesign(prisma, tenant.id, owner.id, { customerId: sol })).versionId,
+    };
 
     /** An order of `lines` lines of 2 pieces each. */
     const place = async (customerId: string, lines = 1) => {
@@ -63,7 +69,7 @@ describe('orders: stored states', () => {
                 options: { material: 'silver_925', finish: 'polished' },
                 size: { scale: '1.5' },
                 quantity: 2,
-                file_version_id: cast.versionId,
+                file_version_id: designs[customerId],
                 customer_id: customerId,
               })
               .expect(201)

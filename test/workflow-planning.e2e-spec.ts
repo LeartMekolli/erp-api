@@ -8,6 +8,7 @@ import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { stepCapacitiesResponseSchema, stepPlanResponseSchema } from '../src/modules/workflow/planning/planning-response';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -103,8 +104,15 @@ describe('workflow: the plan for a day', () => {
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       return id;
     };
+    // Each customer's own design: staff quote a customer only with its own files.
+    const designs = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!designs.has(customerId)) designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      return designs.get(customerId)!;
+    };
     /** An order of `quantity` silver polished pieces, promised on `promisedOn`; answers its group. */
     const order = async (customerId: string, quantity: number, promisedOn: string) => {
+      const design = await designOf(customerId);
       const quote = (
         (
           await staff
@@ -113,7 +121,7 @@ describe('workflow: the plan for a day', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity,
-              file_version_id: cast.versionId,
+              file_version_id: design,
               customer_id: customerId,
             })
             .expect(201)

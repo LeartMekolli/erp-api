@@ -26,6 +26,7 @@ import { hashPassword } from '../src/modules/identity/passwords';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -146,6 +147,7 @@ describe('ai: the dashboard and Cmd+K, end to end', () => {
     await owner.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '0' }] }).expect(200);
     brightline = ((await owner.post('/customers', { name: 'Brightline' }).expect(201)).body as { id: string }).id;
     await owner.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const brightlineDesign = await measuredDesign(prisma, tenant.id, ownerUser.id, { customerId: brightline });
     const quote = ((
       await owner
         .post('/pricing/quotes', {
@@ -153,7 +155,7 @@ describe('ai: the dashboard and Cmd+K, end to end', () => {
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
           quantity: 2,
-          file_version_id: cast.versionId,
+          file_version_id: brightlineDesign.versionId,
           customer_id: brightline,
         })
         .expect(201)

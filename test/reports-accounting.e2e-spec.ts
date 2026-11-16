@@ -15,6 +15,7 @@ import { LedgerService } from '../src/modules/payments/ledger.service';
 import type { CsvCell } from '../src/modules/reporting/exports/csv';
 import type { CsvBuilder } from '../src/modules/reporting/exports/export-kinds';
 import { ExportsService } from '../src/modules/reporting/exports/exports.service';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -107,7 +108,14 @@ describe('reporting: the accounting export', () => {
     await staff.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '0' }] }).expect(200);
 
     const customer = async (name: string) => ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
+    // Each customer's own design: staff quote a customer only with its own files.
+    const designs = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!designs.has(customerId)) designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      return designs.get(customerId)!;
+    };
     const order = async (customerId: string) => {
+      const design = await designOf(customerId);
       const quote = ((
         await staff
           .post('/pricing/quotes', {
@@ -115,7 +123,7 @@ describe('reporting: the accounting export', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 2,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: customerId,
           })
           .expect(201)

@@ -95,6 +95,7 @@ describe('claims: the partner score and the dashboard', () => {
     const castcoPerson = await person(tenant.id, 'partner', castco, 'member');
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const buyer = await person(tenant.id, 'customer', luna, 'buyer');
 
     /** Luna's order of 10 pieces, paid by bank transfer, made by CastCo unless `inHouse`, then delivered. */
@@ -106,7 +107,7 @@ describe('claims: the partner score and the dashboard', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 10,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign.versionId,
             customer_id: luna,
           })
           .expect(201)

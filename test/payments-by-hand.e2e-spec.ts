@@ -15,6 +15,7 @@ import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { sendEvent } from './payment-webhooks';
+import { measuredDesign } from './catalog-fixtures';
 import { pricedCastPart } from './pricing-fixtures';
 import { expectStoredStates } from './stored-states';
 import { waitFor } from './wait-for';
@@ -86,9 +87,12 @@ describe('payments: paid by hand', () => {
     await staff.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '19' }] }).expect(200);
     await staff.put('/payments/account', KEYS).expect(200);
 
+    /** Each customer's own design: staff may quote for a customer only with that customer's files. */
+    const designs = new Map<string, string>();
     const customer = async (name: string, terms: object | null) => {
       const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
       if (terms) await staff.put(`/customers/${id}/payment-terms`, terms).expect(200);
+      designs.set(id, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: id })).versionId);
       return id;
     };
     const anna = await customer('Anna Studio', null);
@@ -104,7 +108,7 @@ describe('payments: paid by hand', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 2,
-            file_version_id: cast.versionId,
+            file_version_id: designs.get(customerId),
             customer_id: customerId,
           })
           .expect(201)

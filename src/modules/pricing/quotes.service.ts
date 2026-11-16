@@ -71,12 +71,12 @@ export type CustomerQuoteRequest = z.infer<typeof customerQuoteRequestSchema>;
 /**
  * Who a quote is for. `customer` is the customer's own request and `staff` is staff quoting for
  * that customer: both may only quote the products the customer may see and the files it owns.
- * `requote` prices a saved quote again and skips those rules, so a quote that was valid when
- * made still can be placed.
+ * A quote with no customer has no context and may not use a customer's file. Pricing a saved quote
+ * again (`requote()`) skips both rules, so a quote that was valid when made still can be placed.
  */
 export interface QuoteContext {
   customerId: string;
-  audience: 'customer' | 'staff' | 'requote';
+  audience: 'customer' | 'staff';
 }
 
 /** Whoever asks for the quote: a staff user or a customer person. */
@@ -254,16 +254,28 @@ export class QuotesService {
    * A saved quote's customer view, or why it cannot be quoted (nothing is saved then). With a
    * context, the quote is for that customer and gets the customer's own group; a quote for a
    * customer, whether its own request or staff's, may only name products it may see and files it
-   * owns, anything else is not found.
+   * owns. Without a context the quote is internal and may not use a customer's file. Anything
+   * else is not found.
    */
-  async create(
+  create(
     auth: Requester,
     body: CustomerQuoteRequest & { customer_group?: string },
     context?: QuoteContext,
     partner?: PartnerChoice,
   ): Promise<QuoteResultResponse> {
+    return this.save(auth, body, context, partner, false);
+  }
+
+  /** As `create`; `requote` (only `requote()` sets it) skips the product and file rules. */
+  private async save(
+    auth: Requester,
+    body: CustomerQuoteRequest & { customer_group?: string },
+    context: QuoteContext | undefined,
+    partner: PartnerChoice | undefined,
+    requote: boolean,
+  ): Promise<QuoteResultResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const priced = await this.priceRequest(tx, auth.tenantId, body, context, partner);
+      const priced = await this.priceRequest(tx, auth.tenantId, body, context, partner, requote);
       if (!priced.accepted) {
         return { accepted: false, reasons: priced.reasons };
       }
@@ -387,17 +399,18 @@ export class QuotesService {
       // An internal quote keeps its group; a customer's gets the customer's own.
       ...(!quote.customerId && inputs.customer_group ? { customer_group: inputs.customer_group } : {}),
     } as CustomerQuoteRequest & { customer_group?: string };
-    const context: QuoteContext | undefined = quote.customerId ? { customerId: quote.customerId, audience: 'requote' } : undefined;
+    const context: QuoteContext | undefined = quote.customerId ? { customerId: quote.customerId, audience: 'staff' } : undefined;
     if (quote.partnerId && !this.requoteChoice) {
       throw new InternalServerErrorException('This process cannot price a picked workshop again');
     }
     const partner = quote.partnerId ? this.requoteChoice!(quote.partnerId) : undefined;
-    return this.create(auth, body, context, partner);
+    return this.save(auth, body, context, partner, true);
   }
 
   /**
-   * Everything a quote checks and prices, before anything is saved: the customer's own products and
-   * files, the group and speed, the pricing run, and the picked workshop, which must take the job as
+   * Everything a quote checks and prices, before anything is saved: the products the customer may
+   * see and the files it owns (or, for an internal quote, files no customer owns; none of this when
+   * `requote`), the group and speed, the pricing run, and the picked workshop, which must take the job as
    * priced (else `partner_unavailable`).
    */
   private async priceRequest(
@@ -406,12 +419,13 @@ export class QuotesService {
     body: CustomerQuoteRequest & { customer_group?: string },
     context: QuoteContext | undefined,
     partner: PartnerChoice | undefined,
+    requote = false,
   ) {
     if (context && body.customer_group) {
       throw new BadRequestException("customer_group: a customer's quote gets the customer's own group");
     }
     const customer = context ? await this.findCustomer(tx, context.customerId) : null;
-    const onlyVisible = context && context.audience !== 'requote' ? visibleTo(context.customerId) : {};
+    const onlyVisible = context && !requote ? visibleTo(context.customerId) : {};
     // Row-level security hides other tenants' products, so a foreign id is simply not found.
     const product = await tx.product.findFirst({
       where: { id: body.product_id, ...onlyVisible },
@@ -423,9 +437,16 @@ export class QuotesService {
     if (partner && product.kind === 'assembly') {
       throw new BadRequestException("partner_id: a product made of parts is put together by the workspace; a workshop can't be picked for it");
     }
-    if (context?.audience === 'customer' && body.file_version_id) {
+    if (!requote && body.file_version_id) {
+      // With a customer, only its own files; without, nothing a customer owns (a plain `not` would
+      // drop files with no owner type, as NULL never compares).
       const owned = await tx.fileVersion.findFirst({
-        where: { id: body.file_version_id, file: { ownerType: 'customer', ownerId: context.customerId } },
+        where: {
+          id: body.file_version_id,
+          file: context
+            ? { ownerType: 'customer', ownerId: context.customerId }
+            : { OR: [{ ownerType: null }, { ownerType: { not: 'customer' } }] },
+        },
         select: { id: true },
       });
       if (!owned) {

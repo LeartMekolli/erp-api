@@ -162,13 +162,14 @@ describe('partners: working their jobs', () => {
     const castcoPerson = await partnerPerson(tenant.id, castco, 'member');
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     const job = async () => {
       const quoted = await staff
         .post('/pricing/quotes', {
           product_id: cast.productId,
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
-          file_version_id: cast.versionId,
+          file_version_id: lunaDesign.versionId,
           quantity: 10,
           customer_id: luna,
         })
@@ -190,6 +191,7 @@ describe('partners: working their jobs', () => {
       castco,
       metalworks,
       luna,
+      lunaDesign,
       accepted,
       offered,
       castcoPerson,
@@ -265,7 +267,7 @@ describe('partners: working their jobs', () => {
         { group: 'material', value: 'silver_925' },
         { group: 'finish', value: 'polished' },
       ],
-      design_file_version_id: tenant.cast.versionId,
+      design_file_version_id: tenant.lunaDesign.versionId,
       pieces: { active: 10, finished: 0, scrapped: 0 },
     });
     // Only the partner's steps: packing is done in-house.

@@ -11,6 +11,7 @@ import type { FakeCourierProvider } from '../src/modules/couriers/fake-courier-p
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { orderResponseSchema, portalShippingMethodsResponseSchema, shippingMethodResponseSchema } from '../src/modules/orders/order-response';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -63,6 +64,7 @@ describe('couriers: accounts and live rates', () => {
 
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     const buyerUser = await createTestUser(prisma, tenant.id, { roles: [] });
     await prisma.inTenant(tenant.id, async (tx) => {
       await tx.user.update({ where: { id: buyerUser.id }, data: { kind: 'customer' } });
@@ -80,7 +82,7 @@ describe('couriers: accounts and live rates', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity: 2,
-              file_version_id: cast.versionId,
+              file_version_id: lunaDesign,
               customer_id: luna,
             })
             .expect(201)

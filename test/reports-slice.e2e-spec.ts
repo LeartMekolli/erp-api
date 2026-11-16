@@ -11,6 +11,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import type { TenantPermission } from '../src/modules/identity/permissions';
 import { ExportsService } from '../src/modules/reporting/exports/exports.service';
 import { addDays } from '../src/modules/reporting/week-metrics';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -110,6 +111,7 @@ describe('reporting: exports, end to end', () => {
     };
     const luna = await customer('Luna Jewels');
     await customer('=HYPERLINK("https://evil.example.test")');
+    const design = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
     const order = async (lines: number[]) => {
       const quotes: { id: string }[] = [];
       for (const quantity of lines) {
@@ -120,7 +122,7 @@ describe('reporting: exports, end to end', () => {
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
               quantity,
-              file_version_id: cast.versionId,
+              file_version_id: design,
               customer_id: luna,
             })
             .expect(201)

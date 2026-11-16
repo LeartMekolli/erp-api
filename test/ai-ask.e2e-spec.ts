@@ -13,6 +13,7 @@ import type { FakeAiProvider } from '../src/modules/ai/fake-ai-provider';
 import { aiRunListResponseSchema, aiRunResponseSchema } from '../src/modules/ai/run-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -97,6 +98,7 @@ describe('ai: ask', () => {
     await owner.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '0' }] }).expect(200);
     brightline = ((await owner.post('/customers', { name: 'Brightline' }).expect(201)).body as { id: string }).id;
     await owner.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const brightlineDesign = await measuredDesign(prisma, tenant.id, ownerUser.id, { customerId: brightline });
     const quote = ((
       await owner
         .post('/pricing/quotes', {
@@ -104,7 +106,7 @@ describe('ai: ask', () => {
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
           quantity: 2,
-          file_version_id: cast.versionId,
+          file_version_id: brightlineDesign.versionId,
           customer_id: brightline,
         })
         .expect(201)

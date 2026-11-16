@@ -257,6 +257,23 @@ describe('portal: customers request their own quotes', () => {
     expect(await quoteCount(w.tenantId)).toBe(2);
   });
 
+  it("holds staff quoting for a customer to the customer's own files", async () => {
+    const w = await workspace();
+    const notFound = (body: object) =>
+      w.staff.post('/pricing/quotes', body).then((response) => {
+        expect({ status: response.status, detail: (response.body as { detail: string }).detail }).toEqual({
+          status: 404,
+          detail: 'File version not found',
+        });
+      });
+    await notFound(silverPolished(w, { customer_id: w.luna, file_version_id: w.solVersion }));
+    await notFound(silverPolished(w, { customer_id: w.luna, file_version_id: w.setup.versionId }));
+    // No customer: no customer's file either.
+    await notFound(silverPolished(w, { file_version_id: w.lunaVersion }));
+    await w.staff.post('/pricing/quotes', silverPolished(w, { file_version_id: w.setup.versionId })).expect(201);
+    expect(await quoteCount(w.tenantId)).toBe(1);
+  });
+
   it('lists the products a customer can see for staff', async () => {
     const w = await workspace();
     const ids = async (customerId: string) =>

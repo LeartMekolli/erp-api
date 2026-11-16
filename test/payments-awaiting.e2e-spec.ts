@@ -127,7 +127,7 @@ describe('payments: orders waiting for payment', () => {
       ...extra,
     });
     const staffQuote = async (quantity = 10) =>
-      ((await staff.post('/pricing/quotes', { ...configuration({ quantity, file_version_id: cast.versionId }), customer_id: luna }).expect(201))
+      ((await staff.post('/pricing/quotes', { ...configuration({ quantity, file_version_id: design }), customer_id: luna }).expect(201))
         .body as { quote: { id: string } }).quote;
     const pickedQuote = async () =>
       ((await buyer.post(`/portal/customers/${luna}/quotes`, configuration({ file_version_id: design, partner_id: metalworks })).expect(201))

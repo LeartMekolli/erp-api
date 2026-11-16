@@ -148,6 +148,11 @@ describe('Orders 3a: claims, remakes and scheduled reports', () => {
     const buyer = await person(tenant.id, 'customer', luna, 'buyer');
     const brightline = ((await staff.post('/customers', { name: 'Brightline' }).expect(201)).body as { id: string }).id;
     await staff.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later', days_to_pay: 30 }).expect(200);
+    // Each customer quotes with its own design.
+    const designs = new Map([
+      [luna, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId],
+      [brightline, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: brightline })).versionId],
+    ]);
 
     /** An order of `quantity` pieces: Luna's paid by bank transfer, Brightline's invoiced; made by `maker` or in-house; delivered. */
     const delivered = async (customerId: string, quantity: number, maker?: { id: string; person: Client }) => {
@@ -158,7 +163,7 @@ describe('Orders 3a: claims, remakes and scheduled reports', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: designs.get(customerId),
             customer_id: customerId,
           })
           .expect(201)

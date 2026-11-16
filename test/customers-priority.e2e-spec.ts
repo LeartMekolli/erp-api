@@ -12,6 +12,7 @@ import { PriorityService } from '../src/modules/customers/priority/priority.serv
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { localDate } from '../src/modules/orders/dates';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 
@@ -67,10 +68,13 @@ describe('customers: priority score', () => {
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
     await staff.put('/settings/customers.priority', SETTINGS).expect(200);
 
+    const designs = new Map<string, string>();
     const customer = async (name: string) => {
       const id = ((await staff.post('/customers', { name }).expect(201)).body as { id: string }).id;
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       await staff.put(`/customers/${id}/addresses`, { shipping_address: { name, line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' } }).expect(200);
+      // A customer quotes with its own design.
+      designs.set(id, (await measuredDesign(prisma, tenant.id, owner.id, { customerId: id })).versionId);
       return id;
     };
     const order = async (customerId: string, quantity: number) => {
@@ -81,7 +85,7 @@ describe('customers: priority score', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: designs.get(customerId),
             customer_id: customerId,
           })
           .expect(201)

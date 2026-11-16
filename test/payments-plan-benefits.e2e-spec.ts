@@ -121,7 +121,7 @@ describe('payments: what a plan changes', () => {
     const refused = await w.anna.post(`/portal/customers/${w.luna}/quotes`, portalCube(w, { delivery_speed: 'rush' })).expect(400);
     expect(JSON.stringify(refused.body)).toContain("rush is not offered on the customer's plan (Starter)");
 
-    const plain = await staffQuote(w, { ...cube(w), customer_id: w.luna });
+    const plain = await staffQuote(w, { ...portalCube(w), customer_id: w.luna });
     expect(adjustments(plain)).toEqual([
       ['customer_group', '-10'],
       ['delivery_speed', '0'],
@@ -138,7 +138,7 @@ describe('payments: what a plan changes', () => {
       .patch(`/payments/plans/${w.starter}`, { discount_percent: '5', speeds: [{ key: 'express', surcharge_percent: '15' }] })
       .expect(200);
 
-    const quote = await staffQuote(w, { ...cube(w), customer_id: w.luna, delivery_speed: 'express' });
+    const quote = await staffQuote(w, { ...portalCube(w), customer_id: w.luna, delivery_speed: 'express' });
     expect(adjustments(quote)).toEqual([
       ['customer_group', '-10'],
       ['plan', '5'],
@@ -156,7 +156,7 @@ describe('payments: what a plan changes', () => {
   it('refuses a staff quote for a customer a speed its plan lacks, but not a quote for no customer', async () => {
     const w = await workspace();
 
-    const refused = await w.staff.post('/pricing/quotes', { ...cube(w), customer_id: w.luna, delivery_speed: 'rush' }).expect(400);
+    const refused = await w.staff.post('/pricing/quotes', { ...portalCube(w), customer_id: w.luna, delivery_speed: 'rush' }).expect(400);
     expect(JSON.stringify(refused.body)).toContain('Starter');
 
     const internal = await staffQuote(w, { ...cube(w), delivery_speed: 'rush' });

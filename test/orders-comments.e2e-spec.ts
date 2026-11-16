@@ -114,6 +114,7 @@ describe('orders: comments', () => {
       return id;
     };
     const luna = await customer('Luna Jewels');
+    const lunaDesign = (await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna })).versionId;
 
     const quote = async (quantity: number) =>
       ((
@@ -123,7 +124,7 @@ describe('orders: comments', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: lunaDesign,
             customer_id: luna,
           })
           .expect(201)

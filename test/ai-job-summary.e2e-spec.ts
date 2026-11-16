@@ -135,6 +135,7 @@ describe('ai: the partner job summary', () => {
     const castco = await partner('CastCo');
     const other = await partner('Other Works');
     const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
+    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
     if (options.ai !== false) {
       await prisma.inTenant(tenant.id, (tx) => tx.tenant.update({ where: { id: tenant.id }, data: { aiMonthlyLimitUsd: new Prisma.Decimal('5.00') } }));
     }
@@ -148,7 +149,7 @@ describe('ai: the partner job summary', () => {
               product_id: cast.productId,
               options: { material: 'silver_925', finish: 'polished' },
               size: { scale: '1.5' },
-              file_version_id: cast.versionId,
+              file_version_id: lunaDesign.versionId,
               quantity: 10,
               customer_id: luna,
             })

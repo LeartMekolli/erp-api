@@ -16,6 +16,7 @@ import { LedgerService } from '../src/modules/payments/ledger.service';
 import { OverdueInvoicesHandler } from '../src/modules/payments/overdue-invoices.handler';
 import { PAYMENT_PROVIDER } from '../src/modules/payments/payment-provider';
 import { paymentCustomerResponseSchema } from '../src/modules/payments/payment-response';
+import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { sendEvent } from './payment-webhooks';
@@ -119,6 +120,12 @@ describe('payments: invoices on shipping', () => {
     const anna = await customer('Anna Studio', null);
     const corvid = await customer('Corvid', { terms: 'pay_later', credit_limit: '0.00' });
 
+    // Each customer's own design: staff quote a customer only with its own files.
+    const designs = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!designs.has(customerId)) designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      return designs.get(customerId)!;
+    };
     const quote = async (customerId: string) =>
       ((
         await staff
@@ -127,7 +134,7 @@ describe('payments: invoices on shipping', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 2,
-            file_version_id: cast.versionId,
+            file_version_id: await designOf(customerId),
             customer_id: customerId,
           })
           .expect(201)

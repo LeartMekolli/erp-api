@@ -9,6 +9,7 @@ import { searchResponseSchema } from '../src/modules/ai/search-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { measuredDesign } from './catalog-fixtures';
 import { pricedCastPart } from './pricing-fixtures';
 
 interface Found {
@@ -78,6 +79,8 @@ describe('ai: Cmd+K search', () => {
     await owner.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '0' }] }).expect(200);
     brightline = ((await owner.post('/customers', { name: 'Brightline Studio' }).expect(201)).body as { id: string }).id;
     await owner.put(`/customers/${brightline}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    // Brightline's own design: staff may quote for a customer only with that customer's files.
+    const design = (await measuredDesign(prisma, tenant.id, ownerUser.id, { customerId: brightline })).versionId;
 
     for (const number of [1042, 1043, 2104]) {
       const quote = ((
@@ -87,7 +90,7 @@ describe('ai: Cmd+K search', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity: 1,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: brightline,
           })
           .expect(201)

@@ -11,6 +11,7 @@ import { AccessTokenService } from '../src/modules/identity/access-token.service
 import type { TenantPermission } from '../src/modules/identity/permissions';
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { addDays, weekOf } from '../src/modules/reporting/week-metrics';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -83,7 +84,14 @@ describe('reporting: the dashboard as a PDF', () => {
       await staff.put(`/customers/${id}/payment-terms`, { terms: 'pay_later' }).expect(200);
       return id;
     };
+    // Each customer's own design: staff quote a customer only with its own files.
+    const designs = new Map<string, string>();
+    const designOf = async (customerId: string) => {
+      if (!designs.has(customerId)) designs.set(customerId, (await measuredDesign(prisma, tenant.id, owner.id, { customerId })).versionId);
+      return designs.get(customerId)!;
+    };
     const order = async (customerId: string, quantity: number) => {
+      const design = await designOf(customerId);
       const quote = ((
         await staff
           .post('/pricing/quotes', {
@@ -91,7 +99,7 @@ describe('reporting: the dashboard as a PDF', () => {
             options: { material: 'silver_925', finish: 'polished' },
             size: { scale: '1.5' },
             quantity,
-            file_version_id: cast.versionId,
+            file_version_id: design,
             customer_id: customerId,
           })
           .expect(201)

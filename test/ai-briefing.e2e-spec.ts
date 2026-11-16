@@ -15,6 +15,7 @@ import type { FakeAiProvider } from '../src/modules/ai/fake-ai-provider';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { expectDocumented } from './documented';
+import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
 import { waitFor } from './wait-for';
@@ -114,6 +115,7 @@ describe('ai: the briefing', () => {
     await owner.put('/orders/tax-rates', { rates: [{ country: null, region: null, percent: '0' }] }).expect(200);
     const luna = ((await owner.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
     await owner.put(`/customers/${luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const lunaDesign = await measuredDesign(prisma, tenant.id, ownerUser.id, { customerId: luna });
     const quote = ((
       await owner
         .post('/pricing/quotes', {
@@ -121,7 +123,7 @@ describe('ai: the briefing', () => {
           options: { material: 'silver_925', finish: 'polished' },
           size: { scale: '1.5' },
           quantity: 2,
-          file_version_id: cast.versionId,
+          file_version_id: lunaDesign.versionId,
           customer_id: luna,
         })
         .expect(201)
