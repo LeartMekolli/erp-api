@@ -73,6 +73,7 @@ describe('workflow: the plan for a day', () => {
     const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
 
     const workflowPath = `/workflow/workflows/${cast.workflow.workflowId}`;
     const current = ((await staff.get(workflowPath).expect(200)).body as { current_version: { steps: VersionStep[] } }).current_version;

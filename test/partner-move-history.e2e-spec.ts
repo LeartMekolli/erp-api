@@ -58,6 +58,7 @@ describe("partners: the moves on a partner's job", () => {
   const as = (token: string) => ({
     post: (path: string, body: object = {}) => http().post(path).set('Authorization', `Bearer ${token}`).send(body),
     put: (path: string, body: object) => http().put(path).set('Authorization', `Bearer ${token}`).send(body),
+    patch: (path: string, body: object) => http().patch(path).set('Authorization', `Bearer ${token}`).send(body),
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
   type Person = ReturnType<typeof as>;
@@ -85,6 +86,7 @@ describe("partners: the moves on a partner's job", () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = cast.steps;
 
     // The same steps again, with packing done by the workspace.

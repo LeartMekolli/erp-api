@@ -69,12 +69,14 @@ export const customerQuoteRequestSchema = z.strictObject(quoteFields);
 export type CustomerQuoteRequest = z.infer<typeof customerQuoteRequestSchema>;
 
 /**
- * Who a quote is for. `customer` is the customer's own request: only products
- * it may see and files it owns can be quoted.
+ * Who a quote is for. `customer` is the customer's own request and `staff` is staff quoting for
+ * that customer: both may only quote the products the customer may see and the files it owns.
+ * `requote` prices a saved quote again and skips those rules, so a quote that was valid when
+ * made still can be placed.
  */
 export interface QuoteContext {
   customerId: string;
-  audience: 'customer' | 'staff';
+  audience: 'customer' | 'staff' | 'requote';
 }
 
 /** Whoever asks for the quote: a staff user or a customer person. */
@@ -250,8 +252,9 @@ export class QuotesService {
 
   /**
    * A saved quote's customer view, or why it cannot be quoted (nothing is saved then). With a
-   * context, the quote is for that customer and gets the customer's own group; a customer's own
-   * request may only name products it may see and files it owns, anything else is not found.
+   * context, the quote is for that customer and gets the customer's own group; a quote for a
+   * customer, whether its own request or staff's, may only name products it may see and files it
+   * owns, anything else is not found.
    */
   async create(
     auth: Requester,
@@ -384,7 +387,7 @@ export class QuotesService {
       // An internal quote keeps its group; a customer's gets the customer's own.
       ...(!quote.customerId && inputs.customer_group ? { customer_group: inputs.customer_group } : {}),
     } as CustomerQuoteRequest & { customer_group?: string };
-    const context: QuoteContext | undefined = quote.customerId ? { customerId: quote.customerId, audience: 'staff' } : undefined;
+    const context: QuoteContext | undefined = quote.customerId ? { customerId: quote.customerId, audience: 'requote' } : undefined;
     if (quote.partnerId && !this.requoteChoice) {
       throw new InternalServerErrorException('This process cannot price a picked workshop again');
     }
@@ -408,7 +411,7 @@ export class QuotesService {
       throw new BadRequestException("customer_group: a customer's quote gets the customer's own group");
     }
     const customer = context ? await this.findCustomer(tx, context.customerId) : null;
-    const onlyVisible = context?.audience === 'customer' ? visibleTo(context.customerId) : {};
+    const onlyVisible = context && context.audience !== 'requote' ? visibleTo(context.customerId) : {};
     // Row-level security hides other tenants' products, so a foreign id is simply not found.
     const product = await tx.product.findFirst({
       where: { id: body.product_id, ...onlyVisible },

@@ -419,6 +419,19 @@ describe('orders: placing an order', () => {
     expect(old.orderLine).toBeNull();
   });
 
+  it('places a lapsed customer quote after its product was unpublished', async () => {
+    const tenant = await freshTenant();
+    const lapsed = await tenant.staffQuote();
+    await tenant.staff.patch(`/catalog/products/${tenant.cast.productId}`, { published: false }).expect(200);
+    await lapse(tenant, lapsed.id);
+
+    const placed = await order(tenant, [lapsed.id]).expect(201);
+    expect((placed.body as Order).lines[0].total).toBe(lapsed.total);
+    // Priced again from the same inputs, though the customer could no longer quote it.
+    const ordered = await prisma.inTenant(tenant.id, (tx) => tx.orderLine.findUniqueOrThrow({ where: { id: (placed.body as Order).lines[0].id } }));
+    expect(ordered.quoteId).not.toBe(lapsed.id);
+  });
+
   it('refuses a lapsed quote whose price changed, with the new price to confirm', async () => {
     const tenant = await freshTenant();
     const lapsed = await tenant.staffQuote();

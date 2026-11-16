@@ -244,4 +244,27 @@ describe('portal: customers request their own quotes', () => {
     ]);
     expect((await w.staff.get(`/pricing/quotes/${quote.id}`).expect(200)).body).toMatchObject({ customer_id: w.luna });
   });
+
+  it("holds staff quoting for a customer to the customer's products", async () => {
+    const w = await workspace();
+    const asStaff = (extra: object) => w.staff.post('/pricing/quotes', silverPolished(w, { customer_id: w.luna, ...extra }));
+    await asStaff({ product_id: w.unpublished }).expect(404);
+    await asStaff({ product_id: w.solPrivate }).expect(404);
+    // Where the customer can quote, staff can, at the same price.
+    const theirs = (await w.ben.post(quotes(w.luna), silverPolished(w)).expect(201)).body as { quote: { total: string } };
+    const staffs = (await asStaff({}).expect(201)).body as { quote: { total: string } };
+    expect(staffs.quote.total).toBe(theirs.quote.total);
+    expect(await quoteCount(w.tenantId)).toBe(2);
+  });
+
+  it('lists the products a customer can see for staff', async () => {
+    const w = await workspace();
+    const ids = async (customerId: string) =>
+      ((await w.staff.get(`/catalog/products?customer_id=${customerId}`).expect(200)).body as { data: { id: string }[] }).data
+        .map((product) => product.id)
+        .sort();
+    expect(await ids(w.luna)).toEqual([w.setup.productId].sort());
+    expect(await ids(w.sol)).toEqual([w.setup.productId, w.solPrivate].sort());
+    await w.staff.get(`/catalog/products?customer_id=${newId()}`).expect(404);
+  });
 });

@@ -248,5 +248,13 @@ describe('catalog: categories and products', () => {
     await a.owner.patch(`/catalog/products/${id}`, { customer_id: foreign }).expect(404);
     await a.owner.patch(`/catalog/products/${id}`, { customer_id: newId() }).expect(404);
     await a.owner.patch(`/catalog/products/${id}`, { published: 'yes' }).expect(400);
+
+    // The list narrows to what a customer can see; another workspace's customer is not found.
+    await a.owner.patch(`/catalog/products/${id}`, { published: true, customer_id: luna }).expect(200);
+    const visible = await a.owner.get(`/catalog/products?customer_id=${luna}`).expect(200);
+    expectDocumented(pageSchema(productResponseSchema), visible.body);
+    expect((visible.body as { data: Product[] }).data.map((product) => product.id)).toEqual([id]);
+    await a.owner.get(`/catalog/products?customer_id=${foreign}`).expect(404);
+    await a.owner.get('/catalog/products?customer_id=nope').expect(400);
   });
 });

@@ -92,6 +92,8 @@ describe('orders: assemblies', () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const set = await pricedAssembly(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    // The plain cast part is quoted for Luna beside the set; the set is published already.
+    await staff.patch(`/catalog/products/${set.cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = set.cast.steps;
     const { finalQc, packing } = set.cast.workflow.notPriced;
     await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);

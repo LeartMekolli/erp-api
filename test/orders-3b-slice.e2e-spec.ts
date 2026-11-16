@@ -127,6 +127,7 @@ describe('Orders 3b: job summaries, production planning and couriers', () => {
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
     const cast = await pricedCastPart(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
+    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
     const { printPattern, castingTree, casting, polishing } = cast.steps;
     const workflowPath = `/workflow/workflows/${cast.workflow.workflowId}`;
     const current = ((await staff.get(workflowPath).expect(200)).body as { current_version: { steps: VersionStep[] } }).current_version;

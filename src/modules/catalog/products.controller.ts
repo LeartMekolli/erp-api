@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
-import { pageSchema, paginationQuerySchema } from '../../common/pagination/page';
+import { pageSchema } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -14,6 +14,7 @@ import {
   createCategorySchema,
   createProductSchema,
   designFileSchema,
+  productListQuerySchema,
   productOptionsInputSchema,
   updateProductSchema,
 } from './products.service';
@@ -74,15 +75,16 @@ export class ProductsController {
 
   @ApiDoc({
     summary: 'List products with their options and design file, newest first.',
-    query: paginationQuerySchema,
+    description: 'With `customer_id`, only the products that customer can see and quote.',
+    query: productListQuerySchema,
     response: pageSchema(productResponseSchema),
-    errors: [400],
+    errors: [400, 404],
   })
   @RequirePermission('catalog.read')
   @Get('products')
   list(
     @CurrentTenant() tenantId: string,
-    @Query(new ZodValidationPipe(paginationQuerySchema)) query: z.infer<typeof paginationQuerySchema>,
+    @Query(new ZodValidationPipe(productListQuerySchema)) query: z.infer<typeof productListQuerySchema>,
   ): Promise<Page<ProductResponse>> {
     return this.products.list(tenantId, query);
   }
