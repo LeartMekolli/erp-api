@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { z } from 'zod';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
@@ -9,6 +10,7 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
+import { speedChoiceSchema } from '../src/modules/pricing/pricing-response';
 import { quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { measuredDesign } from './catalog-fixtures';
@@ -272,6 +274,22 @@ describe('portal: customers request their own quotes', () => {
     await notFound(silverPolished(w, { file_version_id: w.lunaVersion }));
     await w.staff.post('/pricing/quotes', silverPolished(w, { file_version_id: w.setup.versionId })).expect(201);
     expect(await quoteCount(w.tenantId)).toBe(1);
+  });
+
+  it('lists the delivery speeds to anyone at the customer', async () => {
+    const w = await workspace();
+    const staffRead = await w.staff.get('/pricing/quotes/delivery-speeds').expect(200);
+    const responseSchema = z.strictObject({ data: z.array(speedChoiceSchema) });
+    for (const [client, customerId] of [
+      [w.anna, w.luna],
+      [w.ben, w.sol],
+    ] as const) {
+      const response = await client.get(`/portal/customers/${customerId}/delivery-speeds`).expect(200);
+      expectDocumented(responseSchema, response.body);
+      expect(response.body).toEqual(staffRead.body);
+      expect(JSON.stringify(response.body)).not.toContain('surcharge_percent');
+    }
+    await w.sam.get(`/portal/customers/${w.luna}/delivery-speeds`).expect(404);
   });
 
   it('lists the products a customer can see for staff', async () => {

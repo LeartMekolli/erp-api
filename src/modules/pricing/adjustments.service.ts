@@ -23,6 +23,7 @@ import type {
   DiscountTiersResponse,
   MarginOverrideResponse,
   MinSizeSurchargeResponse,
+  SpeedChoice,
 } from './pricing-response';
 import { PricingProfileService } from './step-types.service';
 
@@ -210,6 +211,16 @@ export class AdjustmentsService {
 
   async speeds(tenantId: string): Promise<DeliverySpeedResponse[]> {
     return this.prisma.inTenant(tenantId, async (tx) => (await tx.deliverySpeed.findMany({ orderBy: { key: 'asc' } })).map(toSpeed));
+  }
+
+  /** The speeds a quote can name, without their surcharge, by key. */
+  async speedChoices(tenantId: string): Promise<SpeedChoice[]> {
+    return (await this.speeds(tenantId)).map((speed) => ({
+      key: speed.key,
+      name: speed.name,
+      working_days: speed.working_days,
+      is_default: speed.is_default,
+    }));
   }
 
   async createSpeed(auth: TenantAuth, input: z.infer<typeof createDeliverySpeedSchema>): Promise<DeliverySpeedResponse> {

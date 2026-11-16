@@ -19,6 +19,7 @@ import { PortalCatalogService } from './portal-catalog.service';
 import { PortalFilesController } from './portal-files.controller';
 import { PortalMembersService } from './portal-members.service';
 import { PortalQuotesController } from './portal-quotes.controller';
+import { PortalSpeedsController } from './portal-speeds.controller';
 import { PortalController } from './portal.controller';
 import { PriorityController } from './priority/priority.controller';
 import { PriorityHandler } from './priority/priority.handler';
@@ -45,6 +46,7 @@ import { PriorityService } from './priority/priority.service';
     PortalCatalogController,
     PortalFilesController,
     PortalQuotesController,
+    PortalSpeedsController,
   ],
   providers: [
     CustomersService,

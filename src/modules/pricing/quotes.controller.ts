@@ -8,6 +8,9 @@ import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
+import { AdjustmentsService } from './adjustments.service';
+import { speedChoicesResponseSchema } from './pricing-response';
+import type { SpeedChoicesResponse } from './pricing-response';
 import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSchema } from './quote-response';
 import type { QuoteResponse, QuoteResultResponse, QuoteSummaryResponse } from './quote-response';
 import { QuotesService, quoteRequestSchema } from './quotes.service';
@@ -19,7 +22,10 @@ const idParam = new ZodValidationPipe(idSchema);
 /** Saved quotes: the staff breakdown and the customer summary (Pricing spec). */
 @Controller('pricing/quotes')
 export class QuotesController {
-  constructor(private readonly quotes: QuotesService) {}
+  constructor(
+    private readonly quotes: QuotesService,
+    private readonly adjustments: AdjustmentsService,
+  ) {}
 
   @ApiDoc({
     summary: 'Price a configuration of a product and save it as a quote.',
@@ -70,6 +76,17 @@ export class QuotesController {
     @Query(new ZodValidationPipe(paginationQuerySchema)) query: z.infer<typeof paginationQuerySchema>,
   ): Promise<Page<QuoteResponse>> {
     return this.quotes.list(tenantId, query);
+  }
+
+  @ApiDoc({
+    summary: 'The delivery speeds a quote can name, by key.',
+    description: 'Without surcharges: whoever quotes needs the names and the days, the prices come with a quote.',
+    response: speedChoicesResponseSchema,
+  })
+  @RequirePermission('quote.create')
+  @Get('delivery-speeds')
+  async deliverySpeeds(@CurrentTenant() tenantId: string): Promise<SpeedChoicesResponse> {
+    return { data: await this.adjustments.speedChoices(tenantId) };
   }
 
   @ApiDoc({

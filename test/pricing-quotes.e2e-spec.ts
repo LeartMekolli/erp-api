@@ -2,11 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { z } from 'zod';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { speedChoiceSchema } from '../src/modules/pricing/pricing-response';
 import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -328,6 +330,20 @@ describe('pricing: saved quotes', () => {
     expect(expired).toMatchObject({ expired: true, unit_price: before.unit_price, total: before.total, breakdown: before.breakdown });
     const expiredSummary = (await tenant.owner.get(`/pricing/quotes/${saved.id}/summary`).expect(200)).body as Summary;
     expect(expiredSummary).toMatchObject({ expired: true, lines: summaryBefore.lines, unit_price: summaryBefore.unit_price });
+  });
+
+  it('lets members list the delivery speeds without pricing.read', async () => {
+    const tenant = await freshTenant();
+    await walkthrough(tenant);
+    const response = await tenant.member.get('/pricing/quotes/delivery-speeds').expect(200);
+    expectDocumented(z.strictObject({ data: z.array(speedChoiceSchema) }), response.body);
+    expect(response.body).toEqual({
+      data: [
+        { key: 'rush', name: 'Rush', working_days: expect.any(Number), is_default: false },
+        { key: 'standard', name: 'Standard', working_days: expect.any(Number), is_default: true },
+      ],
+    });
+    await tenant.member.get('/pricing/delivery-speeds').expect(403);
   });
 
   it('lets members quote and read the summary, but not the staff breakdown', async () => {
