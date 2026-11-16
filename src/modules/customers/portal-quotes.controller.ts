@@ -66,9 +66,10 @@ export class PortalQuotesController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<PortalQuoteResult> {
     const { partner_id: partnerId, ...request } = body;
+    const context = { customerId: customer.customerId, audience: 'customer' as const };
     const result = partnerId
-      ? await this.partnerQuotes.quote(customer, request, partnerId)
-      : await this.quotes.create(customer, request, { customerId: customer.customerId, audience: 'customer' });
+      ? await this.partnerQuotes.quote(customer, context, request, partnerId)
+      : await this.quotes.create(customer, request, context);
     res.status(result.accepted ? 201 : 200);
     return result.accepted ? result : { accepted: false, reasons: result.reasons.map(customerRefusal) };
   }
@@ -89,7 +90,7 @@ export class PortalQuotesController {
     @CurrentCustomer() customer: CustomerAuth,
     @Body(new ZodValidationPipe(customerQuoteRequestSchema)) body: CustomerQuoteRequest,
   ): Promise<PartnerChoicesResponse> {
-    return this.partnerQuotes.choices(customer, body);
+    return this.partnerQuotes.choices(customer, { customerId: customer.customerId, audience: 'customer' }, body);
   }
 
   @ApiDoc({

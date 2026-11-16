@@ -33,7 +33,9 @@ export class QuotesController {
       'With `customer_id`, the product must be one that customer can see and `file_version_id` one of its own files; ' +
       "without it, the file must not be a customer's. Anything else is a 404. A product made of parts is priced as its own " +
       "steps plus a quote per part, at the options it shares with the part, the part's size and the quantity the " +
-      "line needs; any part that can't be priced refuses it, naming the part. `GET` shows the parts under `breakdown.parts`.",
+      "line needs; any part that can't be priced refuses it, naming the part. `GET` shows the parts under `breakdown.parts`. " +
+      "`partner_id` (with `customer_id`) quotes with that workshop's prices, as the customer's own pick would: 403 unless the " +
+      "workspace lets the customer pick, and a workshop that can't take the job is refused with `partner_unavailable`.",
     body: quoteRequestSchema,
     response: quoteResultResponseSchema,
     errors: [400, 404],
@@ -45,8 +47,12 @@ export class QuotesController {
     @Body(new ZodValidationPipe(quoteRequestSchema)) body: QuoteRequest,
     @Res({ passthrough: true }) res: Response,
   ): Promise<QuoteResultResponse> {
+    const { partner_id: partnerId, ...request } = body;
     const context = body.customer_id ? { customerId: body.customer_id, audience: 'staff' as const } : undefined;
-    const result = await this.quotes.create(auth, body, context);
+    // The schema ties `partner_id` to `customer_id`, so a pick always has a customer.
+    const partner =
+      partnerId && body.customer_id ? await this.quotes.partnerPick(auth.tenantId, body.customer_id, partnerId) : undefined;
+    const result = await this.quotes.create(auth, request, context, partner);
     res.status(result.accepted ? 201 : 200);
     return result;
   }

@@ -55,13 +55,20 @@ const quoteFields = {
   delivery_speed: keySchema.optional(),
 };
 
-export const quoteRequestSchema = z.object({
-  ...quoteFields,
-  /** A customer group key of the workspace; omitted: no group. Not with `customer_id`. */
-  customer_group: keySchema.optional(),
-  /** Quotes for that customer: its group applies and its people see the quote. */
-  customer_id: z.uuid().optional(),
-});
+export const quoteRequestSchema = z
+  .object({
+    ...quoteFields,
+    /** A customer group key of the workspace; omitted: no group. Not with `customer_id`. */
+    customer_group: keySchema.optional(),
+    /** Quotes for that customer: its group applies and its people see the quote. */
+    customer_id: z.uuid().optional(),
+    /** A workshop picked for the customer; needs `customer_id`. */
+    partner_id: z.uuid().optional(),
+  })
+  .refine((body) => !body.partner_id || body.customer_id, {
+    path: ['partner_id'],
+    message: 'a workshop is picked for a customer; send customer_id',
+  });
 export type QuoteRequest = z.infer<typeof quoteRequestSchema>;
 
 /** What a customer may send: no customer group, which comes from the customer, and nothing unknown. */
@@ -237,6 +244,21 @@ export class QuotesService {
 
   registerRequoteChoice(choice: (partnerId: string) => PartnerChoice): void {
     this.requoteChoice = choice;
+  }
+
+  /** Checks the customer may pick a workshop and builds the pick; Partners registers it. */
+  private partnerPicker?: (tenantId: string, customerId: string, partnerId: string) => Promise<PartnerChoice>;
+
+  registerPartnerPick(pick: (tenantId: string, customerId: string, partnerId: string) => Promise<PartnerChoice>): void {
+    this.partnerPicker = pick;
+  }
+
+  /** The workshop picked for a customer, or why it can't be: unknown customer 404, not allowed to pick 403. */
+  partnerPick(tenantId: string, customerId: string, partnerId: string): Promise<PartnerChoice> {
+    if (!this.partnerPicker) {
+      throw new InternalServerErrorException('This process cannot pick a workshop');
+    }
+    return this.partnerPicker(tenantId, customerId, partnerId);
   }
 
   constructor(

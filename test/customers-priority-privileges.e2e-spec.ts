@@ -4,12 +4,14 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { newId } from '../src/common/ids/uuid';
 import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { customerPriorityResponseSchema } from '../src/modules/customers/priority/priority-response';
 import { PriorityService } from '../src/modules/customers/priority/priority.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { localDate } from '../src/modules/orders/dates';
+import { partnerChoicesResponseSchema } from '../src/modules/partners/partner-response';
 import { workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -224,8 +226,12 @@ describe('customers: band privileges', () => {
         quantity: 10,
       };
       return {
+        body,
         choices: () => buyer.post(`/portal/customers/${customerId}/quotes/partners`, body),
         quote: () => buyer.post(`/portal/customers/${customerId}/quotes`, { ...body, partner_id: metalworks }),
+        // Staff acting for the same customer, held to the same rule.
+        staffChoices: () => w.staff.post('/pricing/quotes/partners', { ...body, customer_id: customerId }),
+        staffQuote: () => w.staff.post('/pricing/quotes', { ...body, customer_id: customerId, partner_id: metalworks }),
       };
     };
     const sol = await buyerOf(w.sol);
@@ -233,16 +239,30 @@ describe('customers: band privileges', () => {
 
     // Sol is Gold, which may pick; its own switch stays off.
     await w.override(w.sol, 'gold');
-    await sol.choices().expect(200);
-    await sol.quote().expect(201);
+    const choices = await sol.choices().expect(200);
+    const quote = await sol.quote().expect(201);
+    const staffChoices = await sol.staffChoices().expect(200);
+    expectDocumented(partnerChoicesResponseSchema, staffChoices.body);
+    expect(staffChoices.body).toEqual(choices.body);
+    const staffQuote = await sol.staffQuote().expect(201);
+    const { currency, lines, unit_price: unitPrice, total } = quote.body.quote;
+    expect(staffQuote.body.quote).toMatchObject({ currency, lines, unit_price: unitPrice, total });
     expect((await w.staff.get(`/customers/${w.sol}`).expect(200)).body).toMatchObject({ may_pick_partner: false, band: { key: 'gold' } });
 
     // Mare is Standard: the existing refusal.
     await mare.choices().expect(403);
     await mare.quote().expect(403);
+    await mare.staffChoices().expect(403);
+    await mare.staffQuote().expect(403);
+
+    // A workshop is picked for a customer, and the customer must exist.
+    await w.staff.post('/pricing/quotes', { ...sol.body, partner_id: metalworks }).expect(400);
+    await w.staff.post('/pricing/quotes/partners', { ...sol.body, customer_id: newId() }).expect(404);
+    await w.staff.post('/pricing/quotes', { ...sol.body, customer_id: newId(), partner_id: metalworks }).expect(404);
 
     // Once Sol's override is gone, so is the privilege.
     await w.staff.delete(`/customers/${w.sol}/priority/override`).expect(204);
     await sol.quote().expect(403);
+    await sol.staffQuote().expect(403);
   });
 });
