@@ -21,6 +21,6 @@ export class PortalSpeedsController {
   @CustomerAccess('viewer')
   @Get()
   async list(@CurrentCustomer() customer: CustomerAuth): Promise<SpeedChoicesResponse> {
-    return { data: await this.adjustments.speedChoices(customer.tenantId) };
+    return { data: await this.adjustments.speedChoices(customer.tenantId, customer.customerId) };
   }
 }

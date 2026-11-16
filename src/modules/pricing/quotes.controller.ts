@@ -18,6 +18,8 @@ import type { QuoteRequest } from './quotes.service';
 
 const idSchema = z.uuid();
 const idParam = new ZodValidationPipe(idSchema);
+/** With a customer, only the speeds its plan offers. */
+const deliverySpeedsQuerySchema = z.object({ customer_id: z.uuid().optional() });
 
 /** Saved quotes: the staff breakdown and the customer summary (Pricing spec). */
 @Controller('pricing/quotes')
@@ -80,13 +82,19 @@ export class QuotesController {
 
   @ApiDoc({
     summary: 'The delivery speeds a quote can name, by key.',
-    description: 'Without surcharges: whoever quotes needs the names and the days, the prices come with a quote.',
+    description:
+      "Without surcharges: whoever quotes needs the names and the days, the prices come with a quote. With `customer_id`, only the speeds the customer's plan offers.",
+    query: deliverySpeedsQuerySchema,
     response: speedChoicesResponseSchema,
+    errors: [400, 404],
   })
   @RequirePermission('quote.create')
   @Get('delivery-speeds')
-  async deliverySpeeds(@CurrentTenant() tenantId: string): Promise<SpeedChoicesResponse> {
-    return { data: await this.adjustments.speedChoices(tenantId) };
+  async deliverySpeeds(
+    @CurrentTenant() tenantId: string,
+    @Query(new ZodValidationPipe(deliverySpeedsQuerySchema)) query: z.infer<typeof deliverySpeedsQuerySchema>,
+  ): Promise<SpeedChoicesResponse> {
+    return { data: await this.adjustments.speedChoices(tenantId, query.customer_id) };
   }
 
   @ApiDoc({

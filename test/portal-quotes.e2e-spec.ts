@@ -278,18 +278,42 @@ describe('portal: customers request their own quotes', () => {
 
   it('lists the delivery speeds to anyone at the customer', async () => {
     const w = await workspace();
-    const staffRead = await w.staff.get('/pricing/quotes/delivery-speeds').expect(200);
     const responseSchema = z.strictObject({ data: z.array(speedChoiceSchema) });
+    const keys = (body: unknown) => (body as { data: { key: string }[] }).data.map((speed) => speed.key);
+    const portalRead = (w: Workspace) => w.anna.get(`/portal/customers/${w.luna}/delivery-speeds`).expect(200);
+
+    // On the default plan a customer sees only the workspace's default speed; staff without a customer see all.
+    const everything = await w.staff.get('/pricing/quotes/delivery-speeds').expect(200);
+    expect(keys(everything.body)).toEqual(['rush', 'standard']);
+    const before = await portalRead(w);
+    expectDocumented(responseSchema, before.body);
+    expect(keys(before.body)).toEqual(['standard']);
+    expect(JSON.stringify(before.body)).not.toContain('surcharge_percent');
+    expect((await w.staff.get(`/pricing/quotes/delivery-speeds?customer_id=${w.luna}`).expect(200)).body).toEqual(before.body);
+
+    // Once the plan lists rush, the customer, and staff quoting for it, see it too.
+    const plans = (await w.staff.get('/payments/plans').expect(200)).body as { data: { id: string; is_default: boolean }[] };
+    const starter = plans.data.find((plan) => plan.is_default)!.id;
+    await w.staff.patch(`/payments/plans/${starter}`, { speeds: [{ key: 'rush', surcharge_percent: null }] }).expect(200);
     for (const [client, customerId] of [
       [w.anna, w.luna],
       [w.ben, w.sol],
     ] as const) {
       const response = await client.get(`/portal/customers/${customerId}/delivery-speeds`).expect(200);
       expectDocumented(responseSchema, response.body);
-      expect(response.body).toEqual(staffRead.body);
-      expect(JSON.stringify(response.body)).not.toContain('surcharge_percent');
+      expect(keys(response.body)).toEqual(['rush', 'standard']);
+      expect((await w.staff.get(`/pricing/quotes/delivery-speeds?customer_id=${customerId}`).expect(200)).body).toEqual(response.body);
     }
     await w.sam.get(`/portal/customers/${w.luna}/delivery-speeds`).expect(404);
+
+    // Every listed speed quotes, for the customer and for staff.
+    for (const key of keys((await portalRead(w)).body)) {
+      await w.ben.post(quotes(w.luna), silverPolished(w, { delivery_speed: key })).expect(201);
+      await w.staff.post('/pricing/quotes', silverPolished(w, { customer_id: w.luna, delivery_speed: key })).expect(201);
+    }
+
+    await w.staff.get(`/pricing/quotes/delivery-speeds?customer_id=${newId()}`).expect(404);
+    await w.staff.get('/pricing/quotes/delivery-speeds?customer_id=nope').expect(400);
   });
 
   it('lists the products a customer can see for staff', async () => {

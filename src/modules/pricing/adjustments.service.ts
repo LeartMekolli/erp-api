@@ -15,6 +15,8 @@ import type { Dimension, UnitDef } from '../catalog/units';
 import { MEASURE_TYPES } from '../files/measurers';
 import type { MeasureType } from '../files/measurers';
 import type { TenantAuth } from '../identity/auth-context';
+import { planOf, planOffersSpeed } from '../payments/plans/plan-of';
+import type { PlanBenefits } from '../payments/plans/plan-of';
 import { MEASURE_DIMENSION } from './blocks';
 import { amountSchema, conflictOnDuplicate, keySchema, percentSchema, positiveAmountSchema } from './decimals';
 import type {
@@ -213,14 +215,32 @@ export class AdjustmentsService {
     return this.prisma.inTenant(tenantId, async (tx) => (await tx.deliverySpeed.findMany({ orderBy: { key: 'asc' } })).map(toSpeed));
   }
 
-  /** The speeds a quote can name, without their surcharge, by key. */
-  async speedChoices(tenantId: string): Promise<SpeedChoice[]> {
-    return (await this.speeds(tenantId)).map((speed) => ({
-      key: speed.key,
-      name: speed.name,
-      working_days: speed.working_days,
-      is_default: speed.is_default,
-    }));
+  /**
+   * The speeds a quote can name, without their surcharge, by key. For a customer: the workspace's default
+   * speed and those its plan lists, the same rule a customer's quote applies.
+   */
+  async speedChoices(tenantId: string, customerId?: string): Promise<SpeedChoice[]> {
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const plan = customerId ? await this.planFor(tx, customerId) : null;
+      const rows = await tx.deliverySpeed.findMany({ orderBy: { key: 'asc' } });
+      const defaultKey = rows.find((row) => row.isDefault)?.key;
+      return rows
+        .filter((row) => !plan || planOffersSpeed(plan, row.key, defaultKey))
+        .map(toSpeed)
+        .map((speed) => ({
+          key: speed.key,
+          name: speed.name,
+          working_days: speed.working_days,
+          is_default: speed.is_default,
+        }));
+    });
+  }
+
+  private async planFor(tx: Prisma.TransactionClient, customerId: string): Promise<PlanBenefits> {
+    if (!(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
+      throw new NotFoundException('Customer not found');
+    }
+    return planOf(tx, customerId);
   }
 
   async createSpeed(auth: TenantAuth, input: z.infer<typeof createDeliverySpeedSchema>): Promise<DeliverySpeedResponse> {

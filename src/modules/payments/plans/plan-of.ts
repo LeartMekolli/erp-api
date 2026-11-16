@@ -49,6 +49,11 @@ export async function planBenefits(tx: Prisma.TransactionClient, planId: string)
 export const PLAN_GIVING_STATUSES = ['active', 'past_due'] as const;
 
 /** The customer's plan: its subscription's while active or past due, else the default plan. */
+/** Whether a customer's plan lets it order at a speed: the workspace's default speed, or one the plan lists. */
+export function planOffersSpeed(plan: PlanBenefits, speedKey: string, defaultSpeedKey: string | null | undefined): boolean {
+  return speedKey === defaultSpeedKey || plan.speeds.has(speedKey);
+}
+
 export async function planOf(tx: Prisma.TransactionClient, customerId: string): Promise<PlanBenefits> {
   const subscription = await tx.customerSubscription.findFirst({
     where: { customerId, status: { in: [...PLAN_GIVING_STATUSES] } },

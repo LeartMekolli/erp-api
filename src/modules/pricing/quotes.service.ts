@@ -16,7 +16,7 @@ import { UnitsService } from '../catalog/units';
 import type { UnitDef } from '../catalog/units';
 import { visibleTo } from '../catalog/visibility';
 import type { TenantAuth } from '../identity/auth-context';
-import { planOf } from '../payments/plans/plan-of';
+import { planOf, planOffersSpeed } from '../payments/plans/plan-of';
 import type { PlanBenefits } from '../payments/plans/plan-of';
 import { missingStepTypes, resolveWorkflow } from '../workflow/coverage';
 import { partnerStepTypeIds } from '../workflow/partner-steps';
@@ -487,7 +487,7 @@ export class QuotesService {
     // A customer's quote gets its plan's discount and only the speeds it offers (Payments 2, goal 8):
     // the workspace's default speed, and those the plan lists.
     const plan = context ? await planOf(tx, context.customerId) : null;
-    if (plan && speedKey && speedKey !== adjustments.defaultSpeedKey && !plan.speeds.has(speedKey)) {
+    if (plan && speedKey && !planOffersSpeed(plan, speedKey, adjustments.defaultSpeedKey)) {
       throw new BadRequestException(`delivery_speed: ${speedKey} is not offered on the customer's plan (${plan.name})`);
     }
 
