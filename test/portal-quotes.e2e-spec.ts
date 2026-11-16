@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { z } from 'zod';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { pageSchema } from '../src/common/pagination/page';
@@ -10,7 +9,7 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
-import { speedChoiceSchema } from '../src/modules/pricing/pricing-response';
+import { speedChoicesResponseSchema } from '../src/modules/pricing/pricing-response';
 import { quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
 import { CapturingIdentityNotifier } from './capturing-notifier';
 import { measuredDesign } from './catalog-fixtures';
@@ -278,7 +277,7 @@ describe('portal: customers request their own quotes', () => {
 
   it('lists the delivery speeds to anyone at the customer', async () => {
     const w = await workspace();
-    const responseSchema = z.strictObject({ data: z.array(speedChoiceSchema) });
+    const responseSchema = speedChoicesResponseSchema;
     const keys = (body: unknown) => (body as { data: { key: string }[] }).data.map((speed) => speed.key);
     const portalRead = (w: Workspace) => w.anna.get(`/portal/customers/${w.luna}/delivery-speeds`).expect(200);
 

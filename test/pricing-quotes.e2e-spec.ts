@@ -2,13 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { z } from 'zod';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { speedChoiceSchema } from '../src/modules/pricing/pricing-response';
+import { speedChoicesResponseSchema } from '../src/modules/pricing/pricing-response';
 import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSchema } from '../src/modules/pricing/quote-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -336,7 +335,7 @@ describe('pricing: saved quotes', () => {
     const tenant = await freshTenant();
     await walkthrough(tenant);
     const response = await tenant.member.get('/pricing/quotes/delivery-speeds').expect(200);
-    expectDocumented(z.strictObject({ data: z.array(speedChoiceSchema) }), response.body);
+    expectDocumented(speedChoicesResponseSchema, response.body);
     expect(response.body).toEqual({
       data: [
         { key: 'rush', name: 'Rush', working_days: expect.any(Number), is_default: false },
