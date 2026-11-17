@@ -36,12 +36,12 @@ On hold: per-task implementation guides (`docs/superpowers/guides/`). Don't writ
 
 ## Ignored files
 
-`docs/`, `.superpowers/`, `resources/`, `.env` and `.env.staging` are gitignored. Whenever an agent changes any of them, it ends its reply with this command, with the `cd` path set to its own workspace. Show it only; never run it.
+`docs/`, `.superpowers/`, `resources/`, `.claude/`, `.env` and `.env.staging` are gitignored. Whenever an agent changes any of them, it ends its reply with this command, with the `cd` path set to its own workspace. Show it only; never run it.
 
 ```sh
 cd <this workspace's absolute path>
 D=/Users/leartmekolli/Desktop/erp-api
-for p in docs .superpowers resources; do [ -d "$p" ] && mkdir -p "$D/$p" && rsync -au "$p/" "$D/$p/"; done
+for p in docs .superpowers resources .claude; do [ -d "$p" ] && mkdir -p "$D/$p" && rsync -au "$p/" "$D/$p/"; done
 for f in .env .env.staging; do [ -f "$f" ] && rsync -au "$f" "$D/"; done
 ```
 
