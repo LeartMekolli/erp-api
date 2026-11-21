@@ -16,7 +16,9 @@ import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import type { CursorPayload } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
+import { commaList } from '../../common/validation/comma-list';
 import { ConfigService } from '../../config/config.service';
+import { likeLiteral } from '../../database/like';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote, Shipment, ShippingMethod } from '../../generated/prisma/client';
@@ -54,29 +56,22 @@ import type {
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
-import { NEEDS_REASONS, needsDay, needsWhere, orderNeeds } from './needs';
+import { NEEDS_REASONS, needsWhere, orderNeeds } from './needs';
 import type { NeedsDay, NeedsReason } from './needs';
+import { needsToday, workspaceCalendar } from './needs-today';
 import { linePicks, linePicksSchema } from './line-picks';
 import { ONE_PARTNER } from './order-lines';
 import { lineState } from './order-state';
 import type { OrderState } from './order-state';
 import { OrderStatesService } from './order-states.service';
 import type { StoredStates } from './order-states.service';
-import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
+import { commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { TAX_CALCULATOR } from './tax';
 import type { TaxCalculator } from './tax';
 
 type Tx = Prisma.TransactionClient;
 type Channel = 'staff' | 'portal';
-
-/** A comma-separated list of `values`, at least one, each named once; anything else is a 400. */
-const commaList = <T extends readonly [string, ...string[]]>(values: T) =>
-  z
-    .string()
-    .transform((raw) => raw.split(','))
-    .pipe(z.array(z.enum(values)).min(1))
-    .transform((list) => [...new Set(list)]);
 
 export const ORDER_SORTS = ['placed_at', '-placed_at', 'promised_on', '-promised_on'] as const;
 export type OrderSort = (typeof ORDER_SORTS)[number];
@@ -130,7 +125,7 @@ export function ordersWhere(filters: OrderListFilters, numberIds: string[] | nul
     ...(filters.q
       ? {
           OR: [
-            { customer: { name: { contains: filters.q, mode: 'insensitive' as const } } },
+            { customer: { name: { contains: likeLiteral(filters.q), mode: 'insensitive' as const } } },
             ...(numberIds ? [{ id: { in: numberIds } }] : []),
           ],
         }
@@ -1163,14 +1158,13 @@ export class OrdersService {
     return speed?.workingDays ?? 0;
   }
 
-  private async calendar(tx: Tx): Promise<BusinessCalendar> {
-    const calendar = (await this.settings.list(tx))['business.calendar'] as BusinessCalendar | undefined;
-    return calendar ?? DEFAULT_CALENDAR;
+  private calendar(tx: Tx): Promise<BusinessCalendar> {
+    return workspaceCalendar(tx, this.settings);
   }
 
   /** The workspace's today and due-soon window, for the needs-you rule. */
-  private async needsToday(tx: Tx, tenantId: string): Promise<NeedsDay> {
-    return needsDay(await this.states.today(tx, tenantId), await this.calendar(tx));
+  private needsToday(tx: Tx, tenantId: string): Promise<NeedsDay> {
+    return needsToday(tx, tenantId, this.settings);
   }
 
   private async timezone(tx: Tx, tenantId: string): Promise<string> {

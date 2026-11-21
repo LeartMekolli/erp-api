@@ -19,12 +19,20 @@ export interface ApiDocOptions {
   body?: z.ZodType | ((ctx: DocContext) => z.ZodType);
   query?: z.ZodObject;
   response?: z.ZodType;
+  /** Other success statuses the route answers, each with its body, such as a refusal sent as a 200 next to a 201. */
+  responses?: ApiDocResponse[];
   /**
    * Error statuses the route can answer, documented as problem+json. 401 and 403 on protected
    * routes, and 409 on tenant POSTs, are added by the builder. A refusal whose `code` carries
    * extension members gives its schema, `{ status: 409, schema: priceChangedResponseSchema }`.
    */
   errors?: (number | ApiDocError)[];
+}
+
+/** A success status besides the route's own, with the body it sends. */
+export interface ApiDocResponse {
+  status: number;
+  schema: z.ZodType;
 }
 
 /** A coded refusal with extension members: shown as its schema or the plain problem, since the status has other refusals too. */

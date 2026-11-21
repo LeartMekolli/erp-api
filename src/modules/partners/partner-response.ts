@@ -214,16 +214,29 @@ export const partnerJobResponseSchema = z.strictObject({
   quantity: z.number().int(),
   /** The design to make; download it from the job's `design` route. */
   design_file_version_id: z.uuid().nullable(),
-  /** The partner's own steps, in order, with each step's instructions. */
-  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), sop_file_version_id: z.uuid().nullable() })),
+  /** The partner's own steps, in order, with each step's instructions and its active pieces at it now (`count`). */
+  steps: z.array(z.strictObject({ key: z.string(), name: z.string(), sop_file_version_id: z.uuid().nullable(), count: z.number().int() })),
   /** What the partner is paid for the job. */
   cost: z.string(),
   pieces: z.strictObject({ active: z.number().int(), finished: z.number().int(), scrapped: z.number().int() }),
 });
 export type PartnerJobResponse = z.infer<typeof partnerJobResponseSchema>;
 
-/** A page of the partner's jobs, newest hand-over first. */
+/** A page of the partner's jobs, in the order the list's `sort` asks for. */
 export const partnerJobsResponseSchema = pageSchema(partnerJobResponseSchema);
+
+/**
+ * How many of the partner's jobs each tab and tile of its Jobs page holds, decided as the list's `status`
+ * and `due` decide them. `late` and `due_soon` are only jobs the partner is working on (`accepted`).
+ */
+export const partnerJobCountsResponseSchema = z.strictObject({
+  offered: z.number().int(),
+  accepted: z.number().int(),
+  finished: z.number().int(),
+  late: z.number().int(),
+  due_soon: z.number().int(),
+});
+export type PartnerJobCountsResponse = z.infer<typeof partnerJobCountsResponseSchema>;
 
 const evidenceSchema = z.strictObject({ min_photos: z.number().int(), comment_required: z.boolean() });
 

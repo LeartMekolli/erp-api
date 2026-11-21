@@ -192,6 +192,9 @@ function fillOperation(operation: OperationObject, route: DocumentedRoute, ctx: 
         }
       : { description: route.status === 204 ? 'No content' : 'Success' },
   };
+  for (const other of doc?.responses ?? []) {
+    responses[other.status] = { description: 'Success', content: { 'application/json': { schema: zodToOpenApi(other.schema, 'output') } } };
+  }
   // Derived like access: any protected route can refuse the token (401) or the caller (403, also a
   // suspended tenant or the wrong kind of token), and a reused Idempotency-Key is a 409.
   const derived = [...(isPublic ? [] : [401, 403]), ...(idempotent ? [409] : [])];

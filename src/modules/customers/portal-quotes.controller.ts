@@ -11,7 +11,7 @@ import { CustomerAccess } from '../identity/route-markers';
 import { PartnerQuotesService } from '../partners/partner-quotes.service';
 import { partnerChoicesResponseSchema } from '../partners/partner-response';
 import type { PartnerChoicesResponse } from '../partners/partner-response';
-import { QUOTE_REFUSAL_CODES, quoteSummaryResponseSchema } from '../pricing/quote-response';
+import { QUOTE_REFUSAL_CODES, quoteAcceptedResponseSchema, quoteSummaryResponseSchema } from '../pricing/quote-response';
 import type { QuoteRefusalCode, QuoteSummaryResponse } from '../pricing/quote-response';
 import { QuotesService, customerQuoteRequestSchema } from '../pricing/quotes.service';
 import type { CustomerQuoteRequest } from '../pricing/quotes.service';
@@ -24,14 +24,11 @@ const portalQuoteRequestSchema = customerQuoteRequestSchema.extend({
   partner_id: z.uuid().optional(),
 });
 
-/** A saved quote (201), or why it cannot be quoted in plain words (200, nothing saved). */
-const portalQuoteResultSchema = z.discriminatedUnion('accepted', [
-  z.strictObject({ accepted: z.literal(true), quote: quoteSummaryResponseSchema }),
-  z.strictObject({
-    accepted: z.literal(false),
-    reasons: z.array(z.strictObject({ code: z.enum(QUOTE_REFUSAL_CODES), message: z.string() })),
-  }),
-]);
+/** Why it cannot be quoted, in plain words: the 200, nothing saved. A saved quote is the 201, `quoteAcceptedResponseSchema`. */
+const portalQuoteRefusedSchema = z.strictObject({
+  accepted: z.literal(false),
+  reasons: z.array(z.strictObject({ code: z.enum(QUOTE_REFUSAL_CODES), message: z.string() })),
+});
 type PortalQuoteResult =
   | { accepted: true; quote: QuoteSummaryResponse }
   | { accepted: false; reasons: { code: QuoteRefusalCode; message: string }[] };
@@ -55,7 +52,8 @@ export class PortalQuotesController {
       'the job is refused with `partner_unavailable`. A product made of parts is quoted as one price; a workshop ' +
       "can't be picked for it (400).",
     body: portalQuoteRequestSchema,
-    response: portalQuoteResultSchema,
+    response: quoteAcceptedResponseSchema,
+    responses: [{ status: 200, schema: portalQuoteRefusedSchema }],
     errors: [400, 404],
   })
   @CustomerAccess('buyer')

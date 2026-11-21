@@ -13,10 +13,23 @@ import type { MoveBody } from '../workflow/moves.service';
 import { moveResponseSchema } from '../workflow/work-order-response';
 import type { MoveResponse } from '../workflow/work-order-response';
 import { JobsService } from './jobs.service';
-import { PartnerJobsService, partnerJobsQuerySchema } from './partner-jobs.service';
-import type { PartnerJobsQuery } from './partner-jobs.service';
-import { partnerJobDetailResponseSchema, partnerJobsResponseSchema, partnerWorkOrderResponseSchema, portalOwedResponseSchema } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerWorkOrderResponse, PortalOwedResponse } from './partner-response';
+import { partnerJobsCountsQuerySchema, partnerJobsQuerySchema } from './partner-jobs-query';
+import type { PartnerJobsCountsQuery, PartnerJobsQuery } from './partner-jobs-query';
+import { PartnerJobsService } from './partner-jobs.service';
+import {
+  partnerJobCountsResponseSchema,
+  partnerJobDetailResponseSchema,
+  partnerJobsResponseSchema,
+  partnerWorkOrderResponseSchema,
+  portalOwedResponseSchema,
+} from './partner-response';
+import type {
+  PartnerJobCountsResponse,
+  PartnerJobDetailResponse,
+  PartnerJobResponse,
+  PartnerWorkOrderResponse,
+  PortalOwedResponse,
+} from './partner-response';
 
 const idParam = new ZodValidationPipe(z.uuid());
 
@@ -63,8 +76,14 @@ export class PartnerJobsController {
   }
 
   @ApiDoc({
-    summary: 'The jobs offered to or accepted by the partner, newest first, a page at a time.',
-    description: 'Never the customer, the quote or the price the customer pays. `status` filters before paging.',
+    summary: 'The jobs offered to or accepted by the partner, a page at a time.',
+    description:
+      'Never the customer, the quote or the price the customer pays. `status`, `due` and `q` filter before paging, ' +
+      "combined with AND. `due` picks jobs the partner is working on (`accepted`): `late` is past its due date, `due_soon` " +
+      "due from the workspace's today to 2 working days on, in the workspace's time zone and on its calendar; an offer or a " +
+      'finished job is neither. `q` matches part of the product name or of a chosen option value. `sort` is newest hand-over ' +
+      'first by default; jobs with no due date come last in both `due_on` sorts, and a cursor works only with the sort it was ' +
+      "made for. Each step's `count` is the job's active pieces at it now.",
     query: partnerJobsQuerySchema,
     response: partnerJobsResponseSchema,
     errors: [400, 404],
@@ -76,6 +95,25 @@ export class PartnerJobsController {
     @Query(new ZodValidationPipe(partnerJobsQuerySchema)) query: PartnerJobsQuery,
   ): Promise<Page<PartnerJobResponse>> {
     return this.jobs.list(partner, query);
+  }
+
+  @ApiDoc({
+    summary: "How many of the partner's jobs each tab and tile holds.",
+    description:
+      'Decided as the list decides `status` and `due`, for the same `q`, so a number always matches the list it opens. ' +
+      'Only `q` is taken; anything else is a 400.',
+    query: partnerJobsCountsQuerySchema,
+    response: partnerJobCountsResponseSchema,
+    errors: [400, 404],
+  })
+  @PartnerAccess('member')
+  // Before `jobs/:groupId`, which would read `counts` as an id.
+  @Get('jobs/counts')
+  counts(
+    @CurrentPartner() partner: PartnerAuth,
+    @Query(new ZodValidationPipe(partnerJobsCountsQuerySchema)) query: PartnerJobsCountsQuery,
+  ): Promise<PartnerJobCountsResponse> {
+    return this.jobs.counts(partner, query);
   }
 
   @ApiDoc({
