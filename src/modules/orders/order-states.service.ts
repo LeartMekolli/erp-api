@@ -5,7 +5,7 @@ import type { Order } from '../../generated/prisma/client';
 import { INVOICE_STATUSES, paidAndRefunded, paymentState } from '../payments/payment-state';
 import { MovesService } from '../workflow/moves.service';
 import type { PaymentState, PaymentTerms } from '../payments/payment-state';
-import { localDate } from './dates';
+import { workspaceToday } from './needs-today';
 import { lineState, orderState } from './order-state';
 import type { OrderState } from './order-state';
 
@@ -154,8 +154,7 @@ export class OrderStatesService {
   }
 
   /** The workspace's date today, in its own time zone. */
-  async today(tx: Tx, tenantId: string): Promise<string> {
-    const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
-    return localDate(new Date(), timezone);
+  today(tx: Tx, tenantId: string): Promise<string> {
+    return workspaceToday(tx, tenantId);
   }
 }

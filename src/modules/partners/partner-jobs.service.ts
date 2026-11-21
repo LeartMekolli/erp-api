@@ -19,7 +19,14 @@ import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { liveOpen } from './eligibility.service';
 import { jobSummaryOf } from './job-summary-response';
-import { partnerJobsCursor, partnerJobsCursorPayload, partnerJobsOrderBy, partnerJobsPageWhere, partnerJobsWhere } from './partner-jobs-query';
+import {
+  partnerJobsCursor,
+  partnerJobsCursorPayload,
+  partnerJobsOrderBy,
+  partnerJobsPageWhere,
+  partnerJobsWhere,
+  searchJobs,
+} from './partner-jobs-query';
 import type { PartnerJobsContext, PartnerJobsCountsQuery, PartnerJobsFilters, PartnerJobsQuery } from './partner-jobs-query';
 import type {
   PartnerJobCountsResponse,
@@ -83,7 +90,9 @@ export class PartnerJobsService {
     const secret = this.config.get('APP_SECRET');
     const after = cursor ? partnerJobsCursor(sort, cursor, secret) : undefined;
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const where = await partnerJobsWhere(tx, auth.partnerId, filters, await this.context(tx, auth, filters));
+      const needsOpen = filters.status === 'accepted' || filters.status === 'finished' || filters.due !== undefined;
+      const context = await this.context(tx, auth, { open: needsOpen, day: filters.due !== undefined, q: filters.q });
+      const where = partnerJobsWhere(auth.partnerId, filters, context);
       const rows = await tx.jobAssignment.findMany({
         where: after ? { AND: [where, partnerJobsPageWhere(sort, after)] } : where,
         orderBy: partnerJobsOrderBy(sort),
@@ -99,9 +108,10 @@ export class PartnerJobsService {
   /** How many jobs each tab and tile of the list holds, decided as the list decides them, for the same search. */
   async counts(auth: PartnerAuth, query: PartnerJobsCountsQuery): Promise<PartnerJobCountsResponse> {
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const context = await this.context(tx, auth, { due: ['late'] });
-      const count = async (filters: PartnerJobsFilters) =>
-        tx.jobAssignment.count({ where: await partnerJobsWhere(tx, auth.partnerId, { ...filters, q: query.q }, context) });
+      // Accepted, finished and both tiles need the open jobs, the tiles today; the search runs once for all five.
+      const context = await this.context(tx, auth, { open: true, day: true, q: query.q });
+      const count = (filters: PartnerJobsFilters) =>
+        tx.jobAssignment.count({ where: partnerJobsWhere(auth.partnerId, { ...filters, q: query.q }, context) });
       return {
         offered: await count({ status: 'offered' }),
         accepted: await count({ status: 'accepted' }),
@@ -112,12 +122,12 @@ export class PartnerJobsService {
     });
   }
 
-  /** What the filters are decided against, read only when they need it. */
-  private async context(tx: Tx, auth: PartnerAuth, filters: PartnerJobsFilters): Promise<PartnerJobsContext> {
-    const needsOpen = filters.status === 'accepted' || filters.status === 'finished' || filters.due !== undefined;
+  /** What the filters are decided against, each part read only when asked for. */
+  private async context(tx: Tx, auth: PartnerAuth, read: { open: boolean; day: boolean; q?: string }): Promise<PartnerJobsContext> {
     return {
-      open: needsOpen ? await openForPartner(tx, { partnerId: auth.partnerId }) : new Set<string>(),
-      day: filters.due ? await needsToday(tx, auth.tenantId, this.settings) : null,
+      open: read.open ? await openForPartner(tx, { partnerId: auth.partnerId }) : new Set<string>(),
+      day: read.day ? await needsToday(tx, auth.tenantId, this.settings) : null,
+      found: read.q ? await searchJobs(tx, auth.partnerId, read.q) : null,
       now: new Date(),
     };
   }

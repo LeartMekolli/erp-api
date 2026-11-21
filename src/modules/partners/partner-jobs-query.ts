@@ -4,6 +4,7 @@ import { decodeCursor } from '../../common/pagination/cursor';
 import type { CursorPayload } from '../../common/pagination/cursor';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import { commaList } from '../../common/validation/comma-list';
+import { likeLiteral } from '../../database/like';
 import type { JobAssignment, Prisma } from '../../generated/prisma/client';
 import type { NeedsDay } from '../orders/needs';
 import { notWaitingForPayment } from '../orders/payment-hold';
@@ -45,12 +46,14 @@ export interface PartnerJobsFilters {
 }
 
 /**
- * What the filters are decided against: `open`, the partner's accepted jobs it still has work on
- * (`openForPartner`), when `status` or `due` needs it; `day`, the workspace's today, when `due` is set.
+ * What the filters are decided against, read once per request: `open`, the partner's accepted jobs it
+ * still has work on (`openForPartner`), when `status` or `due` needs it; `day`, the workspace's today, when
+ * `due` is set; `found`, the jobs `q` finds (`searchJobs`), when it is set.
  */
 export interface PartnerJobsContext {
   open: Set<string>;
   day: NeedsDay | null;
+  found: Set<string> | null;
   now: Date;
 }
 
@@ -82,37 +85,40 @@ function dueWhere(due: PartnerJobDue[], open: Set<string>, day: NeedsDay): Prism
   return { status: 'accepted', groupId: { in: [...open] }, OR: due.map((reason) => rules[reason]) };
 }
 
-/** `q` as LIKE reads it: Prisma's `contains` passes `%`, `_` and `\` through as wildcards and the escape. */
-const literal = (q: string) => q.replace(/[\\%_]/g, (char) => `\\${char}`);
-
-/** Jobs whose product name contains `q`, or with a chosen option value whose name does, read from the job's quote. */
-async function searchWhere(tx: Tx, q: string): Promise<Prisma.JobAssignmentWhereInput> {
-  const contains = { contains: literal(q), mode: 'insensitive' as const };
-  const values = await tx.optionValue.findMany({
-    where: { name: contains },
-    select: { key: true, group: { select: { key: true } } },
-  });
-  return {
-    OR: [
-      { group: { product: { name: contains } } },
-      ...values.map((value) => ({ group: { quote: { inputs: { path: ['options', value.group.key], equals: value.key } } } })),
-    ],
-  };
+/**
+ * The partner's jobs whose product name contains `q`, or with a chosen option value whose name does, in one
+ * query over the partner's own jobs, however many option values match. Options are read from the job's
+ * quote and matched by group and value key, the same rule the row's `options` are named by
+ * (`chosenOptions`): a job keeps an option its product no longer offers, so its product isn't asked.
+ */
+export async function searchJobs(tx: Tx, partnerId: string, q: string): Promise<Set<string>> {
+  const pattern = `%${likeLiteral(q)}%`;
+  const rows = await tx.$queryRaw<{ group_id: string }[]>`
+    SELECT DISTINCT ja.group_id FROM job_assignment ja
+    JOIN work_order_group g ON g.id = ja.group_id
+    LEFT JOIN product p ON p.id = g.product_id
+    LEFT JOIN quote qu ON qu.id = g.quote_id
+    WHERE ja.partner_id = ${partnerId}::uuid
+      AND (
+        p.name ILIKE ${pattern}
+        OR EXISTS (
+          SELECT 1 FROM jsonb_each_text(qu.inputs -> 'options') AS chosen(group_key, value_key)
+          JOIN option_group og ON og.key = chosen.group_key
+          JOIN option_value ov ON ov.group_id = og.id AND ov.key = chosen.value_key
+          WHERE ov.name ILIKE ${pattern}
+        )
+      )`;
+  return new Set(rows.map((row) => row.group_id));
 }
 
 /** The partner's jobs the filters pick: never another partner's, nor one of an order waiting for payment. */
-export async function partnerJobsWhere(
-  tx: Tx,
-  partnerId: string,
-  filters: PartnerJobsFilters,
-  context: PartnerJobsContext,
-): Promise<Prisma.JobAssignmentWhereInput> {
+export function partnerJobsWhere(partnerId: string, filters: PartnerJobsFilters, context: PartnerJobsContext): Prisma.JobAssignmentWhereInput {
   return {
     AND: [
       { partnerId },
       statusWhere(filters.status, context.open, context.now),
       ...(filters.due && context.day ? [dueWhere(filters.due, context.open, context.day)] : []),
-      ...(filters.q ? [await searchWhere(tx, filters.q)] : []),
+      ...(filters.q && context.found ? [{ groupId: { in: [...context.found] } }] : []),
       { group: notWaitingForPayment },
     ],
   };

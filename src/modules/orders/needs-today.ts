@@ -13,11 +13,16 @@ export async function workspaceCalendar(tx: Tx, settings: SettingsService): Prom
   return ((await settings.list(tx))['business.calendar'] as BusinessCalendar | undefined) ?? DEFAULT_CALENDAR;
 }
 
+/** The workspace's date today, in its own time zone. */
+export async function workspaceToday(tx: Tx, tenantId: string, now: Date = new Date()): Promise<string> {
+  const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+  return localDate(now, timezone);
+}
+
 /**
  * The workspace's today in its time zone and the due-soon window on its calendar: what late and due soon
  * compare with, for orders and partners' jobs alike.
  */
 export async function needsToday(tx: Tx, tenantId: string, settings: SettingsService, now: Date = new Date()): Promise<NeedsDay> {
-  const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
-  return needsDay(localDate(now, timezone), await workspaceCalendar(tx, settings));
+  return needsDay(await workspaceToday(tx, tenantId, now), await workspaceCalendar(tx, settings));
 }

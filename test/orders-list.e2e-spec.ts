@@ -240,6 +240,10 @@ describe('orders: the staff list', () => {
     expect(await ids('q=%231003')).toEqual([o.making2.id]);
     expect((await ids('q=luna')).sort()).toEqual(idsOf(o.making1, o.making2, o.ready, o.overdue, o.cancelled));
     expect(await ids('q=sol%20ri')).toEqual([o.waiting.id]);
+    // A wildcard is a character like any other: no customer's name has `%`, `\` or `l_na` in it.
+    expect(await ids('q=%25')).toEqual([]);
+    expect(await ids('q=%5C')).toEqual([]);
+    expect(await ids('q=l_na')).toEqual([]);
 
     // Digits in a name are found too.
     await prisma.inTenant(w.id, (tx) => tx.customer.update({ where: { id: w.sol }, data: { name: 'Sol 1003 Rings' } }));

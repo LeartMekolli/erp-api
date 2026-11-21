@@ -18,6 +18,7 @@ import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
 import { commaList } from '../../common/validation/comma-list';
 import { ConfigService } from '../../config/config.service';
+import { likeLiteral } from '../../database/like';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Order, Quote, Shipment, ShippingMethod } from '../../generated/prisma/client';
@@ -124,7 +125,7 @@ export function ordersWhere(filters: OrderListFilters, numberIds: string[] | nul
     ...(filters.q
       ? {
           OR: [
-            { customer: { name: { contains: filters.q, mode: 'insensitive' as const } } },
+            { customer: { name: { contains: likeLiteral(filters.q), mode: 'insensitive' as const } } },
             ...(numberIds ? [{ id: { in: numberIds } }] : []),
           ],
         }
