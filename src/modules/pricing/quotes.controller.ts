@@ -11,7 +11,7 @@ import { RequirePermission } from '../identity/route-markers';
 import { AdjustmentsService } from './adjustments.service';
 import { speedChoicesResponseSchema } from './pricing-response';
 import type { SpeedChoicesResponse } from './pricing-response';
-import { quoteResponseSchema, quoteResultResponseSchema, quoteSummaryResponseSchema } from './quote-response';
+import { quoteAcceptedResponseSchema, quoteRefusedResponseSchema, quoteResponseSchema, quoteSummaryResponseSchema } from './quote-response';
 import type { QuoteResponse, QuoteResultResponse, QuoteSummaryResponse } from './quote-response';
 import { QuotesService, quoteRequestSchema } from './quotes.service';
 import type { QuoteRequest } from './quotes.service';
@@ -45,7 +45,8 @@ export class QuotesController {
       "`partner_id` (with `customer_id`) quotes with that workshop's prices, as the customer's own pick would: 403 unless the " +
       "workspace lets the customer pick, and a workshop that can't take the job is refused with `partner_unavailable`.",
     body: quoteRequestSchema,
-    response: quoteResultResponseSchema,
+    response: quoteAcceptedResponseSchema,
+    responses: [{ status: 200, schema: quoteRefusedResponseSchema }],
     errors: [400, 404],
   })
   @RequirePermission('quote.create')

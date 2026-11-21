@@ -201,6 +201,23 @@ describe('API docs', () => {
       expect(problemOf(doc.paths['/orders/{id}/comments'].post, '404')).toEqual(problem);
     });
 
+    it('documents a saved quote as a 201 and a refused one as a 200', () => {
+      const bodyOf = (operation: OperationObject | undefined, status: string) => {
+        const response = operation?.responses[status] as ResponseObject | undefined;
+        return (response?.content?.['application/json'].schema ?? {}) as SchemaObject;
+      };
+      for (const path of ['/pricing/quotes', '/portal/customers/{customerId}/quotes']) {
+        expect([path, bodyOf(doc.paths[path].post, '201').properties]).toEqual([
+          path,
+          { accepted: { type: 'boolean', enum: [true] }, quote: expect.any(Object) },
+        ]);
+        expect([path, bodyOf(doc.paths[path].post, '200').properties]).toEqual([
+          path,
+          { accepted: { type: 'boolean', enum: [false] }, reasons: expect.any(Object) },
+        ]);
+      }
+    });
+
     it('declares Idempotency-Key as an optional header on tenant POSTs only', () => {
       const headers = (operation: OperationObject | undefined) =>
         ((operation?.parameters ?? []) as { name: string; in: string; required?: boolean; schema?: object }[]).filter((parameter) => parameter.in === 'header');

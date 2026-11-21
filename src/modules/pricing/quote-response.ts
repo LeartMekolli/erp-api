@@ -62,11 +62,13 @@ export type QuoteSummaryResponse = z.infer<typeof quoteSummaryResponseSchema>;
 export const quotePriceSchema = quoteSummaryResponseSchema.pick({ currency: true, lines: true, unit_price: true, total: true });
 export type QuotePrice = z.infer<typeof quotePriceSchema>;
 
+/** A saved quote: the 201. */
+export const quoteAcceptedResponseSchema = z.strictObject({ accepted: z.literal(true), quote: quoteSummaryResponseSchema });
+/** Why the configuration cannot be quoted: the 200, nothing saved. */
+export const quoteRefusedResponseSchema = z.strictObject({ accepted: z.literal(false), reasons: z.array(quoteRefusalSchema) });
+
 /** A saved quote (201), or why the configuration cannot be quoted (200, nothing saved). */
-export const quoteResultResponseSchema = z.discriminatedUnion('accepted', [
-  z.strictObject({ accepted: z.literal(true), quote: quoteSummaryResponseSchema }),
-  z.strictObject({ accepted: z.literal(false), reasons: z.array(quoteRefusalSchema) }),
-]);
+export const quoteResultResponseSchema = z.discriminatedUnion('accepted', [quoteAcceptedResponseSchema, quoteRefusedResponseSchema]);
 export type QuoteResultResponse = z.infer<typeof quoteResultResponseSchema>;
 
 const amount = z.string();
