@@ -54,15 +54,16 @@ import type {
   OrderLineResponse,
   OrderResponse,
 } from './order-response';
-import { NEEDS_REASONS, needsDay, needsWhere, orderNeeds } from './needs';
+import { NEEDS_REASONS, needsWhere, orderNeeds } from './needs';
 import type { NeedsDay, NeedsReason } from './needs';
+import { needsToday, workspaceCalendar } from './needs-today';
 import { linePicks, linePicksSchema } from './line-picks';
 import { ONE_PARTNER } from './order-lines';
 import { lineState } from './order-state';
 import type { OrderState } from './order-state';
 import { OrderStatesService } from './order-states.service';
 import type { StoredStates } from './order-states.service';
-import { DEFAULT_CALENDAR, commonSpeed, nextOrderNumber, orderTotals } from './place-order';
+import { commonSpeed, nextOrderNumber, orderTotals } from './place-order';
 import type { PlaceOrder } from './place-order';
 import { TAX_CALCULATOR } from './tax';
 import type { TaxCalculator } from './tax';
@@ -1163,14 +1164,13 @@ export class OrdersService {
     return speed?.workingDays ?? 0;
   }
 
-  private async calendar(tx: Tx): Promise<BusinessCalendar> {
-    const calendar = (await this.settings.list(tx))['business.calendar'] as BusinessCalendar | undefined;
-    return calendar ?? DEFAULT_CALENDAR;
+  private calendar(tx: Tx): Promise<BusinessCalendar> {
+    return workspaceCalendar(tx, this.settings);
   }
 
   /** The workspace's today and due-soon window, for the needs-you rule. */
-  private async needsToday(tx: Tx, tenantId: string): Promise<NeedsDay> {
-    return needsDay(await this.states.today(tx, tenantId), await this.calendar(tx));
+  private needsToday(tx: Tx, tenantId: string): Promise<NeedsDay> {
+    return needsToday(tx, tenantId, this.settings);
   }
 
   private async timezone(tx: Tx, tenantId: string): Promise<string> {
