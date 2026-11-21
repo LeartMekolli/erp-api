@@ -16,6 +16,7 @@ import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import type { CursorPayload } from '../../common/pagination/cursor';
 import { paginationQuerySchema, toPage } from '../../common/pagination/page';
 import type { Page } from '../../common/pagination/page';
+import { commaList } from '../../common/validation/comma-list';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
@@ -70,14 +71,6 @@ import type { TaxCalculator } from './tax';
 
 type Tx = Prisma.TransactionClient;
 type Channel = 'staff' | 'portal';
-
-/** A comma-separated list of `values`, at least one, each named once; anything else is a 400. */
-const commaList = <T extends readonly [string, ...string[]]>(values: T) =>
-  z
-    .string()
-    .transform((raw) => raw.split(','))
-    .pipe(z.array(z.enum(values)).min(1))
-    .transform((list) => [...new Set(list)]);
 
 export const ORDER_SORTS = ['placed_at', '-placed_at', 'promised_on', '-promised_on'] as const;
 export type OrderSort = (typeof ORDER_SORTS)[number];

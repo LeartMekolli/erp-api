@@ -39,7 +39,7 @@ interface PartnerJob {
   id: string;
   status: string;
   quantity: number;
-  steps: { key: string }[];
+  steps: { key: string; count?: number }[];
   pieces: { active: number; finished: number; scrapped: number };
   work_orders?: { id: string; label: string; status: string; step_key: string | null; to_inspect: boolean | null; stage: string | null }[];
 }
@@ -318,6 +318,44 @@ describe('partners: working their jobs', () => {
     await tenant.metalworksPerson.get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted.group}`).expect(404);
     await tenant.metalworksPerson.get(`/partner-portal/partners/${tenant.metalworks}/jobs/${tenant.accepted.group}/design`).expect(404);
     expect(((await tenant.metalworksPerson.get(`/partner-portal/partners/${tenant.metalworks}/jobs`).expect(200)).body as { data: unknown[] }).data).toEqual([]);
+  });
+
+  it("counts a job's pieces at each of the partner's steps on the list, as the detail does", async () => {
+    const tenant = await freshTenant();
+    const counts = async () => {
+      const listed = await tenant.castcoPerson.get(`${portal(tenant)}/jobs`).expect(200);
+      expectDocumented(partnerJobsResponseSchema, listed.body);
+      const jobs = (listed.body as { data: PartnerJob[] }).data;
+      const detail = await tenant.castcoPerson.get(`${portal(tenant)}/jobs/${tenant.accepted.group}`).expect(200);
+      return {
+        list: jobs.find((job) => job.id === tenant.accepted.group)!.steps.map((step) => [step.key, step.count]),
+        detail: (detail.body as PartnerJob).steps.map((step) => [step.key, step.count]),
+        offered: jobs.find((job) => job.id === tenant.offered.group)!.steps.map((step) => step.count),
+      };
+    };
+
+    const before = await counts();
+    expect(before.list).toEqual([
+      ['print_pattern', 10],
+      ['casting_tree', 0],
+      ['casting', 0],
+      ['polishing', 0],
+      ['final_qc', 0],
+    ]);
+    expect(before.list).toEqual(before.detail);
+    expect(before.offered).toEqual([10, 0, 0, 0, 0]);
+
+    const ids = (await pieces(tenant, tenant.accepted.group)).slice(0, 3).map((piece) => piece.id);
+    await tenant.castcoPerson.post(`${portal(tenant)}/moves`, { work_order_ids: ids, kind: 'pass', at_step: 'print_pattern' }).expect(200);
+    const after = await counts();
+    expect(after.list).toEqual([
+      ['print_pattern', 7],
+      ['casting_tree', 3],
+      ['casting', 0],
+      ['polishing', 0],
+      ['final_qc', 0],
+    ]);
+    expect(after.list).toEqual(after.detail);
   });
 
   it("gives a partner its steps' QC rules, the pieces to inspect and each step's instructions", async () => {

@@ -1,7 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { z } from 'zod';
-import { decodeCursor } from '../../common/pagination/cursor';
-import { paginationQuerySchema, toPage } from '../../common/pagination/page';
+import { encodeCursor } from '../../common/pagination/cursor';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
@@ -9,7 +7,9 @@ import { Prisma } from '../../generated/prisma/client';
 import type { JobAssignment, WorkOrderGroup } from '../../generated/prisma/client';
 import { FilesService } from '../files/files.service';
 import type { PartnerAuth } from '../identity/auth-context';
+import { needsToday } from '../orders/needs-today';
 import { notWaitingForPayment } from '../orders/payment-hold';
+import { SettingsService } from '../settings/settings.service';
 import type { WorkflowStepRow } from '../workflow/coverage';
 import { pathFor } from '../workflow/path';
 import { groupProgress, inRework, stepTotals } from '../workflow/progress';
@@ -19,39 +19,24 @@ import type { StepConfig } from '../workflow/workflow-config';
 import { chainOf, stepsForPath } from '../workflow/work-orders.service';
 import { liveOpen } from './eligibility.service';
 import { jobSummaryOf } from './job-summary-response';
-import { PARTNER_JOB_STATUSES } from './partner-response';
-import type { PartnerJobDetailResponse, PartnerJobResponse, PartnerStepRules, PartnerWorkOrderResponse } from './partner-response';
+import { partnerJobsCursor, partnerJobsCursorPayload, partnerJobsOrderBy, partnerJobsPageWhere, partnerJobsWhere } from './partner-jobs-query';
+import type { PartnerJobsContext, PartnerJobsCountsQuery, PartnerJobsFilters, PartnerJobsQuery } from './partner-jobs-query';
+import type {
+  PartnerJobCountsResponse,
+  PartnerJobDetailResponse,
+  PartnerJobResponse,
+  PartnerStepRules,
+  PartnerWorkOrderResponse,
+} from './partner-response';
 import { stageOf } from './partner-stage';
 import { actorOf, handedOverAt, partnerTransitionInclude, toPartnerTransition } from './partner-view';
 
-export const partnerJobsQuerySchema = paginationQuerySchema.extend({ status: z.enum(PARTNER_JOB_STATUSES).optional() });
-export type PartnerJobsQuery = z.infer<typeof partnerJobsQuerySchema>;
-
 type Tx = Prisma.TransactionClient;
-type PartnerJobStatus = PartnerJobResponse['status'];
 type PartnerLastMove = NonNullable<PartnerJobDetailResponse['work_orders'][number]['last_move']>;
 type PieceMove = MoveFacts & { workOrderId: string; createdAt: Date };
 
 /** A job the partner has accepted: its current row. */
 const ACCEPTED: Prisma.JobAssignmentWhereInput = { status: 'accepted' };
-
-/**
- * The partner's rows of the jobs in one status, decided in the query so a page is never short. `open` is
- * the partner's accepted jobs it still has work on (`openForPartner`), read when the filter needs it. An
- * offer past its deadline is gone at once, before the expiry run marks it expired.
- */
-function statusWhere(status: PartnerJobStatus | undefined, open: Set<string>, now: Date): Prisma.JobAssignmentWhereInput {
-  switch (status) {
-    case 'offered':
-      return { status: 'offered', expiresAt: { gt: now } };
-    case 'accepted':
-      return { status: 'accepted', groupId: { in: [...open] } };
-    case 'finished':
-      return { status: 'accepted', groupId: { notIn: [...open] } };
-    default:
-      return liveOpen(now);
-  }
-}
 
 /**
  * The groups, of those given or of the partner's accepted jobs, with an active piece the partner still has
@@ -89,28 +74,52 @@ export class PartnerJobsService {
     private readonly prisma: PrismaService,
     private readonly files: FilesService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
-  /** Newest hand-over first, a page at a time; each page is read in a fixed number of queries. */
+  /** As the tab, tiles, search and sort pick them, a page at a time; each page is read in a fixed number of queries. */
   async list(auth: PartnerAuth, query: PartnerJobsQuery): Promise<Page<PartnerJobResponse>> {
+    const { limit, cursor, sort, ...filters } = query;
     const secret = this.config.get('APP_SECRET');
-    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const after = cursor ? partnerJobsCursor(sort, cursor, secret) : undefined;
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const filtersOpen = query.status === 'accepted' || query.status === 'finished';
-      const open = filtersOpen ? await openForPartner(tx, { partnerId: auth.partnerId }) : new Set<string>();
+      const where = await partnerJobsWhere(tx, auth.partnerId, filters, await this.context(tx, auth, filters));
       const rows = await tx.jobAssignment.findMany({
-        where: {
-          partnerId: auth.partnerId,
-          ...statusWhere(query.status, open, new Date()),
-          ...(after ? { id: { lt: after.id } } : {}),
-          AND: [{ group: notWaitingForPayment }],
-        },
-        orderBy: { id: 'desc' },
-        take: query.limit + 1,
+        where: after ? { AND: [where, partnerJobsPageWhere(sort, after)] } : where,
+        orderBy: partnerJobsOrderBy(sort),
+        take: limit + 1,
       });
-      const page = toPage(rows, query.limit, secret);
-      return { data: await this.views(tx, page.data), next_cursor: page.next_cursor };
+      const data = rows.slice(0, limit);
+      const last = data.at(-1);
+      const next_cursor = rows.length > limit && last ? encodeCursor(partnerJobsCursorPayload(sort, last), secret) : null;
+      return { data: await this.views(tx, data), next_cursor };
     });
+  }
+
+  /** How many jobs each tab and tile of the list holds, decided as the list decides them, for the same search. */
+  async counts(auth: PartnerAuth, query: PartnerJobsCountsQuery): Promise<PartnerJobCountsResponse> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const context = await this.context(tx, auth, { due: ['late'] });
+      const count = async (filters: PartnerJobsFilters) =>
+        tx.jobAssignment.count({ where: await partnerJobsWhere(tx, auth.partnerId, { ...filters, q: query.q }, context) });
+      return {
+        offered: await count({ status: 'offered' }),
+        accepted: await count({ status: 'accepted' }),
+        finished: await count({ status: 'finished' }),
+        late: await count({ due: ['late'] }),
+        due_soon: await count({ due: ['due_soon'] }),
+      };
+    });
+  }
+
+  /** What the filters are decided against, read only when they need it. */
+  private async context(tx: Tx, auth: PartnerAuth, filters: PartnerJobsFilters): Promise<PartnerJobsContext> {
+    const needsOpen = filters.status === 'accepted' || filters.status === 'finished' || filters.due !== undefined;
+    return {
+      open: needsOpen ? await openForPartner(tx, { partnerId: auth.partnerId }) : new Set<string>(),
+      day: filters.due ? await needsToday(tx, auth.tenantId, this.settings) : null,
+      now: new Date(),
+    };
   }
 
   async detail(auth: PartnerAuth, groupId: string): Promise<PartnerJobDetailResponse> {
@@ -302,6 +311,12 @@ export class PartnerJobsService {
       where: { groupId: { in: groups.map((group) => group.id) } },
       _count: { _all: true },
     });
+    const atSteps = await tx.workOrder.groupBy({
+      by: ['groupId', 'currentStepId'],
+      where: { groupId: { in: groups.map((group) => group.id) }, status: 'active' },
+      _count: { _all: true },
+    });
+    const atStep = new Map(atSteps.map((one) => [`${one.groupId}:${one.currentStepId}`, one._count._all]));
     const options = await chosenOptions(tx, groups);
     // Finished once the partner's part is done, though pieces may still be at the workspace's steps.
     const open = await openForPartner(tx, { groupIds: groups.map((group) => group.id) });
@@ -321,7 +336,12 @@ export class PartnerJobsService {
         options: options.get(group.id) ?? [],
         quantity: group.quantity,
         design_file_version_id: group.fileVersionId,
-        steps: partnerSteps.map((step) => ({ key: step.key, name: step.name, sop_file_version_id: step.sopFileVersionId })),
+        steps: partnerSteps.map((step) => ({
+          key: step.key,
+          name: step.name,
+          sop_file_version_id: step.sopFileVersionId,
+          count: atStep.get(`${group.id}:${step.id}`) ?? 0,
+        })),
         cost: row.cost.toFixed(2),
         pieces: { active, finished: count('finished'), scrapped: count('scrapped') },
       };
