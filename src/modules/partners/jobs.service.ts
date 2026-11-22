@@ -59,7 +59,7 @@ export const setOwedSchema = z.object({
  * from it mid-way, and those whose order line was cancelled.
  */
 const HOLDING = { accepted: 'with_you', replaced: 'taken_back', cancelled: 'cancelled' } as const;
-const OWED_STATUSES = Object.keys(HOLDING);
+export const OWED_STATUSES = Object.keys(HOLDING);
 
 /** How long an offer stays open when the workspace hasn't set `partners.routing`. */
 const DEFAULT_OFFER_HOURS = 24;
@@ -618,6 +618,18 @@ export class JobsService implements OnModuleInit {
   }
 }
 
+/**
+ * The position of the version's payout step. A version without partner steps has no payout step: only
+ * finished pieces count as past it.
+ */
+export function payoutPositionOf(version: {
+  payoutStepId: string | null;
+  steps: { id: string; position: number; doneBy: string }[];
+}): number {
+  const payoutId = payoutStepId(version.steps, version.payoutStepId);
+  return version.steps.find((step) => step.id === payoutId)?.position ?? Number.POSITIVE_INFINITY;
+}
+
 /** Jobs with each piece and whether it has passed its workflow version's payout step. */
 async function jobsWithPieces(tx: Tx, groupIds: string[]) {
   const groups = await tx.workOrderGroup.findMany({
@@ -632,10 +644,7 @@ async function jobsWithPieces(tx: Tx, groupIds: string[]) {
   });
   return new Map(
     groups.map((group) => {
-      const { steps, payoutStepId: explicit } = group.workflowVersion;
-      const payoutId = payoutStepId(steps, explicit);
-      // A version without partner steps has no payout step: only finished pieces count as past it.
-      const payoutPosition = steps.find((step) => step.id === payoutId)?.position ?? Number.POSITIVE_INFINITY;
+      const payoutPosition = payoutPositionOf(group.workflowVersion);
       const pieces = group.workOrders.map((piece) => ({
         status: piece.status,
         passedPayout: passedPayout({ status: piece.status, stepPosition: piece.currentStep?.position ?? null }, payoutPosition),
