@@ -28,11 +28,14 @@ export class DashboardController {
   ) {}
 
   @ApiDoc({
-    summary: 'This week against last week, what needs attention now, and the managers’ AI briefing.',
+    summary: 'This week against last week, what needs attention now, the pieces in production now, and the managers’ AI briefing.',
     description:
       "Weeks run from Monday in the workspace's time zone and are computed every 15 minutes. Money figures need " +
       '`payment.read` and partner figures `partner.read`; without them they are left out, never zeroed. `attention` is ' +
-      'live: each kind follows the permission of the list it comes from, with its total and at most 20 items. `ai` is ' +
+      'live: each kind follows the permission of the list it comes from, with its total and at most 20 items. ' +
+      '`production.wip` is live and only there for staff holding `workflow.read`: per step type the active pieces ' +
+      'now, in house or at a partner, and how many are late (past the accepted job\'s due date, else the order\'s ' +
+      'promised date). `ai` is ' +
       'only there for staff holding `report.read`, `payment.read` and `partner.read`: the latest briefing, with ' +
       'dismissed suggestions and ones naming a record that is gone left out, and the dismissals of the last 14 days; ' +
       'or why AI is off.',
@@ -44,8 +47,9 @@ export class DashboardController {
   async dashboard(@CurrentUser() auth: TenantAuth): Promise<DashboardResponse> {
     const numbers = await this.reports.dashboardNumbers(auth);
     const attention = await this.attention.list(auth, new Date());
+    const production = auth.permissions.has('workflow.read') ? { wip: await this.reports.productionWip(auth, new Date()) } : undefined;
     const ai = await this.briefings.section(auth);
-    return { ...numbers, attention, ...(ai ? { ai } : {}) };
+    return { ...numbers, attention, ...(production ? { production } : {}), ...(ai ? { ai } : {}) };
   }
 
   @ApiDoc({

@@ -13,6 +13,8 @@ import { bucketsFor, foldDays, pickBucket, previousRange, shiftBack } from './ra
 import type { RangeQuery } from './range-buckets';
 import { forRangeReader, rangeMetricsSchema, revenueByGroup, revenueByProduct } from './range-metrics';
 import type { RangeMetrics } from './range-metrics';
+import { productionNow } from './production-now';
+import type { WipRow } from './production-now';
 import type { RangeResponse } from './range-response';
 import { PIECES_WITH_FINISH, addTotals, dailyTotals, emptyTotals, pointOf, readyOn } from './series';
 import { addDays, emptyWeek, forReader, medianHours, onTimeRate, orderingLess, weekMetricsSchema, weekOf } from './week-metrics';
@@ -253,6 +255,14 @@ export class ReportsService {
         return defect ? [{ defect_id: defect.id, key: defect.key, name: defect.name, count: row._count._all }] : [];
       })
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
+
+  /** The pieces in production now per step type, as of today in the workspace's time zone. */
+  async productionWip(auth: TenantAuth, now: Date): Promise<WipRow[]> {
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { timezone: true } });
+      return productionNow(tx, localDate(now, tenant.timezone));
+    });
   }
 
   /** This week and last as the reader may see them; empty weeks before the first refresh. */
