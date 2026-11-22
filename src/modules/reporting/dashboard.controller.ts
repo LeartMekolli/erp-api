@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, HttpCode, Param, Post } from '@nestjs/common';
+import { Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -10,6 +10,10 @@ import { RequirePermission } from '../identity/route-markers';
 import { AttentionService } from './attention.service';
 import { dashboardResponseSchema } from './dashboard-response';
 import type { DashboardResponse } from './dashboard-response';
+import { rangeQuerySchema } from './range-buckets';
+import type { RangeQuery } from './range-buckets';
+import { rangeResponseSchema } from './range-response';
+import type { RangeResponse } from './range-response';
 import { ReportsService } from './reports.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
@@ -42,6 +46,19 @@ export class DashboardController {
     const attention = await this.attention.list(auth, new Date());
     const ai = await this.briefings.section(auth);
     return { ...numbers, attention, ...(ai ? { ai } : {}) };
+  }
+
+  @ApiDoc({
+    summary: "The dashboard's numbers for any dates, the period before, and a point per day, week or month.",
+    description: 'Worked out from the records on every request: a late refund, claim or correction changes past periods.',
+    query: rangeQuerySchema,
+    response: rangeResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('report.read')
+  @Get('range')
+  range(@CurrentUser() auth: TenantAuth, @Query(new ZodValidationPipe(rangeQuerySchema)) query: RangeQuery): Promise<RangeResponse> {
+    return this.reports.range(auth, query);
   }
 
   @ApiDoc({

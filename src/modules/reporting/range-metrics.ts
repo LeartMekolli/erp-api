@@ -19,6 +19,14 @@ export const rangeMetricsSchema = weekMetricsSchema.extend({
       z.strictObject({ customer_group: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }).nullable(), revenue: money }),
     ),
   }),
+  production: weekMetricsSchema.shape.production.extend({
+    /** Inspected fails recording a defect in the range, per defect, most first, then by name (dashboard data spec). */
+    defects_by_kind: z.array(z.strictObject({ defect_id: z.uuid(), key: z.string(), name: z.string(), count: z.number().int().min(1) })),
+  }),
+  partners: weekMetricsSchema.shape.partners.extend({
+    /** What partner jobs became owed in the range, in the workspace's currency (dashboard data spec). */
+    cost: z.strictObject({ amount: money, currency: z.string().length(3) }),
+  }),
 });
 export type RangeMetrics = z.infer<typeof rangeMetricsSchema>;
 
@@ -64,8 +72,17 @@ export function revenueByProduct(
     .map(([productId, entry]) => ({ product_id: productId, name: entry.name, quantity: entry.quantity, revenue: entry.revenue.toFixed(2) }));
 }
 
-/** Range metrics as a reader may see them: as `forReader`, with revenue per product only for money readers. */
+/**
+ * Range metrics as a reader may see them: as `forReader`, with revenue per product only for money
+ * readers, and partner cost only for readers of both money and partners.
+ */
 export function forRangeReader(metrics: RangeMetrics, may: { money: boolean; partners: boolean }) {
-  const { orders, ...rest } = forReader(metrics, may);
-  return { ...rest, orders: may.money ? metrics.orders : { placed: orders.placed } };
+  const { orders: _orders, partners: _partners, ...rest } = forReader(metrics, may);
+  const { cost, ...partners } = metrics.partners;
+  return {
+    ...rest,
+    production: metrics.production,
+    orders: may.money ? metrics.orders : { placed: metrics.orders.placed },
+    ...(may.partners ? { partners: may.money ? { ...partners, cost } : partners } : {}),
+  };
 }

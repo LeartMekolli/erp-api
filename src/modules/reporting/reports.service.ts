@@ -4,10 +4,17 @@ import { Prisma } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
 import { localDate, startOfLocalDay } from '../orders/dates';
 import { EligibilityService } from '../partners/eligibility.service';
-import { groupReady } from '../workflow/progress';
+import { owedBetween } from '../partners/owed-dates';
+import { SettingsService } from '../settings/settings.service';
+import type { SettingValue } from '../settings/setting-keys';
 import type { DashboardResponse } from './dashboard-response';
-import { rangeMetricsSchema, revenueByGroup, revenueByProduct } from './range-metrics';
+import { spanDays } from './exports/export-kinds';
+import { bucketsFor, foldDays, pickBucket, previousRange, shiftBack } from './range-buckets';
+import type { RangeQuery } from './range-buckets';
+import { forRangeReader, rangeMetricsSchema, revenueByGroup, revenueByProduct } from './range-metrics';
 import type { RangeMetrics } from './range-metrics';
+import type { RangeResponse } from './range-response';
+import { PIECES_WITH_FINISH, addTotals, dailyTotals, emptyTotals, pointOf, readyOn } from './series';
 import { addDays, emptyWeek, forReader, medianHours, onTimeRate, orderingLess, weekMetricsSchema, weekOf } from './week-metrics';
 import type { WeekMetrics } from './week-metrics';
 
@@ -25,14 +32,6 @@ interface Span {
   asOf: string;
   timeZone: string;
 }
-
-/** A group's pieces, each with when it finished, if it has. */
-const PIECES_WITH_FINISH = {
-  select: {
-    status: true,
-    transitions: { where: { toStatus: 'finished' }, select: { createdAt: true }, orderBy: { createdAt: 'desc' }, take: 1 },
-  },
-} as const;
 
 const HOUR_MS = 3_600_000;
 const zero = () => new Prisma.Decimal(0);
@@ -61,14 +60,6 @@ export async function partnerLoads(tx: Tx, eligibility: EligibilityService): Pro
       ),
     }))
     .sort((a, b) => b.percent - a.percent);
-}
-
-/** The day the last piece of a group finished, once every live piece has; null before. */
-function readyOn(pieces: { status: string; transitions: { createdAt: Date }[] }[], timeZone: string): string | null {
-  if (!groupReady(pieces)) return null;
-  const finished = pieces.flatMap((piece) => piece.transitions.map((move) => move.createdAt.getTime()));
-  if (finished.length === 0) return null;
-  return localDate(new Date(Math.max(...finished)), timeZone);
 }
 
 /**
@@ -112,6 +103,7 @@ export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eligibility: EligibilityService,
+    private readonly settings: SettingsService,
   ) {}
 
   /** Every active workspace; one failing doesn't cost the others their numbers. */
@@ -190,8 +182,77 @@ export class ReportsService {
         groups,
         tenant.defaultCurrency,
       );
-      return rangeMetricsSchema.parse({ ...week, orders: { ...week.orders, by_product: byProduct, by_customer_group: byGroup } });
+      const owed = await owedBetween(tx, span.from, span.to);
+      const cost = owed.reduce((sum, entry) => sum.add(entry.amount), zero());
+      return rangeMetricsSchema.parse({
+        ...week,
+        orders: { ...week.orders, by_product: byProduct, by_customer_group: byGroup },
+        production: { ...week.production, defects_by_kind: await this.defectsByKind(tx, span) },
+        partners: { ...week.partners, cost: { amount: cost.toFixed(2), currency: tenant.defaultCurrency } },
+      });
     });
+  }
+
+  /**
+   * The dashboard's numbers for `query` and the period before it, with a point per bucket (dashboard data
+   * spec, "Range response"), shaped for the reader. Each daily measure is loaded once over both periods;
+   * a point's `previous` is its own days one range earlier.
+   */
+  async range(auth: TenantAuth, query: RangeQuery, at: Date = new Date()): Promise<RangeResponse> {
+    const dates = { from: query.from, to: query.to };
+    const before = previousRange(dates);
+    const bucket = pickBucket(dates, query.bucket);
+    const current = await this.metricsFor(auth.tenantId, dates, at);
+    const previous = await this.metricsFor(auth.tenantId, before, at);
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { timezone: true, defaultCurrency: true } });
+      const days = await dailyTotals(tx, {
+        from: before.from,
+        to: dates.to,
+        timeZone: tenant.timezone,
+        currency: tenant.defaultCurrency,
+        today: localDate(at, tenant.timezone),
+      });
+      const spans = bucketsFor(dates, bucket);
+      const length = spanDays(dates);
+      const totals = foldDays(spans, days, emptyTotals, addTotals);
+      const earlier = foldDays(spans.map((span) => shiftBack(span, length)), days, emptyTotals, addTotals);
+      const may = { money: auth.permissions.has('payment.read'), partners: auth.permissions.has('partner.read') };
+      const targets = (await this.settings.list(tx))['reports.targets'] as SettingValue<'reports.targets'> | undefined;
+      return {
+        range: { from: dates.from, to: dates.to, previous_from: before.from, previous_to: before.to, bucket },
+        current: forRangeReader(current, may),
+        previous: forRangeReader(previous, may),
+        series: spans.map((span, index) => ({
+          start: span.start,
+          days: span.days,
+          ...pointOf(totals[index], may),
+          previous: pointOf(earlier[index], may),
+        })),
+        on_time_target: targets?.onTimeRate ?? null,
+        computed_at: at.toISOString(),
+      };
+    });
+  }
+
+  /** Inspected fails recording a defect in the span, per defect: most first, then by name. */
+  private async defectsByKind(tx: Tx, span: Span): Promise<RangeMetrics['production']['defects_by_kind']> {
+    const counted = await tx.transition.groupBy({
+      by: ['defectId'],
+      where: { kind: 'fail', inspected: true, defectId: { not: null }, createdAt: { gte: span.from, lt: span.to } },
+      _count: { _all: true },
+    });
+    const ids = counted.flatMap((row) => (row.defectId === null ? [] : [row.defectId]));
+    if (ids.length === 0) return [];
+    const defects = new Map(
+      (await tx.defect.findMany({ where: { id: { in: ids } }, select: { id: true, key: true, name: true } })).map((defect) => [defect.id, defect]),
+    );
+    return counted
+      .flatMap((row) => {
+        const defect = row.defectId === null ? undefined : defects.get(row.defectId);
+        return defect ? [{ defect_id: defect.id, key: defect.key, name: defect.name, count: row._count._all }] : [];
+      })
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
   /** This week and last as the reader may see them; empty weeks before the first refresh. */

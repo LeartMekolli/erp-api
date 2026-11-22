@@ -68,9 +68,14 @@ export function weekOf(at: Date, timeZone: string): { start: string; previousSta
  * date is before `today` or it is ready. Null when none is due.
  */
 export function onTimeRate(lines: { promisedOn: string; readyOn: string | null }[], today: string): number | null {
+  const { due, onTime } = onTimeCounts(lines, today);
+  return due === 0 ? null : onTime / due;
+}
+
+/** `onTimeRate`'s numerator and denominator, so days can be added up before dividing. */
+export function onTimeCounts(lines: { promisedOn: string; readyOn: string | null }[], today: string): { due: number; onTime: number } {
   const due = lines.filter((line) => line.readyOn !== null || line.promisedOn < today);
-  if (due.length === 0) return null;
-  return due.filter((line) => line.readyOn !== null && line.readyOn <= line.promisedOn).length / due.length;
+  return { due: due.length, onTime: due.filter((line) => line.readyOn !== null && line.readyOn <= line.promisedOn).length };
 }
 
 export function medianHours(durations: number[]): number | null {
