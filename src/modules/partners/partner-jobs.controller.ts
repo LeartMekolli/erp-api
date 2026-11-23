@@ -8,6 +8,8 @@ import { downloadUrlResponseSchema } from '../files/file-response';
 import { CurrentPartner } from '../identity/auth-context';
 import type { PartnerAuth } from '../identity/auth-context';
 import { PartnerAccess } from '../identity/route-markers';
+import { rangeQuerySchema } from '../reporting/range-buckets';
+import type { RangeQuery } from '../reporting/range-buckets';
 import { MovesService, moveSchema } from '../workflow/moves.service';
 import type { MoveBody } from '../workflow/moves.service';
 import { moveResponseSchema } from '../workflow/work-order-response';
@@ -16,6 +18,9 @@ import { JobsService } from './jobs.service';
 import { partnerJobsCountsQuerySchema, partnerJobsQuerySchema } from './partner-jobs-query';
 import type { PartnerJobsCountsQuery, PartnerJobsQuery } from './partner-jobs-query';
 import { PartnerJobsService } from './partner-jobs.service';
+import { partnerSummaryResponseSchema } from './partner-summary-response';
+import type { PartnerSummaryResponse } from './partner-summary-response';
+import { PartnerSummaryService } from './partner-summary.service';
 import {
   partnerJobCountsResponseSchema,
   partnerJobDetailResponseSchema,
@@ -40,7 +45,25 @@ export class PartnerJobsController {
     private readonly jobs: PartnerJobsService,
     private readonly moves: MovesService,
     private readonly assignments: JobsService,
+    private readonly summaries: PartnerSummaryService,
   ) {}
+
+  @ApiDoc({
+    summary: "The partner's jobs finished and pieces at its steps for any dates; earnings per bucket for admins and owners.",
+    description:
+      'Dates are in the workspace time zone, both ends included. `earned`, `previous_earned`, `currency` and `series` are left out for a member.',
+    query: rangeQuerySchema,
+    response: partnerSummaryResponseSchema,
+    errors: [400, 404],
+  })
+  @PartnerAccess('member')
+  @Get('summary')
+  summary(
+    @CurrentPartner() partner: PartnerAuth,
+    @Query(new ZodValidationPipe(rangeQuerySchema)) query: RangeQuery,
+  ): Promise<PartnerSummaryResponse> {
+    return this.summaries.summary(partner, query);
+  }
 
   @ApiDoc({
     summary: 'What the partner is owed, per job it has or had, newest first, a page at a time.',

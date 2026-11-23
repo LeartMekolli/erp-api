@@ -10,6 +10,7 @@ import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { ReportsService } from '../src/modules/reporting/reports.service';
+import { MIDNIGHT_GUARD_TIMEOUT_MS, clearOfUtcMidnight } from './clock';
 import { expectDocumented } from './documented';
 import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -32,6 +33,11 @@ const WEEK_MS = 7 * 86_400_000;
 
 /** This week against last week, computed every 15 minutes (AI 1 plan, Task 3). */
 describe('reporting: the dashboard numbers', () => {
+  // The tests read the clock; keep a day boundary out of the run.
+  beforeAll(async () => {
+    await clearOfUtcMidnight();
+  }, MIDNIGHT_GUARD_TIMEOUT_MS);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let tokens: AccessTokenService;
@@ -162,6 +168,7 @@ describe('reporting: the dashboard numbers', () => {
 
     return {
       id: tenant.id,
+      ownerId: owner.id,
       staff,
       reader: as((await tokens.issueForUser(tenant.id, reader.id)).accessToken),
       member: as((await tokens.issueForUser(tenant.id, member.id)).accessToken),
@@ -217,6 +224,72 @@ describe('reporting: the dashboard numbers', () => {
       expect(one).not.toHaveProperty('partners');
     }
     expect(current.orders.placed).toBe(2);
+  });
+
+  it('counts the active pieces at each step type now, in house or at a partner, and the late ones', async () => {
+    const w = await workspace();
+    const day = 86_400_000;
+    const daysFromToday = (days: number) => new Date(new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`).getTime() + days * day);
+    const piecesOf = (groupId: string) =>
+      prisma.inTenant(w.id, (tx) => tx.workOrder.findMany({ where: { groupId }, orderBy: { number: 'asc' } }));
+
+    // The cancelled order's pieces are not part of this test.
+    const own = [w.lunaNow.groupId, w.solNow.groupId, w.lunaLastWeek.groupId];
+    await prisma.inTenant(w.id, (tx) => tx.workOrder.updateMany({ where: { groupId: { notIn: own } }, data: { status: 'cancelled', currentStepId: null } }));
+
+    // Sol's order is past its promised date, with no job: two of its pieces move on to casting tree.
+    await prisma.inTenant(w.id, (tx) => tx.order.update({ where: { id: w.solNow.id }, data: { promisedOn: daysFromToday(-2) } }));
+    const sol = await piecesOf(w.solNow.groupId);
+    await w.staff.post('/workflow/moves', { work_order_ids: sol.slice(0, 2).map((piece) => piece.id), at_step: 'print_pattern', kind: 'pass' }).expect(200);
+
+    // Luna's job is accepted and past its due date; last week's order, promised ahead, has only an offer past its date.
+    await prisma.inTenant(w.id, async (tx) => {
+      const partner = await tx.partner.create({ data: { name: 'CastCo Ltd', displayName: 'CastCo' } });
+      // An offer needs an expiry (job_assignment_offer_expires); a direct job has none.
+      const job = { partnerId: partner.id, cost: new Prisma.Decimal('10.00'), dueOn: daysFromToday(-2), createdByUserId: w.ownerId };
+      await tx.jobAssignment.create({ data: { ...job, groupId: w.lunaNow.groupId, kind: 'direct', status: 'accepted' } });
+      await tx.jobAssignment.create({
+        data: { ...job, groupId: w.lunaLastWeek.groupId, kind: 'offer', status: 'offered', expiresAt: new Date(Date.now() + day) },
+      });
+      // Casting tree is done in house; one of last week's pieces is finished and one scrapped.
+      await tx.workflowStep.updateMany({ where: { key: 'casting_tree' }, data: { doneBy: 'workspace' } });
+      const [finished, scrapped] = await tx.workOrder.findMany({ where: { groupId: w.lunaLastWeek.groupId }, orderBy: { number: 'asc' }, take: 2 });
+      await tx.workOrder.update({ where: { id: finished.id }, data: { status: 'finished', currentStepId: null } });
+      await tx.workOrder.update({ where: { id: scrapped.id }, data: { status: 'scrapped', currentStepId: null } });
+    });
+
+    const body = (await w.staff.get('/reports/dashboard').expect(200)).body as { production: { wip: Record<string, unknown>[] } };
+    expectDocumented(dashboardResponseSchema, body);
+
+    // Print pattern: Luna's 9 (late by the job), Sol's 10 (late by the order), last week's 13 (offer only, not late).
+    // Casting tree, in house: Luna's 1 is judged by its order (promised ahead), so only Sol's 2 are late.
+    expect(body.production.wip).toEqual([
+      { step_type_id: expect.any(String), name: 'print_pattern', in_house: 0, at_partner: 32, late: 19 },
+      { step_type_id: expect.any(String), name: 'casting_tree', in_house: 3, at_partner: 0, late: 2 },
+    ]);
+
+    const response = await w.reader.get('/reports/dashboard').expect(200);
+    expectDocumented(dashboardResponseSchema, response.body);
+    expect(response.body).not.toHaveProperty('production');
+  });
+
+  it('leaves out the pieces of an order still waiting for payment, whatever its promised date', async () => {
+    const w = await workspace();
+    const own = [w.lunaNow.groupId, w.solNow.groupId, w.lunaLastWeek.groupId];
+    await prisma.inTenant(w.id, async (tx) => {
+      await tx.workOrder.updateMany({ where: { groupId: { notIn: own } }, data: { status: 'cancelled', currentStepId: null } });
+      const past = new Date(new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`).getTime() - 2 * 86_400_000);
+      await tx.order.update({ where: { id: w.lunaLastWeek.id }, data: { productionStartedAt: null, promisedOn: past } });
+    });
+
+    const body = (await w.staff.get('/reports/dashboard').expect(200)).body as { production: { wip: unknown[] } };
+    expectDocumented(dashboardResponseSchema, body);
+
+    // Luna's 9 and Sol's 12 at print pattern, Luna's 1 at casting tree; nothing of the waiting order, nothing late.
+    expect(body.production.wip).toEqual([
+      { step_type_id: expect.any(String), name: 'print_pattern', in_house: 0, at_partner: 21, late: 0 },
+      { step_type_id: expect.any(String), name: 'casting_tree', in_house: 0, at_partner: 1, late: 0 },
+    ]);
   });
 
   it('refuses staff without report.read', async () => {

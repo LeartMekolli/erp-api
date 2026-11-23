@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { SUGGESTION_KINDS } from '../ai/suggestions';
 import { RECORD_TYPES } from '../ai/tools/tool';
 import { ATTENTION_KINDS, MAX_ITEMS } from './attention.service';
+import { wipRowSchema } from './production-now';
 import { weekMetricsSchema } from './week-metrics';
 
 /** What needs attention now: every kind the reader may see, each with its total and its first items. */
@@ -80,6 +81,8 @@ export const dashboardResponseSchema = z.strictObject({
   current: readerWeekSchema,
   previous: readerWeekSchema,
   attention: attentionSchema,
+  // Left out for staff without `workflow.read`.
+  production: z.strictObject({ wip: z.array(wipRowSchema) }).optional(),
   ai: aiSectionSchema.optional(),
 });
 export type DashboardResponse = z.infer<typeof dashboardResponseSchema>;

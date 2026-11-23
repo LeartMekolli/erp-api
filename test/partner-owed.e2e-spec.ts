@@ -7,6 +7,7 @@ import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { owedBetween } from '../src/modules/partners/owed-dates';
 import { owedJobResponseSchema, partnerOwedResponseSchema, portalOwedResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -163,6 +164,8 @@ describe('partners: what they are owed', () => {
       id: tenant.id,
       staff,
       cast,
+      luna,
+      lunaDesign,
       castco,
       metalworks,
       first,
@@ -380,5 +383,65 @@ describe('partners: what they are owed', () => {
     const cancelled = await owed(tenant, tenant.castco);
     expect(forJob(cancelled, tenant.first.group)).toMatchObject({ holding: 'cancelled', state: 'owed', amount: '0.00', due: '0.00' });
     expect(cancelled).toMatchObject({ due_total: '40.00', not_yet_total: '0.00', not_yet_count: 0 });
+  });
+
+  it('dates what a cancelled hand-over is owed by when its order line was cancelled, and counts it in the partner earnings', async () => {
+    const tenant = await freshTenant();
+    // Pay later, so the order starts at once and its line has a job to hand over.
+    await tenant.staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
+    await tenant.staff.put(`/customers/${tenant.luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
+    const quote = (
+      (
+        await tenant.staff
+          .post('/pricing/quotes', {
+            product_id: tenant.cast.productId,
+            options: { material: 'silver_925', finish: 'polished' },
+            size: { scale: '1.5' },
+            quantity: 10,
+            file_version_id: tenant.lunaDesign,
+            customer_id: tenant.luna,
+          })
+          .expect(201)
+      ).body as { quote: { id: string } }
+    ).quote;
+    const placed = await tenant.staff
+      .post('/orders', {
+        customer_id: tenant.luna,
+        lines: [{ quote_id: quote.id }],
+        address: { name: 'Luna Jewels', line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' },
+        shipping_method: 'courier',
+      })
+      .expect(201);
+    const { id: orderId, lines } = placed.body as { id: string; lines: { group_id: string }[] };
+    const group = lines[0].group_id;
+    await tenant.staff.post(`/partners/jobs/${group}/offer`, { partner_id: tenant.castco }).expect(201);
+    await tenant.castcoAdmin.post(`/partner-portal/partners/${tenant.castco}/jobs/${group}/accept`).expect(200);
+
+    // Nothing passed, so nothing is owed yet; the order's line is then cancelled with an amount set for CastCo.
+    const owedIn = (from: Date, to: Date) => prisma.inTenant(tenant.id, (tx) => owedBetween(tx, from, to, tenant.castco));
+    expect((await owedIn(new Date(0), new Date(Date.now() + 86_400_000))).filter((entry) => entry.groupId === group)).toEqual([]);
+    await tenant.staff
+      .post(`/orders/${orderId}/cancel`, { reason: 'Customer asked', partner_owed: [{ position: 0, amount: '25.00', reason: 'Patterns already printed' }] })
+      .expect(200);
+
+    // Dated by the line's cancelledAt, and nothing else.
+    const line = await prisma.inTenant(tenant.id, (tx) => tx.orderLine.findFirstOrThrow({ where: { groupId: group }, select: { cancelledAt: true } }));
+    const cancelledAt = line.cancelledAt!;
+    const entries = (await owedIn(new Date(cancelledAt.getTime() - 1000), new Date(cancelledAt.getTime() + 1))).filter((entry) => entry.groupId === group);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].at).toEqual(cancelledAt);
+    expect(entries[0].amount.toFixed(2)).toBe('25.00');
+    // The window is half-open: ending at the cancelling, or starting just after it, it is not there.
+    expect((await owedIn(new Date(0), cancelledAt)).filter((entry) => entry.groupId === group)).toEqual([]);
+    expect((await owedIn(new Date(cancelledAt.getTime() + 1), new Date(cancelledAt.getTime() + 86_400_000))).filter((entry) => entry.groupId === group)).toEqual([]);
+
+    // CastCo's summary counts it as earned, owed (nothing paid), on the cancelling's day.
+    const day = cancelledAt.toISOString().slice(0, 10);
+    const summary = (await tenant.castcoAdmin.get(`/partner-portal/partners/${tenant.castco}/summary?from=${day}&to=${day}`).expect(200)).body as {
+      earned: string;
+      series: { start: string; paid: string; owed: string }[];
+    };
+    expect(summary.earned).toBe('25.00');
+    expect(summary.series).toEqual([expect.objectContaining({ start: day, paid: '0.00', owed: '25.00' })]);
   });
 });

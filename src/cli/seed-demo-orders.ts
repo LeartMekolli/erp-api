@@ -70,7 +70,7 @@ const CUSTOMERS: { name: string; shipping: Address; terms: { daysToPay: number }
  * Where a customer's orders go when it has no saved shipping address: Brightline never has one
  * (`seed-payments.ts`), and a demo seeded before addresses existed keeps its customers without one.
  */
-const FALLBACK_ADDRESSES = new Map<string, Address>([
+export const FALLBACK_ADDRESSES = new Map<string, Address>([
   ['Luna Jewels', { name: 'Luna Jewels', line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' }],
   ['Mira Studio', { name: 'Mira Studio', line1: 'Via Roma 2', city: 'Milano', postal_code: '20121', country: 'IT' }],
   ['Brightline', { name: 'Brightline', line1: 'Kungsgatan 9', city: 'Stockholm', postal_code: '111 43', country: 'SE' }],

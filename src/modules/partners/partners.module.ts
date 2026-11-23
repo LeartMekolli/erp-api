@@ -21,6 +21,7 @@ import { PartnerJobsService } from './partner-jobs.service';
 import { PartnerFilesController } from './partner-files.controller';
 import { PartnerInvitationsService } from './partner-invitations.service';
 import { PartnerMembersService } from './partner-members.service';
+import { PartnerSummaryService } from './partner-summary.service';
 import { PartnerPortalController } from './partner-portal.controller';
 import { PartnerPricesController, PortalPricesController } from './partner-prices.controller';
 import { PartnerPricesService } from './partner-prices.service';
@@ -78,6 +79,7 @@ import { StaffPartnerQuotesController } from './staff-partner-quotes.controller'
     JobsService,
     OfferExpiryHandler,
     PartnerJobsService,
+    PartnerSummaryService,
     JobMovesService,
     PartnerQuotesService,
     ScoreService,

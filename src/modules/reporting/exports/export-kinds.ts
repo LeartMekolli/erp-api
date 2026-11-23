@@ -46,9 +46,9 @@ export const customersParamsSchema = z
 
 /** The most days a range may span, both ends counted (Reporting 2 spec). */
 export const MAX_RANGE_DAYS = 366;
-const spanDays = (range: { from: string; to: string }) =>
+export const spanDays = (range: { from: string; to: string }) =>
   (new Date(`${range.to}T00:00:00Z`).getTime() - new Date(`${range.from}T00:00:00Z`).getTime()) / 86_400_000 + 1;
-const withinMaxRange = (range: { from: string; to: string }) => range.to < range.from || spanDays(range) <= MAX_RANGE_DAYS;
+export const withinMaxRange = (range: { from: string; to: string }) => range.to < range.from || spanDays(range) <= MAX_RANGE_DAYS;
 
 export const ordersParamsSchema = z
   .strictObject({

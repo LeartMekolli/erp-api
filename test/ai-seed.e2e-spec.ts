@@ -56,8 +56,8 @@ describe('ai demo seed', () => {
   it('turns on the AI tools on the paid plans and gives the first customer a brand profile, once', async () => {
     const w = await workspace();
 
-    expect(await seedAi(deps(), w.id, w.ownerId)).toEqual({ limit: 1, articles: 3, plans: 2, profiles: 1 });
-    expect(await seedAi(deps(), w.id, w.ownerId)).toEqual({ limit: 0, articles: 0, plans: 0, profiles: 0 });
+    expect(await seedAi(deps(), w.id, w.ownerId)).toEqual({ limit: 1, articles: 3, plans: 2, profiles: 1, runs: 0 });
+    expect(await seedAi(deps(), w.id, w.ownerId)).toEqual({ limit: 0, articles: 0, plans: 0, profiles: 0, runs: 0 });
 
     const { plans, profiles } = await prisma.inTenant(w.id, async (tx) => ({
       plans: await tx.plan.findMany({ select: { key: true, features: true } }),
@@ -116,6 +116,37 @@ describe('ai demo seed', () => {
     // Every change audited as the actor.
     const audited = await prisma.inTenant(w.id, (tx) => tx.auditEntry.count({ where: { action: 'knowledge.changed', actorId: w.ownerId } }));
     expect(audited).toBe(6);
+  });
+
+  it('adds past runs on most days of this month and last, once', async () => {
+    const w = await workspace();
+    const now = new Date();
+
+    const first = await seedAi(deps(), w.id, w.ownerId, { pastRuns: true, now });
+    expect(first.runs).toBeGreaterThan(0);
+    expect((await seedAi(deps(), w.id, w.ownerId, { pastRuns: true, now })).runs).toBe(0);
+
+    const rows = await prisma.inTenant(w.id, (tx) => tx.aiRunResult.findMany({ select: { costUsd: true, finishedAt: true, status: true, run: { select: { kind: true } } } }));
+    expect(rows).toHaveLength(first.runs);
+    for (const row of rows) {
+      expect(row.run.kind).toBe('ask');
+      expect(row.status).toBe('done');
+      expect(row.finishedAt.getTime()).toBeLessThanOrEqual(now.getTime());
+      // Whole cents.
+      expect(row.costUsd.mul(100).isInteger()).toBe(true);
+      expect(row.costUsd.gt(0)).toBe(true);
+    }
+    // From the first day of last month to today, most days have a run; none is before that or after today.
+    const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1);
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const days = new Set(rows.map((row) => row.finishedAt.toISOString().slice(0, 10)));
+    expect(Math.min(...rows.map((row) => row.finishedAt.getTime()))).toBeGreaterThanOrEqual(start);
+    expect(days.size / ((today - start) / 86_400_000 + 1)).toBeGreaterThan(0.6);
+    // A month's total is capped at 12.00 USD, so it never reaches the 80% notice of the demo's 20.00 USD limit.
+    for (const monthIndex of new Set(rows.map((row) => row.finishedAt.getUTCMonth()))) {
+      const total = rows.filter((row) => row.finishedAt.getUTCMonth() === monthIndex).reduce((sum, row) => sum.add(row.costUsd), new Prisma.Decimal(0));
+      expect(total.lte(12)).toBe(true);
+    }
   });
 
   it('keeps a limit already set, and an article staff have changed', async () => {

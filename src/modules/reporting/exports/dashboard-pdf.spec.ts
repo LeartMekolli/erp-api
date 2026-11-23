@@ -16,14 +16,25 @@ const metrics: RangeMetrics = {
     by_product: [{ product_id: RING, name: 'Signet ring', quantity: 12, revenue: '400.00' }],
     by_customer_group: [{ customer_group: null, revenue: '450.00' }],
   },
-  production: { on_time_rate: 0.875, step_hours: [{ step_type_id: STEP, name: 'Casting', median_hours: 6.5 }], defect_rate: 0.1, claims: 2, remakes: 1 },
+  production: {
+    on_time_rate: 0.875,
+    step_hours: [{ step_type_id: STEP, name: 'Casting', median_hours: 6.5 }],
+    defect_rate: 0.1,
+    claims: 2,
+    remakes: 1,
+    defects_by_kind: [],
+  },
   customers: {
     new: 1,
     top: [{ id: LUNA, name: 'Luna Jewels', revenue: '300.00' }],
     ordering_less: [],
     slow_payers: [{ id: LUNA, name: 'Luna Jewels', overdue: '100.00' }],
   },
-  partners: { load: [{ id: CASTCO, name: 'CastCo', percent: 40 }], on_time: [{ id: CASTCO, name: 'CastCo', rate: 0.5 }] },
+  partners: {
+    load: [{ id: CASTCO, name: 'CastCo', percent: 40 }],
+    on_time: [{ id: CASTCO, name: 'CastCo', rate: 0.5 }],
+    cost: { amount: '120.00', currency: 'EUR' },
+  },
 };
 
 const ALL: TenantPermission[] = ['report.read', 'payment.read', 'partner.read'];
@@ -76,9 +87,9 @@ describe('dashboard pdf', () => {
     const empty: RangeMetrics = {
       ...metrics,
       orders: { placed: 0, revenue: '0.00', average_value: null, by_product: [], by_customer_group: [] },
-      production: { on_time_rate: null, step_hours: [], defect_rate: null, claims: 0, remakes: 0 },
+      production: { on_time_rate: null, step_hours: [], defect_rate: null, claims: 0, remakes: 0, defects_by_kind: [] },
       customers: { new: 0, top: [], ordering_less: [], slow_payers: [] },
-      partners: { load: [], on_time: [] },
+      partners: { load: [], on_time: [], cost: { amount: '0.00', currency: 'EUR' } },
     };
 
     const all = texts(dashboardDocument({ ...input(ALL), metrics: empty }).content);

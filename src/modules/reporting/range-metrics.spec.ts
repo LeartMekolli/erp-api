@@ -58,20 +58,37 @@ describe('range metrics', () => {
     expect(revenueByProduct([], 'EUR')).toEqual([]);
   });
 
-  it('leaves revenue per product and per customer group out without payment.read, as the other money figures', () => {
-    const metrics: RangeMetrics = {
-      ...emptyWeek('EUR'),
-      orders: {
-        placed: 1,
-        revenue: '90.00',
-        average_value: '90.00',
-        by_product: [{ product_id: RING, name: 'Ring', quantity: 1, revenue: '90.00' }],
-        by_customer_group: [{ customer_group: null, revenue: '90.00' }],
-      },
-    };
+  const week = emptyWeek('EUR');
+  const metrics: RangeMetrics = {
+    ...week,
+    orders: {
+      placed: 1,
+      revenue: '90.00',
+      average_value: '90.00',
+      by_product: [{ product_id: RING, name: 'Ring', quantity: 1, revenue: '90.00' }],
+      by_customer_group: [{ customer_group: null, revenue: '90.00' }],
+    },
+    production: { ...week.production, defects_by_kind: [{ defect_id: PENDANT, key: 'porosity', name: 'Porosity', count: 2 }] },
+    partners: { load: [{ id: BAND, name: 'CastCo', percent: 40 }], on_time: [], cost: { amount: '120.00', currency: 'EUR' } },
+  };
 
+  it('leaves revenue per product and per customer group out without payment.read, as the other money figures', () => {
     expect(forRangeReader(metrics, { money: true, partners: true }).orders).toEqual(metrics.orders);
     expect(forRangeReader(metrics, { money: false, partners: false }).orders).toEqual({ placed: 1 });
     expect(forRangeReader(metrics, { money: false, partners: false })).not.toHaveProperty('partners');
+  });
+
+  it('keeps partner cost only for readers of both money and partners, and defects by kind for everyone', () => {
+    const partnersWithoutCost = { load: metrics.partners.load, on_time: [] };
+
+    expect(forRangeReader(metrics, { money: true, partners: true }).partners).toEqual(metrics.partners);
+    expect(forRangeReader(metrics, { money: false, partners: true }).partners).toEqual(partnersWithoutCost);
+    expect(forRangeReader(metrics, { money: true, partners: false })).not.toHaveProperty('partners');
+    expect(forRangeReader(metrics, { money: false, partners: false })).not.toHaveProperty('partners');
+    for (const money of [true, false]) {
+      for (const partners of [true, false]) {
+        expect(forRangeReader(metrics, { money, partners }).production.defects_by_kind).toEqual(metrics.production.defects_by_kind);
+      }
+    }
   });
 });

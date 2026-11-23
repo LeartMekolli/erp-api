@@ -74,6 +74,9 @@ export const SETTING_KEYS = {
     accounting: reportSchedule,
     top_customers: reportSchedule,
   }),
+  // The dashboard's targets (dashboard data spec, "On-time target"): the share of order lines to have
+  // ready by their promised date, 0–1. Unset: no target, and `GET /reports/range` answers null.
+  'reports.targets': z.object({ onTimeRate: z.number().min(0).max(1) }),
   // How a pay-first order is paid (Payments spec): within how many hours, and where the checkout
   // returns to. Unset: 24 hours, and the customer site's order page.
   'payments.collection': z.object({

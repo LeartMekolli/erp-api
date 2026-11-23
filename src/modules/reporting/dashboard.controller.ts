@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, HttpCode, Param, Post } from '@nestjs/common';
+import { Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
@@ -10,6 +10,10 @@ import { RequirePermission } from '../identity/route-markers';
 import { AttentionService } from './attention.service';
 import { dashboardResponseSchema } from './dashboard-response';
 import type { DashboardResponse } from './dashboard-response';
+import { rangeQuerySchema } from './range-buckets';
+import type { RangeQuery } from './range-buckets';
+import { rangeResponseSchema } from './range-response';
+import type { RangeResponse } from './range-response';
 import { ReportsService } from './reports.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
@@ -24,11 +28,14 @@ export class DashboardController {
   ) {}
 
   @ApiDoc({
-    summary: 'This week against last week, what needs attention now, and the managers’ AI briefing.',
+    summary: 'This week against last week, what needs attention now, the pieces in production now, and the managers’ AI briefing.',
     description:
       "Weeks run from Monday in the workspace's time zone and are computed every 15 minutes. Money figures need " +
       '`payment.read` and partner figures `partner.read`; without them they are left out, never zeroed. `attention` is ' +
-      'live: each kind follows the permission of the list it comes from, with its total and at most 20 items. `ai` is ' +
+      'live: each kind follows the permission of the list it comes from, with its total and at most 20 items. ' +
+      '`production.wip` is live and only there for staff holding `workflow.read`: per step type the active pieces ' +
+      'now, in house or at a partner, and how many are late (past the accepted job\'s due date, else the order\'s ' +
+      'promised date). `ai` is ' +
       'only there for staff holding `report.read`, `payment.read` and `partner.read`: the latest briefing, with ' +
       'dismissed suggestions and ones naming a record that is gone left out, and the dismissals of the last 14 days; ' +
       'or why AI is off.',
@@ -40,8 +47,29 @@ export class DashboardController {
   async dashboard(@CurrentUser() auth: TenantAuth): Promise<DashboardResponse> {
     const numbers = await this.reports.dashboardNumbers(auth);
     const attention = await this.attention.list(auth, new Date());
+    const production = auth.permissions.has('workflow.read') ? { wip: await this.reports.productionWip(auth, new Date()) } : undefined;
     const ai = await this.briefings.section(auth);
-    return { ...numbers, attention, ...(ai ? { ai } : {}) };
+    return { ...numbers, attention, ...(production ? { production } : {}), ...(ai ? { ai } : {}) };
+  }
+
+  @ApiDoc({
+    summary: "The dashboard's numbers for any dates, the period before, and a point per day, week or month.",
+    description:
+      'Worked out from the records on every request: a late refund, claim or correction changes past periods. ' +
+      "Dates are calendar dates in the workspace's time zone, both ends included, for up to a year; the period " +
+      'before has the same number of days and ends the day before `from`. `series` has a point per bucket, and the ' +
+      'same days of the period before in `previous`. Buckets are days up to 31 days, ISO weeks up to 183 days and ' +
+      'calendar months beyond, the first and last clipped to the range; `bucket=day` forces days. Money figures ' +
+      '(`revenue`, `average_value`, `partner_cost`) need `payment.read`, and partner figures (`partners`, ' +
+      '`partner_cost`) need `partner.read`; without them they are left out, never zeroed.',
+    query: rangeQuerySchema,
+    response: rangeResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('report.read')
+  @Get('range')
+  range(@CurrentUser() auth: TenantAuth, @Query(new ZodValidationPipe(rangeQuerySchema)) query: RangeQuery): Promise<RangeResponse> {
+    return this.reports.range(auth, query);
   }
 
   @ApiDoc({
