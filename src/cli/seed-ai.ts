@@ -7,6 +7,7 @@ import type { CustomerAuth, TenantAuth } from '../modules/identity/auth-context'
 import { TENANT_PERMISSIONS } from '../modules/identity/permissions';
 import type { PlanFeature } from '../modules/payments/plans/plans';
 import type { PlansService } from '../modules/payments/plans/plans.service';
+import { randomFrom } from './seed-random';
 
 // The demo workspace's AI: a monthly limit so the dashboard's briefing and Cmd+K work, three knowledge
 // articles for Cmd+K to answer from, matching the demo's partners and cast parts, and the customer AI
@@ -79,18 +80,6 @@ export interface AiSeedCounts {
 const QUESTIONS = ['Which orders are late?', 'What does Northcast Foundry owe?', 'Which customers pay slowly?', 'How many pieces failed final QC this week?'];
 const RUN_MODEL = 'demo-model';
 
-/** Mulberry32: a small seeded generator, so the same days give the same runs. */
-function randomFrom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
 const MONTH_CAP_CENTS = 1_200;
 
 /**
@@ -113,7 +102,8 @@ function pastRuns(now: Date, userId: string) {
       const hour = 8 + Math.floor(random() * 10);
       const startedAt = Math.min(day + hour * 3_600_000 + Math.floor(random() * 3_000_000), now.getTime() - 120_000);
       const cents = 3 + Math.floor(random() * 18);
-      const month = new Date(day).toISOString().slice(0, 7);
+      // The month of the run's own (clamped) time, which can fall before its day's month.
+      const month = new Date(startedAt).toISOString().slice(0, 7);
       // Every draw above is made either way, so a skipped run doesn't change the others.
       const total = (spent.get(month) ?? 0) + cents;
       const inputTokens = 900 + Math.floor(random() * 1_500);

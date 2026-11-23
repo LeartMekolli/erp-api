@@ -3,13 +3,16 @@ import { z } from 'zod';
 import { PrismaService } from '../database/prisma.service';
 import { Prisma } from '../generated/prisma/client';
 import { monthBounds } from '../modules/ai/ai-limit';
+import { money } from '../modules/reporting/week-metrics';
+
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export const aiSpendQuerySchema = z
   .strictObject({
     // A UTC month, YYYY-MM; the current one when left out.
     month: z
       .string()
-      .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'must be a month such as 2026-11')
+      .regex(MONTH, 'must be a month such as 2026-11')
       .optional(),
   })
   .refine((query) => query.month === undefined || query.month <= monthBounds(new Date()).key, {
@@ -18,13 +21,13 @@ export const aiSpendQuerySchema = z
   });
 
 export const aiSpendResponseSchema = z.strictObject({
-  month: z.string(),
+  month: z.string().regex(MONTH),
   // Every UTC day of the month up to today, oldest first; `tenants` lists only the workspaces with spend that day.
   days: z.array(
     z.strictObject({
-      date: z.string(),
-      total_usd: z.string(),
-      tenants: z.array(z.strictObject({ tenant_id: z.uuid(), usd: z.string() })),
+      date: z.iso.date(),
+      total_usd: money,
+      tenants: z.array(z.strictObject({ tenant_id: z.uuid(), usd: money })),
     }),
   ),
   // Every workspace, the biggest spender first. In USD, to the cent.
@@ -32,8 +35,8 @@ export const aiSpendResponseSchema = z.strictObject({
     z.strictObject({
       id: z.uuid(),
       name: z.string(),
-      monthly_limit_usd: z.string().nullable(),
-      spent_usd: z.string(),
+      monthly_limit_usd: money.nullable(),
+      spent_usd: money,
     }),
   ),
 });
@@ -45,14 +48,12 @@ export class AiSpendService {
 
   async spend(query: { month?: string }): Promise<AiSpendResponse> {
     const now = new Date();
-    const key = query.month ?? monthBounds(now).key;
-    const [year, month] = key.split('-').map(Number);
-    const start = new Date(Date.UTC(year, month - 1, 1));
-    const end = new Date(Date.UTC(year, month, 1));
+    const current = monthBounds(now);
+    const { start, end, key } = query.month ? monthBounds(new Date(`${query.month}-01T00:00:00Z`)) : current;
     // The UTC dates to answer: all of a past month, up to today in the current one.
-    const lastDay = key === monthBounds(now).key ? now.getUTCDate() : new Date(end.getTime() - 86_400_000).getUTCDate();
+    const lastDay = key === current.key ? now.getUTCDate() : new Date(end.getTime() - 86_400_000).getUTCDate();
     const dates = Array.from({ length: lastDay }, (_, index) =>
-      new Date(Date.UTC(year, month - 1, index + 1)).toISOString().slice(0, 10),
+      new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), index + 1)).toISOString().slice(0, 10),
     );
 
     const tenants = await this.prisma.tenant.findMany({ select: { id: true, name: true, aiMonthlyLimitUsd: true } });

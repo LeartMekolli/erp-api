@@ -1,11 +1,9 @@
 import { z } from 'zod';
 import { Prisma } from '../../generated/prisma/client';
-import { forReader, weekMetricsSchema } from './week-metrics';
+import { forReader, money, weekMetricsSchema } from './week-metrics';
 
 // The dashboard's numbers for any range of dates (Reporting 2 spec, goals 14–15): a week's shape plus
 // revenue per product, which the dashboard doesn't have.
-
-const money = z.string().regex(/^-?\d+\.\d{2}$/);
 
 export const rangeMetricsSchema = weekMetricsSchema.extend({
   orders: weekMetricsSchema.shape.orders.extend({

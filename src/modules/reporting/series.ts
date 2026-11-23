@@ -3,7 +3,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { localDate, startOfLocalDay } from '../orders/dates';
 import { owedBetween } from '../partners/owed-dates';
 import { groupReady } from '../workflow/progress';
-import { addDays, onTimeCounts } from './week-metrics';
+import { addDays, money, onTimeCounts } from './week-metrics';
 
 // The dashboard's numbers per local day (dashboard data spec, "What a point counts"): each loader counts
 // the rows `metricsFor` counts, with the same filters, grouped by the day in the workspace's time zone.
@@ -11,7 +11,6 @@ import { addDays, onTimeCounts } from './week-metrics';
 
 type Tx = Prisma.TransactionClient;
 
-const money = z.string().regex(/^-?\d+\.\d{2}$/);
 const rate = z.number().min(0).max(1);
 
 /** One bucket's numbers; money and partner cost are left out for a reader who may not see them. */

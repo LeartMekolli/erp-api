@@ -5,7 +5,8 @@ import { localDate } from '../orders/dates';
 // and the shape a `report_week` row holds.
 
 const DAY_MS = 86_400_000;
-const money = z.string().regex(/^-?\d+\.\d{2}$/);
+/** A money amount as a string with two places, such as `12.50`. */
+export const money = z.string().regex(/^-?\d+\.\d{2}$/);
 const rate = z.number().min(0).max(1);
 const count = z.number().int().min(0);
 

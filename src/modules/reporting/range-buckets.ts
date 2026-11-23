@@ -8,6 +8,16 @@ import { addDays } from './week-metrics';
 export const BUCKETS = ['day', 'week', 'month'] as const;
 export type Bucket = (typeof BUCKETS)[number];
 
+/** The `range` block of a range response: the dates asked for, the period before, and the bucket used. */
+export const rangeBlockSchema = z.strictObject({
+  from: z.iso.date(),
+  to: z.iso.date(),
+  // The same number of days, ending the day before `from`.
+  previous_from: z.iso.date(),
+  previous_to: z.iso.date(),
+  bucket: z.enum(BUCKETS),
+});
+
 /** A range of calendar dates, both ends included, up to a year; a caller may only ask for daily buckets. */
 export const rangeQuerySchema = z
   .strictObject({ from: z.iso.date(), to: z.iso.date(), bucket: z.literal('day').optional() })
@@ -42,7 +52,7 @@ export interface BucketSpan {
 }
 
 /** The first day of the month after the one `date` is in. */
-function nextMonthStart(date: string): string {
+export function nextMonthStart(date: string): string {
   const year = Number(date.slice(0, 4));
   const month = Number(date.slice(5, 7));
   return month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, '0')}-01`;

@@ -11,6 +11,7 @@ import { rangeResponseSchema } from '../src/modules/reporting/range-response';
 import type { RangeResponse } from '../src/modules/reporting/range-response';
 import { ReportsService } from '../src/modules/reporting/reports.service';
 import { addDays, weekMetricsSchema, weekOf } from '../src/modules/reporting/week-metrics';
+import { MIDNIGHT_GUARD_TIMEOUT_MS, clearOfUtcMidnight } from './clock';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
@@ -21,6 +22,11 @@ const dateOnly = (date: string) => new Date(`${date}T00:00:00Z`);
 
 /** The dashboard's numbers for any dates, with revenue per product (Reporting 2 plan, Task 4). */
 describe('reporting: numbers for any range', () => {
+  // The tests read the clock; keep a day or month boundary out of the run.
+  beforeAll(async () => {
+    await clearOfUtcMidnight();
+  }, MIDNIGHT_GUARD_TIMEOUT_MS);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let tokens: AccessTokenService;
@@ -181,6 +187,11 @@ describe('reporting: numbers for any range', () => {
     expect(body.series.reduce((sum, point) => sum + point.previous.orders_placed, 0)).toBe(body.previous.orders.placed);
     expect(sumOf(body.series.map((point) => point.previous.revenue))).toBe(body.previous.orders.revenue);
     expect(body.previous.orders.revenue).toBe(w.lunaLastWeek.net.toFixed(2));
+    // Rates are ratios of counts the series doesn't carry: an empty previous period has no rate either way.
+    for (const rateOf of [(one: { on_time_rate: number | null }) => one.on_time_rate, (one: { defect_rate: number | null }) => one.defect_rate]) {
+      expect(body.series.every((point) => rateOf(point.previous) === null)).toBe(rateOf(body.previous.production) === null);
+    }
+    expect(sumOf(body.series.map((point) => point.previous.partner_cost))).toBe(body.previous.partners!.cost!.amount);
 
     // Three days ago nothing was placed.
     expect(body.series[0]).toMatchObject({ orders_placed: 0, revenue: '0.00', average_value: null, on_time_rate: null, defect_rate: null });
@@ -218,17 +229,20 @@ describe('reporting: numbers for any range', () => {
       await tx.tenant.update({ where: { id: w.id }, data: { timezone: 'Europe/Berlin' } });
       // 00:30 in Berlin on 29 March 2026, the day the clocks go forward at 02:00.
       await tx.order.update({ where: { id: w.lunaNow.id }, data: { placedAt: new Date('2026-03-28T23:30:00Z') } });
+      // 00:30 in Berlin on 30 March, after the switch (UTC+2): the day is 23 hours long, so this is on the 30th.
+      await tx.order.update({ where: { id: w.solNow.id }, data: { placedAt: new Date('2026-03-29T22:30:00Z') } });
     });
 
     const body = await rangeOf(w.staff, '2026-03-28', '2026-03-30');
 
-    expect(body.current.orders.placed).toBe(1);
+    expect(body.current.orders.placed).toBe(2);
     expect(body.series.map((point) => [point.start, point.orders_placed])).toEqual([
       ['2026-03-28', 0],
       ['2026-03-29', 1],
-      ['2026-03-30', 0],
+      ['2026-03-30', 1],
     ]);
     expect(body.series[1].revenue).toBe(w.lunaNow.net.toFixed(2));
+    expect(body.series[2].revenue).toBe(w.solNow.net.toFixed(2));
   });
 
   it('counts a running range up to today, with a partial last bucket', async () => {
@@ -286,6 +300,8 @@ describe('reporting: numbers for any range', () => {
     expect(sumOf(body.series.map((point) => point.partner_cost))).toBe('50.00');
     expect(body.series.at(-1)!.defect_rate).not.toBeNull();
     expect(body.previous.partners).toMatchObject({ cost: { amount: '0.00', currency: 'EUR' } });
+    // The previous points add up to the previous headline, as the current ones do.
+    expect(sumOf(body.series.map((point) => point.previous.partner_cost))).toBe(body.previous.partners!.cost!.amount);
 
     // Staff send a ring back before the payout step: the job isn't owed, so it counts nowhere.
     await w.staff

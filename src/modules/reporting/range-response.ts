@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { readerWeekSchema } from './dashboard-response';
-import { BUCKETS } from './range-buckets';
+import { rangeBlockSchema } from './range-buckets';
 import { rangeMetricsSchema } from './range-metrics';
 import { seriesEntrySchema } from './series';
 
@@ -22,14 +22,7 @@ export const readerRangeSchema = rangeMetricsSchema.extend({
 });
 
 export const rangeResponseSchema = z.strictObject({
-  range: z.strictObject({
-    from: z.iso.date(),
-    to: z.iso.date(),
-    // The same number of days, ending the day before `from`.
-    previous_from: z.iso.date(),
-    previous_to: z.iso.date(),
-    bucket: z.enum(BUCKETS),
-  }),
+  range: rangeBlockSchema,
   current: readerRangeSchema,
   previous: readerRangeSchema,
   // Every bucket of the range, oldest first, an empty one with zero counts, "0.00" money and null rates.

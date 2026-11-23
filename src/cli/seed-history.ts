@@ -12,10 +12,13 @@ import { owedBetween } from '../modules/partners/owed-dates';
 import type { PaidByHandService } from '../modules/payments/paid-by-hand.service';
 import type { QuotesService } from '../modules/pricing/quotes.service';
 import { SettingsService } from '../modules/settings/settings.service';
+import { nextMonthStart } from '../modules/reporting/range-buckets';
+import { addDays } from '../modules/reporting/week-metrics';
 import { pathFor } from '../modules/workflow/path';
 import type { StepConfig } from '../modules/workflow/workflow-config';
 import { chainOf, stepsForPath } from '../modules/workflow/work-orders.service';
 import { FALLBACK_ADDRESSES } from './seed-demo-orders';
+import { randomFrom } from './seed-random';
 
 // A year of finished demo orders for the dashboards, on top of the demo orders (`seed-demo-orders.ts`):
 // about three to six a week over the 52 weeks that end two weeks before `now`, busier in some months. Each
@@ -85,20 +88,7 @@ export interface HistorySeed {
   payouts: number;
 }
 
-/** Mulberry32: a small seeded generator, so the same days give the same history. */
-function randomFrom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
 const asDate = (day: string) => new Date(`${day}T00:00:00Z`);
-const addDays = (day: string, days: number) => new Date(asDate(day).getTime() + days * DAY_MS).toISOString().slice(0, 10);
 
 interface PlannedOrder {
   key: string;
@@ -433,8 +423,7 @@ async function payMonths(
     let month = `${firstDay.slice(0, 7)}-01`;
     let payouts = 0;
     for (;;) {
-      const [year, number] = month.split('-').map(Number);
-      const next = number === 12 ? `${year + 1}-01-01` : `${year}-${String(number + 1).padStart(2, '0')}-01`;
+      const next = nextMonthStart(month);
       const paidAt = new Date(startOfLocalDay(next, context.timezone).getTime() + (4 * 24 + 10) * HOUR_MS);
       if (paidAt > context.now) break;
       const from = startOfLocalDay(month, context.timezone);

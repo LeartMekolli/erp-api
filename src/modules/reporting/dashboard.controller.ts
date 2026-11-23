@@ -54,7 +54,14 @@ export class DashboardController {
 
   @ApiDoc({
     summary: "The dashboard's numbers for any dates, the period before, and a point per day, week or month.",
-    description: 'Worked out from the records on every request: a late refund, claim or correction changes past periods.',
+    description:
+      'Worked out from the records on every request: a late refund, claim or correction changes past periods. ' +
+      "Dates are calendar dates in the workspace's time zone, both ends included, for up to a year; the period " +
+      'before has the same number of days and ends the day before `from`. `series` has a point per bucket, and the ' +
+      'same days of the period before in `previous`. Buckets are days up to 31 days, ISO weeks up to 183 days and ' +
+      'calendar months beyond, the first and last clipped to the range; `bucket=day` forces days. Money figures ' +
+      '(`revenue`, `average_value`, `partner_cost`) need `payment.read`, and partner figures (`partners`, ' +
+      '`partner_cost`) need `partner.read`; without them they are left out, never zeroed.',
     query: rangeQuerySchema,
     response: rangeResponseSchema,
     errors: [400],

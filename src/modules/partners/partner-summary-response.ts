@@ -1,19 +1,11 @@
 import { z } from 'zod';
-import { BUCKETS } from '../reporting/range-buckets';
+import { rangeBlockSchema } from '../reporting/range-buckets';
+import { money } from '../reporting/week-metrics';
 
 // `GET /partner-portal/partners/:id/summary` (dashboard data spec, "Partner summary").
 
-const money = z.string().regex(/^-?\d+\.\d{2}$/);
-
 export const partnerSummaryResponseSchema = z.strictObject({
-  range: z.strictObject({
-    from: z.iso.date(),
-    to: z.iso.date(),
-    // The same number of days, ending the day before `from`.
-    previous_from: z.iso.date(),
-    previous_to: z.iso.date(),
-    bucket: z.enum(BUCKETS),
-  }),
+  range: rangeBlockSchema,
   // Jobs the partner finished its part of in the range, and in the range before it.
   jobs_finished: z.number().int().min(0),
   previous_jobs_finished: z.number().int().min(0),

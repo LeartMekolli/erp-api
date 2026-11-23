@@ -11,6 +11,7 @@ import { finishedBetween, owedBetween } from '../src/modules/partners/owed-dates
 import { partnerSummaryResponseSchema } from '../src/modules/partners/partner-summary-response';
 import { addDays } from '../src/modules/reporting/week-metrics';
 import { measuredDesign } from './catalog-fixtures';
+import { MIDNIGHT_GUARD_TIMEOUT_MS, clearOfUtcMidnight } from './clock';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { pricedCastPart } from './pricing-fixtures';
@@ -47,6 +48,11 @@ const fromToday = (days: number) => new Date(Date.parse(`${new Date().toISOStrin
  * steps now, and for an admin or owner what it earned, paid and still owed per bucket.
  */
 describe('partners: their summary', () => {
+  // The tests read the clock; keep a day or month boundary out of the run.
+  beforeAll(async () => {
+    await clearOfUtcMidnight();
+  }, MIDNIGHT_GUARD_TIMEOUT_MS);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let tokens: AccessTokenService;
@@ -266,17 +272,20 @@ describe('partners: their summary', () => {
     for (const key of ['earned', 'previous_earned', 'currency', 'series']) expect(body).not.toHaveProperty(key);
   });
 
-  it('counts a job finished on the day its part ended, and again on the new day after a rework reopens it', async () => {
+  it('counts a job finished on the day its part ended, and again at the new moment after a rework reopens it', async () => {
     const tenant = await freshTenant();
     const { group, cost } = await tenant.job();
     const tStart = new Date();
     const ids = await pass(tenant, group, ALL_STEPS);
+    // At least a millisecond after the last write, so the half-open window [tStart, tFirstDone) holds it.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     const tFirstDone = new Date();
     const today = fromToday(0);
     const tomorrow = fromToday(1);
     const week = [fromToday(-6), today] as const;
     const finishedIn = (from: Date, to: Date) => prisma.inTenant(tenant.id, (tx) => finishedBetween(tx, tenant.castco, from, to));
-    const zeroes = (body: Summary) => body.series!.every((point) => point.paid === '0.00' && point.owed === '0.00');
+    // The week is seven daily points, all of them empty.
+    const zeroes = (body: Summary) => body.series!.length === 7 && body.series!.every((point) => point.paid === '0.00' && point.owed === '0.00');
 
     // Finished today: counted in a range holding today, in the period after it as the previous one, and nowhere else.
     expect(await summaryOf(tenant.castcoAdmin, tenant.castco, today, today)).toMatchObject({ jobs_finished: 1, previous_jobs_finished: 0 });

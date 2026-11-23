@@ -10,6 +10,7 @@ import { Prisma } from '../src/generated/prisma/client';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { dashboardResponseSchema } from '../src/modules/reporting/dashboard-response';
 import { ReportsService } from '../src/modules/reporting/reports.service';
+import { MIDNIGHT_GUARD_TIMEOUT_MS, clearOfUtcMidnight } from './clock';
 import { expectDocumented } from './documented';
 import { measuredDesign } from './catalog-fixtures';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -32,6 +33,11 @@ const WEEK_MS = 7 * 86_400_000;
 
 /** This week against last week, computed every 15 minutes (AI 1 plan, Task 3). */
 describe('reporting: the dashboard numbers', () => {
+  // The tests read the clock; keep a day boundary out of the run.
+  beforeAll(async () => {
+    await clearOfUtcMidnight();
+  }, MIDNIGHT_GUARD_TIMEOUT_MS);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let tokens: AccessTokenService;
@@ -277,6 +283,7 @@ describe('reporting: the dashboard numbers', () => {
     });
 
     const body = (await w.staff.get('/reports/dashboard').expect(200)).body as { production: { wip: unknown[] } };
+    expectDocumented(dashboardResponseSchema, body);
 
     // Luna's 9 and Sol's 12 at print pattern, Luna's 1 at casting tree; nothing of the waiting order, nothing late.
     expect(body.production.wip).toEqual([

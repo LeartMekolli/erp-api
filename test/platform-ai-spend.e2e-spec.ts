@@ -13,6 +13,7 @@ import { aiSpendResponseSchema } from '../src/platform/ai-spend.service';
 import type { AiSpendResponse } from '../src/platform/ai-spend.service';
 import { tenantResponseSchema } from '../src/platform/tenant.service';
 import type { TenantResponse } from '../src/platform/tenant.service';
+import { MIDNIGHT_GUARD_TIMEOUT_MS, clearOfUtcMidnight } from './clock';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
@@ -29,9 +30,16 @@ describe('platform AI spend', () => {
 
   // Known moments of the current UTC month, both already past: the 1st just after midnight and today just
   // after midnight (the same day on the 1st).
-  const now = new Date();
-  const firstMoment = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 30));
-  const todayMoment = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 30));
+  // Taken in `beforeAll`, once the run is clear of UTC midnight.
+  let now: Date;
+  let firstMoment: Date;
+  let todayMoment: Date;
+  beforeAll(async () => {
+    await clearOfUtcMidnight();
+    now = new Date();
+    firstMoment = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 30));
+    todayMoment = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 30));
+  }, MIDNIGHT_GUARD_TIMEOUT_MS);
   const dayOf = (at: Date) => at.toISOString().slice(0, 10);
 
   /** A finished run costing `cost` at `finishedAt`, in the workspace. */
