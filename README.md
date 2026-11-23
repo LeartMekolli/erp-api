@@ -1,13 +1,93 @@
 # ERP API
 
-API for an industry-agnostic, made-to-order production ERP: configurable products, step-based pricing, routing work to production partners, and a configurable production workflow with quality control. Industry specifics are configuration, not code.
+The backend of an ERP for businesses that make things to order. A customer uploads a design, picks the options and gets an exact price. The order goes to an outside workshop that has the right machines and free capacity, and every piece moves through production steps with quality checks until it ships. The first industry is made-to-order 3D objects, printed and cast, but none of it is in the code: materials, production steps, units and checklists are data each business sets up.
 
-## Requirements
+One deployment serves many businesses (workspaces). Each has its staff, customers, partner workshops, catalog, prices and workflows, and its own Stripe account.
 
-- Node.js 24
-- Docker, for Postgres 16, Redis 7, Mailpit and MinIO
+## What it covers
 
-## Running locally
+- A catalog of configurable products, with option rules and a check that a configuration can be made.
+- Pricing built from typed cost components per step (material by weight, machine time, labour, setup, batch), with margins, quantity tiers, customer groups and delivery speeds. A quote stores its full breakdown.
+- Orders placed from quotes, with tax, shipping, promised dates on a working calendar, comments and claims.
+- Routing to partner workshops by capability, capacity, score and cost. Partners get offers, accept or decline them, and work their pieces in their own portal without ever seeing the customer.
+- Versioned workflows with a QC gate: checklists, photos, defects, rework, scrap and remakes, sampling, and a daily production plan against capacity.
+- Payments through Stripe Checkout and invoices, partner payouts through Stripe Connect, customer subscriptions and credits.
+- A staff dashboard, CSV and PDF exports, and AI features: a morning briefing, a Cmd+K assistant over the workspace's own data, job briefs for workshops and paid AI tools for customers.
+
+## Engineering highlights
+
+- Tenant isolation lives in Postgres. Every tenant-owned table has forced row-level security, every foreign key includes `tenant_id`, and code reaches those tables only inside `inTenant(tenantId, tx => ...)`. An e2e test fails if any table with a `tenant_id` column lacks its policy.
+- The API connects as a role that owns nothing. Migrations run as a separate owner role, so the running app cannot change the schema; CI migrates staging before the new code deploys.
+- Money is `NUMERIC(18,6)` with a decimal library and is rounded once, at the price per piece. Every movement of money is a journal in a double-entry ledger whose lines must sum to zero, checked by the database.
+- The ledger and the QC history are append-only. A trigger refuses `UPDATE` and `DELETE`, so a mistake is fixed with a reversing row and old reports stay reproducible.
+- Running jobs keep the workflow version they started on. Editing a workflow creates a new version and never changes pieces already in production.
+- Webhooks are verified, stored once by event id and applied by the worker. A `POST` may carry an `Idempotency-Key`, and a repeat replays the first response.
+- Background work runs in a separate BullMQ worker. Job ids are deterministic, so enqueueing the same work twice does nothing, and scheduled jobs hold a lock per run.
+- Every outside service sits behind an interface with a fake: Stripe, EasyPost, Claude, OpenAI images, Pinecone and the metal price feed. Tests and local runs call none of them by default.
+- The AI reads through tools that see only what the asking user may see, cites the records it used, and may propose an action but never takes one. Each workspace has a monthly USD limit, and a run reserves its worst-case cost before it starts.
+- Every route declares its access (`@Public()`, `@Authenticated()` or a permission) and its OpenAPI docs. A test fails for a route missing either.
+
+## Architecture
+
+![System architecture](.github/architecture.png)
+
+The staff app and the customer and partner portals call one NestJS API. The API reads and writes Postgres, puts work on Redis queues and never handles file bytes: clients upload straight to S3-compatible storage through signed links.
+
+![Backend internals](.github/internals.png)
+
+A request is authenticated, scoped to its tenant and validated with Zod before it reaches a module. Anything slow or external (emails, file measuring, AI runs, webhooks, payouts) becomes a job for the worker process.
+
+## Data model
+
+![Core tables](.github/er-overview.png)
+
+The overview shows 22 core tables, from a catalog product to a paid partner, out of 128 in `prisma/schema.prisma`. Every table also carries a `tenant_id`, left out of the diagrams. It defaults to the session's tenant, row-level security hides other tenants' rows, and every foreign key includes it (`(tenant_id, x_id)` references `(tenant_id, id)`), so a row can never point into another tenant. Ids are UUIDv7.
+
+<details>
+<summary>Catalog and pricing</summary>
+
+![Catalog and pricing tables](.github/er-catalog-and-pricing.png)
+
+A product has a material, a category and a workflow, and its option groups. An option value can add or remove a step (`option_step_effect`). Each step type has prices per material, built from typed blocks with a failure allowance. A quote prices one configuration and quantity and stores its inputs and the breakdown per step; an assembly's parts are quotes under a parent quote. An order line is an accepted quote.
+
+</details>
+
+<details>
+<summary>Production and quality</summary>
+
+![Production and quality tables](.github/er-production-and-quality.png)
+
+Each order line becomes a work-order group with one work order per piece, on a frozen workflow version that also names the step a partner is paid at. A scrapped piece is replaced by a new work order that points to the one it replaces. Every move is a transition, with its checklist answers, photos and defect; corrections are new transitions. Partners declare what step types they can do, with quantity, size and capacity limits, and a job is offered to them as an assignment with its cost and due date.
+
+</details>
+
+<details>
+<summary>Money</summary>
+
+![Money tables](.github/er-money.png)
+
+Orders are paid through Stripe Checkout or invoiced, and refunds are their own rows. Every movement of money is a ledger journal whose lines, one per account, sum to zero; a mistake is corrected with a journal that reverses it. A payout pays a partner for several job assignments in one transfer. Payment webhooks land in `payment_event`, stored once by the provider's event id and applied later by the worker.
+
+</details>
+
+## Key decisions
+
+| Decision | Why | Trade-off |
+|---|---|---|
+| Shared schema with row-level security | One migration path for every tenant, and isolation that application code can't forget | Tenant work runs in a transaction that holds a pooled connection, so slow calls stay outside it |
+| Exact decimals, rounded once | Per-gram material costs need sub-cent precision until the final price | Money serialises as a string; tests compare strings, never floats |
+| Append-only ledger and QC log, typed per domain | Payouts, defect rates and partner scores are derived from them and must not change afterwards | A correction is a new row, and both tables grow without bound |
+| Cursor pagination, problem+json errors, no version prefix | Offset paging skips rows on busy tables; the only client deploys with the API | Clients can't jump to page 7 |
+| BullMQ worker with idempotent jobs | Scheduling in the web process runs every job twice with two instances | Two processes to deploy, and every handler must tolerate a replay |
+| Pricing as typed components, no formula text | One engine for every path, testable from worked examples | Pricing that needs arithmetic beyond the components waits for a sandboxed expression type |
+
+## Tech stack
+
+TypeScript (strict) on Node.js 24, NestJS 12, Prisma 7 on Postgres 16, BullMQ on Redis 7, Zod for every request, Pino logs and Sentry. S3-compatible storage (MinIO locally), Stripe and Stripe Connect, EasyPost, Claude, OpenAI images, Pinecone. Jest for unit and e2e tests, GitHub Actions for CI. Staging runs on Render with a Neon database.
+
+## Run it locally
+
+Needs Node.js 24 and Docker (Postgres 16, Redis 7, Mailpit and MinIO).
 
 ```bash
 cp .env.example .env
@@ -17,9 +97,31 @@ npx prisma generate
 npx prisma migrate deploy
 npm run seed
 npm run start:dev
+npm run start:worker:dev   # in a second terminal
 ```
 
-The API listens on http://localhost:3000. `GET /health/ready` reports whether Postgres and Redis are reachable.
+The API listens on http://localhost:3000, with Swagger at `/docs` when `API_DOCS=true`. The seed prints the platform admin's password and creates a `demo` workspace with a catalog, partners, customers and 20 orders spread over every status. Emails, including the owner's invitation, land in Mailpit at http://localhost:8025. [Local setup](#local-setup) has the details.
+
+## Tests and CI
+
+```bash
+npx tsc --noEmit
+npm run lint
+npm test            # unit
+npm run test:e2e    # integration, needs the Compose stack running and migrated
+```
+
+The e2e tests run against a real Postgres with row-level security on, real Redis, Mailpit and MinIO, with fakes only for outside services. Most modules have a slice test that runs their Swagger walkthrough end to end; `test/foundation-slice.e2e-spec.ts` covers the foundation's ten acceptance steps. CI (`.github/workflows/ci.yml`) runs all four commands against fresh containers, builds, seeds twice to prove the seed is safe to repeat, and on `master` migrates staging once the tests pass.
+
+---
+
+# Reference
+
+The rest of this file is the operator's manual: setup details, environment variables and a Swagger walkthrough per module.
+
+## Local setup
+
+`GET /health/ready` reports whether Postgres and Redis are reachable.
 
 Emails sent locally go to Mailpit, started by `docker compose up`; read them at http://localhost:8025. Nothing reaches a real inbox.
 
@@ -437,17 +539,6 @@ A walkthrough in Swagger, on the demo data after the Claims walkthrough (`test/o
 With `API_DOCS=true`, the API serves Swagger docs at `/docs` (the OpenAPI document is at `/docs/openapi.json`); without it both answer 404. Every endpoint shows a short description, what it accepts, its error statuses and who may call it. Request shapes come from the Zod schemas the routes validate with, access from the route markers. The main responses (login, refresh, `/me`, files, the feed, the tenant list) are shown as schemas that the e2e tests check real responses against; the others are described in words. To try endpoints, call `POST /auth/login` (or `POST /platform/auth/login`), paste the `access_token` into **Authorize**, then call anything. Uploading the file bytes themselves goes straight to storage through the signed link, outside the docs.
 
 Adding a route: give it `@ApiDoc({ summary, body, query, response, errors })` next to its access marker. `test/api-docs.e2e-spec.ts` fails for any route without a summary, access or a request body schema where it reads one.
-
-## Tests
-
-```bash
-npx tsc --noEmit
-npm run lint
-npm test            # unit
-npm run test:e2e    # integration, needs the Compose stack running and migrated
-```
-
-CI (`.github/workflows/ci.yml`) runs all of these against fresh Postgres, Redis, Mailpit and MinIO containers, then builds and seeds twice. `test/foundation-slice.e2e-spec.ts` runs the foundation's ten acceptance steps end to end.
 
 ## Conventions
 
