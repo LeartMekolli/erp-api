@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { PlatformJobsController } from '../jobs/platform-jobs.controller';
 import { IdentityModule } from '../modules/identity/identity.module';
+import { AiSpendService } from './ai-spend.service';
+import { PlatformAiSpendController } from './platform-ai-spend.controller';
 import { PlatformAuthController } from './platform-auth.controller';
 import { PlatformAuthService } from './platform-auth.service';
 import { PlatformDiagnosticsController } from './platform-diagnostics.controller';
@@ -11,11 +13,12 @@ import { PlatformModule } from './platform.module';
 @Module({
   imports: [PlatformModule, IdentityModule],
   controllers: [
+    PlatformAiSpendController,
     PlatformAuthController,
     PlatformTenantsController,
     PlatformJobsController,
     PlatformDiagnosticsController,
   ],
-  providers: [PlatformAuthService],
+  providers: [PlatformAuthService, AiSpendService],
 })
 export class PlatformApiModule {}
