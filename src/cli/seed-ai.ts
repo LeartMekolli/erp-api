@@ -1,3 +1,4 @@
+import { newId } from '../common/ids/uuid';
 import type { PrismaService } from '../database/prisma.service';
 import { Prisma } from '../generated/prisma/client';
 import type { BrandProfileService } from '../modules/ai/customer-tools/brand-profile.service';
@@ -71,6 +72,72 @@ export interface AiSeedCounts {
   plans: number;
   /** 1 when the first customer was given the demo brand profile. */
   profiles: number;
+  /** Past Cmd+K runs written for the AI spend chart. */
+  runs: number;
+}
+
+const QUESTIONS = ['Which orders are late?', 'What does Northcast Foundry owe?', 'Which customers pay slowly?', 'How many pieces failed final QC this week?'];
+const RUN_MODEL = 'demo-model';
+
+/** Mulberry32: a small seeded generator, so the same days give the same runs. */
+function randomFrom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+const MONTH_CAP_CENTS = 1_200;
+
+/**
+ * Past Cmd+K runs on about four days in five of the previous and the current UTC month, up to `now`: one to
+ * three a day, each costing a whole number of cents (3 to 20), so the AI spend chart has something to show.
+ * Written directly, dated by `finished_at`: the run service stamps the real clock. A month's total is
+ * about 5.50 USD and never more than `MONTH_CAP_CENTS` (12.00 USD, 60% of the demo's 20.00 USD limit): a run
+ * that would pass the cap is left out, so the 80% limit notice never shows on whatever date this runs.
+ */
+function pastRuns(now: Date, userId: string) {
+  const random = randomFrom(20_261_122);
+  const spent = new Map<string, number>();
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1);
+  const rows: { id: string; run: Prisma.AiRunUncheckedCreateInput; result: Prisma.AiRunResultUncheckedCreateInput }[] = [];
+  for (let day = first; day <= today; day += DAY_MS) {
+    if (random() >= 0.8) continue;
+    const count = 1 + Math.floor(random() * 3);
+    for (let index = 0; index < count; index++) {
+      const hour = 8 + Math.floor(random() * 10);
+      const startedAt = Math.min(day + hour * 3_600_000 + Math.floor(random() * 3_000_000), now.getTime() - 120_000);
+      const cents = 3 + Math.floor(random() * 18);
+      const month = new Date(day).toISOString().slice(0, 7);
+      // Every draw above is made either way, so a skipped run doesn't change the others.
+      const total = (spent.get(month) ?? 0) + cents;
+      const inputTokens = 900 + Math.floor(random() * 1_500);
+      const outputTokens = 150 + Math.floor(random() * 400);
+      const question = QUESTIONS[Math.floor(random() * QUESTIONS.length)];
+      if (total > MONTH_CAP_CENTS) continue;
+      spent.set(month, total);
+      const id = newId();
+      rows.push({
+        id,
+        run: { id, userId, kind: 'ask', model: RUN_MODEL, input: { question }, createdAt: new Date(startedAt) },
+        result: {
+          runId: id,
+          status: 'done',
+          inputTokens,
+          outputTokens,
+          costUsd: new Prisma.Decimal(cents).div(100),
+          refs: [],
+          finishedAt: new Date(startedAt + 4_000),
+        },
+      });
+    }
+  }
+  return rows;
 }
 
 /**
@@ -84,7 +151,9 @@ export async function seedAi(
   deps: { prisma: PrismaService; articles: ArticlesService; plans: PlansService; profiles: BrandProfileService },
   tenantId: string,
   actorUserId: string,
+  options: { pastRuns?: boolean; now?: Date } = {},
 ): Promise<AiSeedCounts> {
+  const now = options.now ?? new Date();
   const { prisma } = deps;
   const auth: TenantAuth = {
     scope: 'tenant',
@@ -94,7 +163,7 @@ export async function seedAi(
     expiresAt: new Date(Date.now() + DAY_MS),
     permissions: new Set(TENANT_PERMISSIONS),
   };
-  const created: AiSeedCounts = { limit: 0, articles: 0, plans: 0, profiles: 0 };
+  const created: AiSeedCounts = { limit: 0, articles: 0, plans: 0, profiles: 0, runs: 0 };
 
   const existing = await prisma.inTenant(tenantId, async (tx) => {
     const limit = await tx.tenant.updateMany({
@@ -129,6 +198,18 @@ export async function seedAi(
     const customer: CustomerAuth = { tenantId, userId: actorUserId, customerId: existing.customer, role: 'owner' };
     await deps.profiles.save(customer, PROFILE);
     created.profiles = 1;
+  }
+
+  // Past runs only when asked for (the demo seed), once: none when any run is older than a day (the seed's
+  // own, or real ones). Every other caller, such as a spec that counts a workspace's runs, gets none.
+  if (options.pastRuns) {
+    await prisma.inTenant(tenantId, async (tx) => {
+      if ((await tx.aiRun.count({ where: { createdAt: { lt: new Date(now.getTime() - DAY_MS) } } })) > 0) return;
+      const rows = pastRuns(now, actorUserId);
+      await tx.aiRun.createMany({ data: rows.map((row) => row.run) });
+      await tx.aiRunResult.createMany({ data: rows.map((row) => row.result) });
+      created.runs = rows.length;
+    });
   }
   return created;
 }

@@ -34,6 +34,7 @@ import { seedCatalog, seedPlaceholderDesign } from './seed-catalog';
 import { seedClaims } from './seed-claims';
 import { seedCustomers } from './seed-customers';
 import { seedDemoOrders } from './seed-demo-orders';
+import { seedHistory } from './seed-history';
 import { seedOrders } from './seed-orders';
 import { seedPartners } from './seed-partners';
 import { seedPayments } from './seed-payments';
@@ -84,7 +85,8 @@ class SeedModule {}
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
  * (`seed-orders.ts`), its claim settings, an accountant and the accountant's monthly files (`seed-claims.ts`), its fake
  * courier account, a live-rate method, daily capacities and the job summary (`seed-production.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`),
- * demo orders in every state the Orders screen shows (`seed-demo-orders.ts`), its plans, packs
+ * demo orders in every state the Orders screen shows (`seed-demo-orders.ts`), a year of finished orders
+ * behind them with the on-time target (`seed-history.ts`), its plans, packs
  * and campaign (`seed-plans.ts`) and its AI limit, knowledge articles, AI plan switches and a brand
  * profile (`seed-ai.ts`). The admin's, the
  * customer people's and the partner owners' generated passwords are printed here, once. The owners'
@@ -238,6 +240,21 @@ void runCli(async (app) => {
       '\n',
   );
 
+  // A year of finished orders behind them, for the dashboards' charts, and the on-time target.
+  const history = await seedHistory(
+    {
+      prisma,
+      quotes: app.get(QuotesService),
+      orders: app.get(OrdersService),
+      states: app.get(OrderStatesService),
+      paidByHand: app.get(PaidByHandService),
+      jobs: app.get(JobsService),
+    },
+    demo.id,
+    new Date(),
+  );
+  process.stdout.write(`history for demo: created ${history.orders} finished orders and ${history.payouts} partner payouts\n`);
+
   // Audited as the demo's catalog user, which can't sign in, like the catalog's uploads.
   const plans = await seedPlans(
     { prisma, plans: app.get(PlansService), packs: app.get(CreditPacksService), campaigns: app.get(CampaignsService) },
@@ -255,11 +272,13 @@ void runCli(async (app) => {
     { prisma, articles: app.get(ArticlesService), plans: app.get(PlansService), profiles: app.get(BrandProfileService) },
     demo.id,
     uploader.id,
+    { pastRuns: true },
   );
   process.stdout.write(
     `ai for demo: ${ai.limit ? 'set the monthly limit to 20.00 USD, ' : ''}created ${ai.articles} knowledge articles` +
       ` (indexed by the worker), turned on the AI tools on ${ai.plans} plans` +
       (ai.profiles ? ', gave Luna Jewels a brand profile' : '') +
+      (ai.runs ? `, added ${ai.runs} past runs` : '') +
       '\n',
   );
 }, SeedModule);
