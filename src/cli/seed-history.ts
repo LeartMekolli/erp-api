@@ -88,7 +88,7 @@ export interface HistorySeed {
   orders: number;
   /** Payouts made, the pending one included. */
   payouts: number;
-  /** 1 when the latest payout made was left pending, else 0. */
+  /** The history's payouts pending after the run: 1, the newest, or 0 when there are none. */
   pending: number;
 }
 
@@ -413,9 +413,9 @@ export async function seedHistory(deps: HistoryDeps, tenantId: string, now: Date
 
 /**
  * Pays what each partner became owed for the history's jobs in each whole month that has ended, in one
- * payout per partner and month, dated a few days into the next month: paid, but the latest one made, still
- * pending. What became owed in the current month stays owed. Written directly: the payout service moves
- * money through the payment provider.
+ * payout per partner and month, dated a few days into the next month: paid, but the newest one still pending.
+ * What became owed in the current month stays owed. Written directly: the payout service moves money through
+ * the payment provider.
  */
 async function payMonths(
   deps: HistoryDeps,
@@ -433,7 +433,6 @@ async function payMonths(
     const firstDay = localDate(first.placedAt, context.timezone);
     let month = `${firstDay.slice(0, 7)}-01`;
     let payouts = 0;
-    let latest: string | null = null;
     for (;;) {
       const next = nextMonthStart(month);
       const paidAt = new Date(startOfLocalDay(next, context.timezone).getTime() + (4 * 24 + 10) * HOUR_MS);
@@ -446,8 +445,7 @@ async function payMonths(
         const owed = (await owedBetween(tx, from, to, partnerId)).filter((entry) => assignmentIds.has(entry.assignmentId) && due(entry).gt(0));
         const total = owed.reduce((sum, entry) => sum.add(due(entry)), new Prisma.Decimal(0));
         if (!total.gt(0)) continue;
-        const payout = await tx.payout.create({
-          select: { id: true },
+        await tx.payout.create({
           data: {
             partnerId,
             amount: total,
@@ -460,15 +458,34 @@ async function payMonths(
             jobs: { create: owed.map((entry) => ({ assignmentId: entry.assignmentId, amount: due(entry) })) },
           },
         });
-        latest = payout.id;
         payouts++;
       }
       month = next;
     }
-    // The latest payout this run made is still on its way, so the partner dashboard shows money pending.
-    if (latest !== null) {
-      await tx.payout.update({ where: { id: latest }, data: { status: 'pending', providerTransferId: null, settledAt: null } });
-    }
-    return { payouts, pending: latest === null ? 0 : 1 };
+    return { payouts, pending: await keepNewestPending(tx, assignmentIds) };
   });
+}
+
+/**
+ * Leaves exactly one of the history's payouts pending, the newest, so the partner dashboard shows money on its
+ * way; one an earlier run left pending is settled as paid. Returns how many are pending now: 1, or 0 without payouts.
+ */
+async function keepNewestPending(tx: Prisma.TransactionClient, assignmentIds: Set<string>): Promise<number> {
+  const history = await tx.payout.findMany({
+    where: { jobs: { some: { assignmentId: { in: [...assignmentIds] } } } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { id: true, status: true, createdAt: true },
+  });
+  if (history.length === 0) return 0;
+  const [newest, ...older] = history;
+  for (const payout of older.filter((row) => row.status === 'pending')) {
+    await tx.payout.update({
+      where: { id: payout.id },
+      data: { status: 'paid', providerTransferId: `tr_history_${newId()}`, settledAt: new Date(payout.createdAt.getTime() + HOUR_MS) },
+    });
+  }
+  if (newest.status !== 'pending') {
+    await tx.payout.update({ where: { id: newest.id }, data: { status: 'pending', providerTransferId: null, settledAt: null } });
+  }
+  return 1;
 }
