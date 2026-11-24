@@ -9,6 +9,7 @@ import { DEFAULT_CALENDAR } from '../modules/orders/place-order';
 import type { OrderStatesService } from '../modules/orders/order-states.service';
 import type { JobsService } from '../modules/partners/jobs.service';
 import { owedBetween } from '../modules/partners/owed-dates';
+import type { OwedEntry } from '../modules/partners/owed-dates';
 import type { PaidByHandService } from '../modules/payments/paid-by-hand.service';
 import type { QuotesService } from '../modules/pricing/quotes.service';
 import { SettingsService } from '../modules/settings/settings.service';
@@ -85,7 +86,10 @@ export interface HistoryDeps {
 
 export interface HistorySeed {
   orders: number;
+  /** Payouts made, the pending one included. */
   payouts: number;
+  /** The history's payouts pending after the run: 1, the newest, or 0 when there are none. */
+  pending: number;
 }
 
 const asDate = (day: string) => new Date(`${day}T00:00:00Z`);
@@ -168,7 +172,7 @@ export async function seedHistory(deps: HistoryDeps, tenantId: string, now: Date
       staffUserId: staff?.id,
     };
   });
-  if (!setup) return { orders: 0, payouts: 0 };
+  if (!setup) return { orders: 0, payouts: 0, pending: 0 };
 
   const missing = [
     ...CUSTOMERS.filter((name) => !setup.customers.has(name)),
@@ -397,24 +401,31 @@ export async function seedHistory(deps: HistoryDeps, tenantId: string, now: Date
     orders++;
   }
 
-  const payouts = await payMonths(deps, tenantId, { now, timezone, currency: setup.currency, staffUserId, partnerIds: [...setup.partners.values()].map((partner) => partner.id) });
-  return { orders, payouts };
+  const { payouts, pending } = await payMonths(deps, tenantId, {
+    now,
+    timezone,
+    currency: setup.currency,
+    staffUserId,
+    partnerIds: [...setup.partners.values()].map((partner) => partner.id),
+  });
+  return { orders, payouts, pending };
 }
 
 /**
- * Pays what each partner became owed for the history's jobs in each whole month that has ended, in one paid
- * payout per partner and month, dated a few days into the next month. What became owed in the current
- * month stays owed. Written directly: the payout service moves money through the payment provider.
+ * Pays what each partner became owed for the history's jobs in each whole month that has ended, in one
+ * payout per partner and month, dated a few days into the next month: paid, but the newest one still pending.
+ * What became owed in the current month stays owed. Written directly: the payout service moves money through
+ * the payment provider.
  */
 async function payMonths(
   deps: HistoryDeps,
   tenantId: string,
   context: { now: Date; timezone: string; currency: string; staffUserId: string; partnerIds: string[] },
-): Promise<number> {
+): Promise<{ payouts: number; pending: number }> {
   return deps.prisma.inTenant(tenantId, async (tx) => {
     const done = { channelOrderId: { startsWith: HISTORY_PREFIX }, deliveredAt: { not: null } };
     const first = await tx.order.findFirst({ where: done, orderBy: { placedAt: 'asc' }, select: { placedAt: true } });
-    if (!first) return 0;
+    if (!first) return { payouts: 0, pending: 0 };
     // The history's own jobs, whenever they were made: a run that finds them paid already pays nothing.
     const lines = await tx.orderLine.findMany({ where: { order: done, groupId: { not: null } }, select: { groupId: true } });
     const jobs = await tx.jobAssignment.findMany({ where: { groupId: { in: lines.map((line) => line.groupId!) }, status: 'accepted' }, select: { id: true } });
@@ -429,8 +440,10 @@ async function payMonths(
       const from = startOfLocalDay(month, context.timezone);
       const to = startOfLocalDay(next, context.timezone);
       for (const partnerId of context.partnerIds) {
-        const owed = (await owedBetween(tx, from, to, partnerId)).filter((entry) => assignmentIds.has(entry.assignmentId) && entry.amount.gt(entry.paid));
-        const total = owed.reduce((sum, entry) => sum.add(entry.amount.sub(entry.paid)), new Prisma.Decimal(0));
+        // What no payout, paid or on its way, holds yet.
+        const due = (entry: OwedEntry) => entry.amount.sub(entry.paid).sub(entry.pending);
+        const owed = (await owedBetween(tx, from, to, partnerId)).filter((entry) => assignmentIds.has(entry.assignmentId) && due(entry).gt(0));
+        const total = owed.reduce((sum, entry) => sum.add(due(entry)), new Prisma.Decimal(0));
         if (!total.gt(0)) continue;
         await tx.payout.create({
           data: {
@@ -442,13 +455,37 @@ async function payMonths(
             createdByUserId: context.staffUserId,
             createdAt: paidAt,
             settledAt: new Date(paidAt.getTime() + HOUR_MS),
-            jobs: { create: owed.map((entry) => ({ assignmentId: entry.assignmentId, amount: entry.amount.sub(entry.paid) })) },
+            jobs: { create: owed.map((entry) => ({ assignmentId: entry.assignmentId, amount: due(entry) })) },
           },
         });
         payouts++;
       }
       month = next;
     }
-    return payouts;
+    return { payouts, pending: await keepNewestPending(tx, assignmentIds) };
   });
+}
+
+/**
+ * Leaves exactly one of the history's payouts pending, the newest, so the partner dashboard shows money on its
+ * way; one an earlier run left pending is settled as paid. Returns how many are pending now: 1, or 0 without payouts.
+ */
+async function keepNewestPending(tx: Prisma.TransactionClient, assignmentIds: Set<string>): Promise<number> {
+  const history = await tx.payout.findMany({
+    where: { jobs: { some: { assignmentId: { in: [...assignmentIds] } } } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { id: true, status: true, createdAt: true },
+  });
+  if (history.length === 0) return 0;
+  const [newest, ...older] = history;
+  for (const payout of older.filter((row) => row.status === 'pending')) {
+    await tx.payout.update({
+      where: { id: payout.id },
+      data: { status: 'paid', providerTransferId: `tr_history_${newId()}`, settledAt: new Date(payout.createdAt.getTime() + HOUR_MS) },
+    });
+  }
+  if (newest.status !== 'pending') {
+    await tx.payout.update({ where: { id: newest.id }, data: { status: 'pending', providerTransferId: null, settledAt: null } });
+  }
+  return 1;
 }

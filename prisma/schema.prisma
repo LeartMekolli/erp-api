@@ -1791,7 +1791,7 @@ model JobAssignment {
 model PartnerCapacitySnapshot {
   id             String   @id @default(uuid(7)) @db.Uuid
   tenantId       String   @default(dbgenerated("(current_setting('app.current_tenant_id'::text))::uuid")) @map("tenant_id") @db.Uuid
-  // The UTC day.
+  // The workspace's local day of the run.
   date           DateTime @db.Date
   partnerId      String   @map("partner_id") @db.Uuid
   stepTypeId     String   @map("step_type_id") @db.Uuid

@@ -103,9 +103,10 @@ export type PartnerSetupResponse = z.infer<typeof partnerSetupResponseSchema>;
 export const capacityHistoryResponseSchema = z.strictObject({
   data: z.array(
     z.strictObject({
+      /** The workspace's day the row was kept. */
       date: z.iso.date(),
       step_type: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }),
-      /** Pieces offered to or accepted by the partner that still had the step ahead of them. */
+      /** Pieces offered to or accepted by the partner that still had the step ahead of them; compared with `capacity` as is. */
       load: z.number().int(),
       /** Pieces per `capacity_period`, as the partner had it that day. */
       capacity: z.number().int(),
@@ -414,7 +415,7 @@ export const owedJobResponseSchema = z.strictObject({
   amount: z.string(),
   /** Why staff set the amount; null when it is the cost. */
   override_reason: z.string().nullable(),
-  /** What payouts have paid for the job, or are paying. */
+  /** What payouts have paid for the job, or are paying: pending payouts included. */
   paid: z.string(),
   /** What the next payout pays for it: owed now less `paid`; negative when more was paid than is owed now. */
   due: z.string(),
@@ -534,6 +535,8 @@ export const partnerMeResponseSchema = z.strictObject({
       role: z.enum(PARTNER_ROLES),
       /** A suspended partner can still be read, but not changed. */
       status: z.enum(PARTNER_STATUSES),
+      /** When the owner submitted the setup for approval; null until then. */
+      submitted_at: z.iso.datetime().nullable(),
     }),
   ),
 });

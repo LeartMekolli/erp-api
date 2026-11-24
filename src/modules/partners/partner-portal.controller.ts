@@ -23,7 +23,9 @@ export class PartnerPortalController {
 
   @ApiDoc({
     summary: "You, and the partners you act for, with your role and each partner's status.",
-    description: 'For partner people only; staff and customer people get 403.',
+    description:
+      'For partner people only; staff and customer people get 403. `submitted_at` tells a partner still `setting_up` ' +
+      'whether it is waiting for approval.',
     response: partnerMeResponseSchema,
   })
   @PartnerPerson()

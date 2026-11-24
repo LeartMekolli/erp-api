@@ -6,7 +6,7 @@ import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
-import { partnerResponseSchema, partnerSetupResponseSchema } from '../src/modules/partners/partner-response';
+import { partnerMeResponseSchema, partnerResponseSchema, partnerSetupResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -283,5 +283,36 @@ describe('partners: capabilities, capacity, closed periods and offerings', () =>
     await tenant.staff.post(`/partners/${tenant.castco}/approve`).expect(200);
     await tenant.castcoOwner.post(`${portal}/submit`).expect(409);
     expect(await submitted()).toBe(1);
+  });
+
+  it('tells a person, for each partner they act for, whether its setup was submitted', async () => {
+    const tenant = await freshTenant();
+    // Owner at CastCo and member at MetalWorks.
+    const user = await createTestUser(prisma, tenant.id, { roles: [] });
+    await prisma.inTenant(tenant.id, async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { kind: 'partner' } });
+      await tx.organisationMembership.createMany({
+        data: [
+          { userId: user.id, organisationType: 'partner', organisationId: tenant.castco, role: 'owner' },
+          { userId: user.id, organisationType: 'partner', organisationId: tenant.metalworks, role: 'member' },
+        ],
+      });
+    });
+    const person = as((await tokens.issueForUser(tenant.id, user.id)).accessToken);
+    const me = async () => {
+      const response = await person.get('/partner-portal/me').expect(200);
+      expectDocumented(partnerMeResponseSchema, response.body);
+      const partners = (response.body as { partners: { id: string; status: string; submitted_at: string | null }[] }).partners;
+      return new Map(partners.map((partner) => [partner.id, partner]));
+    };
+
+    const before = await me();
+    expect(before.get(tenant.castco)).toMatchObject({ status: 'setting_up', submitted_at: null });
+    expect(before.get(tenant.metalworks)).toMatchObject({ status: 'setting_up', submitted_at: null });
+
+    const sent = await person.post(`/partner-portal/partners/${tenant.castco}/submit`).expect(200);
+    const after = await me();
+    expect(after.get(tenant.castco)).toMatchObject({ status: 'setting_up', submitted_at: (sent.body as { submitted_at: string }).submitted_at });
+    expect(after.get(tenant.metalworks)).toMatchObject({ submitted_at: null });
   });
 });

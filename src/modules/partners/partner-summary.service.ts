@@ -15,11 +15,16 @@ type Tx = Prisma.TransactionClient;
 
 interface PaidOwed {
   paid: Prisma.Decimal;
+  pending: Prisma.Decimal;
   owed: Prisma.Decimal;
 }
 const zero = () => new Prisma.Decimal(0);
-const emptyPaidOwed = (): PaidOwed => ({ paid: zero(), owed: zero() });
-const addPaidOwed = (a: PaidOwed, b: PaidOwed): PaidOwed => ({ paid: a.paid.add(b.paid), owed: a.owed.add(b.owed) });
+const emptyPaidOwed = (): PaidOwed => ({ paid: zero(), pending: zero(), owed: zero() });
+const addPaidOwed = (a: PaidOwed, b: PaidOwed): PaidOwed => ({
+  paid: a.paid.add(b.paid),
+  pending: a.pending.add(b.pending),
+  owed: a.owed.add(b.owed),
+});
 
 /** The partner's active pieces now at each step it does, on track or late (a job past its `due_on`). */
 async function stepsNow(tx: Tx, partnerId: string, today: string): Promise<PartnerSummaryResponse['steps']> {
@@ -37,13 +42,19 @@ async function stepsNow(tx: Tx, partnerId: string, today: string): Promise<Partn
     ORDER BY min(ws.position), ws.name`;
 }
 
-/** What each local day's entries were worth: what a payout holds as paid, the rest as owed. */
+/**
+ * What each local day's entries were worth: what paid payouts hold as paid, what pending ones hold as
+ * pending, the rest as owed. A payout line is negative when it takes back money paid before, so what all
+ * payouts hold together comes first, kept between zero and the job's amount; each part is never below zero.
+ */
 function perDay(entries: OwedEntry[], timeZone: string): Map<string, PaidOwed> {
   const days = new Map<string, PaidOwed>();
   for (const entry of entries) {
-    const paid = Prisma.Decimal.min(entry.paid, entry.amount);
+    const held = Prisma.Decimal.min(Prisma.Decimal.max(entry.paid.add(entry.pending), 0), entry.amount);
+    const paid = Prisma.Decimal.min(Prisma.Decimal.max(entry.paid, 0), held);
+    const pending = held.sub(paid);
     const day = localDate(entry.at, timeZone);
-    days.set(day, addPaidOwed(days.get(day) ?? emptyPaidOwed(), { paid, owed: entry.amount.sub(paid) }));
+    days.set(day, addPaidOwed(days.get(day) ?? emptyPaidOwed(), { paid, pending, owed: entry.amount.sub(held) }));
   }
   return days;
 }
@@ -89,15 +100,20 @@ export class PartnerSummaryService {
         emptyPaidOwed,
         addPaidOwed,
       );
+      const totals = points.reduce(addPaidOwed, emptyPaidOwed());
       return {
         ...response,
         earned: total(entries.filter((entry) => entry.at >= current.from)).toFixed(2),
         previous_earned: total(entries.filter((entry) => entry.at < current.from)).toFixed(2),
+        paid_total: totals.paid.toFixed(2),
+        pending_total: totals.pending.toFixed(2),
+        owed_total: totals.owed.toFixed(2),
         currency: tenant.defaultCurrency,
         series: spans.map((span, index) => ({
           start: span.start,
           days: span.days,
           paid: points[index].paid.toFixed(2),
+          pending: points[index].pending.toFixed(2),
           owed: points[index].owed.toFixed(2),
         })),
       };

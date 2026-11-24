@@ -63,8 +63,10 @@ const SETUP: ApiDocOptions = {
 const CAPACITY_HISTORY: ApiDocOptions = {
   summary: "The partner's load and capacity per step type, as kept each day.",
   description:
-    'Kept daily at 02:00 UTC for every step type the partner can do. `from` and `to` are UTC days, both included: ' +
-    'by default the last 30 days, at most 366.',
+    "Kept once a day for every step type the partner can do, under the workspace's day. `from` and `to` are workspace " +
+    'days, both included: by default the last 30 days, at most 366. `load` is the pieces offered to or accepted by the ' +
+    "partner with the step still ahead. It is compared with one period's `capacity` as it is, whether `capacity_period` " +
+    'is `day` or `week`: offers go to a partner only while `load` plus the job fits within `capacity`.',
   query: capacityHistoryQuerySchema,
   response: capacityHistoryResponseSchema,
   errors: [400, 404],

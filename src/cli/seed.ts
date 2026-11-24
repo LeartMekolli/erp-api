@@ -253,7 +253,7 @@ void runCli(async (app) => {
     demo.id,
     new Date(),
   );
-  process.stdout.write(`history for demo: created ${history.orders} finished orders and ${history.payouts} partner payouts\n`);
+  process.stdout.write(`history for demo: created ${history.orders} finished orders and ${history.payouts} partner payouts (${history.pending} pending)\n`);
 
   // Audited as the demo's catalog user, which can't sign in, like the catalog's uploads.
   const plans = await seedPlans(

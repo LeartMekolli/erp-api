@@ -78,7 +78,7 @@ describe('partners demo seed', () => {
     const login = await http().post('/auth/login').send({ email: 'owner@northcast.example.test', password: PASSWORD, workspace: tenant.slug }).expect(200);
     const owner = as((login.body as { access_token: string }).access_token);
     const me = (await owner.get('/partner-portal/me').expect(200)).body as { partners: { id: string; display_name: string; role: string; status: string }[] };
-    expect(me.partners).toEqual([{ id: expect.any(String), display_name: 'Northcast Foundry', role: 'owner', status: 'approved' }]);
+    expect(me.partners).toEqual([{ id: expect.any(String), display_name: 'Northcast Foundry', role: 'owner', status: 'approved', submitted_at: null }]);
     const portal = `/partner-portal/partners/${me.partners[0].id}`;
 
     const setup = (await owner.get(`${portal}/setup`).expect(200)).body as {

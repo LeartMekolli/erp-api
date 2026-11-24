@@ -35,7 +35,10 @@ interface Summary {
   earned?: string;
   previous_earned?: string;
   currency?: string;
-  series?: { start: string; days: number; paid: string; owed: string }[];
+  paid_total?: string;
+  pending_total?: string;
+  owed_total?: string;
+  series?: { start: string; days: number; paid: string; pending: string; owed: string }[];
 }
 
 const DAY_MS = 86_400_000;
@@ -182,6 +185,25 @@ describe('partners: their summary', () => {
   };
   const ALL_STEPS = ['print_pattern', 'casting_tree', 'casting', 'polishing', 'final_qc'];
 
+  /** A payout to CastCo holding `amount` of its accepted job on `group`; settled only when `paid`. */
+  const payoutFor = (tenant: Tenant, group: string, status: 'pending' | 'paid' | 'failed' | 'reversed', amount: string) =>
+    prisma.inTenant(tenant.id, async (tx) => {
+      const job = await tx.jobAssignment.findFirstOrThrow({ where: { groupId: group, partnerId: tenant.castco, status: 'accepted' }, select: { id: true } });
+      return tx.payout.create({
+        data: {
+          partnerId: tenant.castco,
+          amount: d(amount),
+          currency: 'EUR',
+          status,
+          providerTransferId: status === 'pending' ? null : `tr_${randomBytes(4).toString('hex')}`,
+          createdByUserId: tenant.ownerId,
+          settledAt: status === 'paid' ? new Date() : null,
+          jobs: { create: { assignmentId: job.id, amount: d(amount) } },
+        },
+        select: { id: true },
+      });
+    });
+
   const summaryOf = async (person: Person, partnerId: string, from: string, to: string, extra = '') => {
     const response = await person.get(`/partner-portal/partners/${partnerId}/summary?from=${from}&to=${to}${extra}`).expect(200);
     expectDocumented(partnerSummaryResponseSchema, response.body);
@@ -229,9 +251,11 @@ describe('partners: their summary', () => {
         },
       });
     });
-    // Job B: finished today, owed its cost, not yet paid.
+    // Job B: finished today, owed its cost; a payout not yet paid holds 10.00 of it.
     const b = await tenant.job();
     await pass(tenant, b.group, ALL_STEPS);
+    await payoutFor(tenant, b.group, 'pending', '10.00');
+    const bOwed = d(b.cost).minus(10).toFixed(2);
 
     const today = fromToday(0);
     const body = await summaryOf(tenant.castcoAdmin, tenant.castco, fromToday(-59), today);
@@ -243,12 +267,13 @@ describe('partners: their summary', () => {
     expect(series.reduce((sum, point) => sum + point.days, 0)).toBe(60);
     expect(series.map((point) => point.start)).toEqual([...series.map((point) => point.start)].sort());
     const bucketOf = (day: string) => series.find((point) => point.start <= day && day < addDays(point.start, point.days))!;
-    expect(bucketOf(fromToday(-14))).toMatchObject({ paid: '40.00', owed: '0.00' });
-    expect(bucketOf(today)).toMatchObject({ paid: '0.00', owed: d(b.cost).toFixed(2) });
-    // Each point is the sum of what its days hold; the points add up to `earned`.
-    const sum = (key: 'paid' | 'owed') => series.reduce((total, point) => total.plus(point[key]), d('0'));
-    expect(sum('paid').plus(sum('owed')).toFixed(2)).toBe(body.earned);
+    expect(bucketOf(fromToday(-14))).toMatchObject({ paid: '40.00', pending: '0.00', owed: '0.00' });
+    expect(bucketOf(today)).toMatchObject({ paid: '0.00', pending: '10.00', owed: bOwed });
+    // Each point is the sum of what its days hold; the points add up to `earned`, and to the range's totals.
+    const sum = (key: 'paid' | 'pending' | 'owed') => series.reduce((total, point) => total.plus(point[key]), d('0'));
+    expect(sum('paid').plus(sum('pending')).plus(sum('owed')).toFixed(2)).toBe(body.earned);
     expect(sum('paid').toFixed(2)).toBe('40.00');
+    expect(body).toMatchObject({ paid_total: '40.00', pending_total: '10.00', owed_total: bOwed });
 
     // The 8 days to today: only B in this period, and A's 40.00 in the 8 before it.
     const shorter = await summaryOf(tenant.castcoAdmin, tenant.castco, fromToday(-7), today);
@@ -269,7 +294,59 @@ describe('partners: their summary', () => {
     const body = await summaryOf(tenant.castcoMember, tenant.castco, fromToday(-6), fromToday(0));
     expect(body.jobs_finished).toBe(1);
     expect(body.steps.map((step) => [step.key, step.on_track, step.late])).toEqual([['casting_tree', 1, 0]]);
-    for (const key of ['earned', 'previous_earned', 'currency', 'series']) expect(body).not.toHaveProperty(key);
+    for (const key of ['earned', 'previous_earned', 'currency', 'series', 'paid_total', 'pending_total', 'owed_total']) {
+      expect(body).not.toHaveProperty(key);
+    }
+  });
+
+  it('counts a failed or reversed payout as owed again, and a job held by a paid and a pending payout in both parts', async () => {
+    const tenant = await freshTenant();
+    const { group, cost } = await tenant.job();
+    await pass(tenant, group, ALL_STEPS);
+    const today = fromToday(0);
+    const point = async () => (await summaryOf(tenant.castcoAdmin, tenant.castco, today, today)).series![0];
+    const all = d(cost).toFixed(2);
+
+    // A payout that failed holds nothing: the whole cost is owed again.
+    const failed = await payoutFor(tenant, group, 'failed', all);
+    expect(await point()).toMatchObject({ paid: '0.00', pending: '0.00', owed: all });
+    await prisma.inTenant(tenant.id, (tx) => tx.payout.update({ where: { id: failed.id }, data: { status: 'reversed' } }));
+    expect(await point()).toMatchObject({ paid: '0.00', pending: '0.00', owed: all });
+
+    // One payout paid all but 5.00, a second one on its way holds the 5.00: nothing is left owed.
+    await payoutFor(tenant, group, 'paid', d(cost).minus(5).toFixed(2));
+    await payoutFor(tenant, group, 'pending', '5.00');
+    expect(await point()).toMatchObject({ paid: d(cost).minus(5).toFixed(2), pending: '5.00', owed: '0.00' });
+  });
+
+  it('never shows a pending take-back as money owed', async () => {
+    const tenant = await freshTenant();
+    const a = await tenant.job();
+    await pass(tenant, a.group, ALL_STEPS);
+    const b = await tenant.job();
+    await pass(tenant, b.group, ALL_STEPS);
+    const today = fromToday(0);
+    // A was paid 10.00 too much. The payout on its way pays B and takes the 10.00 back from A (a negative line);
+    // a payout's own total is never negative.
+    await payoutFor(tenant, a.group, 'paid', d(a.cost).plus(10).toFixed(2));
+    await prisma.inTenant(tenant.id, async (tx) => {
+      const jobOf = async (group: string) =>
+        (await tx.jobAssignment.findFirstOrThrow({ where: { groupId: group, partnerId: tenant.castco, status: 'accepted' }, select: { id: true } })).id;
+      await tx.payout.create({
+        data: {
+          partnerId: tenant.castco,
+          amount: d(b.cost).minus(10),
+          currency: 'EUR',
+          status: 'pending',
+          createdByUserId: tenant.ownerId,
+          jobs: { create: [{ assignmentId: await jobOf(a.group), amount: d('-10.00') }, { assignmentId: await jobOf(b.group), amount: d(b.cost) }] },
+        },
+      });
+    });
+    const body = await summaryOf(tenant.castcoAdmin, tenant.castco, today, today);
+    // A counts as paid its cost, nothing pending, nothing owed; B is pending in full.
+    expect(body.series![0]).toMatchObject({ paid: d(a.cost).toFixed(2), pending: d(b.cost).toFixed(2), owed: '0.00' });
+    expect(body).toMatchObject({ paid_total: d(a.cost).toFixed(2), pending_total: d(b.cost).toFixed(2), owed_total: '0.00' });
   });
 
   it('counts a job finished on the day its part ended, and again at the new moment after a rework reopens it', async () => {
@@ -285,7 +362,7 @@ describe('partners: their summary', () => {
     const week = [fromToday(-6), today] as const;
     const finishedIn = (from: Date, to: Date) => prisma.inTenant(tenant.id, (tx) => finishedBetween(tx, tenant.castco, from, to));
     // The week is seven daily points, all of them empty.
-    const zeroes = (body: Summary) => body.series!.length === 7 && body.series!.every((point) => point.paid === '0.00' && point.owed === '0.00');
+    const zeroes = (body: Summary) => body.series!.length === 7 && body.series!.every((point) => point.paid === '0.00' && point.pending === '0.00' && point.owed === '0.00');
 
     // Finished today: counted in a range holding today, in the period after it as the previous one, and nowhere else.
     expect(await summaryOf(tenant.castcoAdmin, tenant.castco, today, today)).toMatchObject({ jobs_finished: 1, previous_jobs_finished: 0 });
@@ -315,7 +392,7 @@ describe('partners: their summary', () => {
     expect(await summaryOf(tenant.castcoAdmin, tenant.castco, tomorrow, tomorrow)).toMatchObject({ jobs_finished: 0, previous_jobs_finished: 1 });
     const again = await summaryOf(tenant.castcoAdmin, tenant.castco, ...week);
     expect(again.earned).toBe(d(cost).toFixed(2));
-    expect(again.series!.find((point) => point.start === today)).toMatchObject({ paid: '0.00', owed: d(cost).toFixed(2) });
+    expect(again.series!.find((point) => point.start === today)).toMatchObject({ paid: '0.00', pending: '0.00', owed: d(cost).toFixed(2) });
     expect(again.series!.reduce((total, point) => total.plus(point.paid).plus(point.owed), d('0')).toFixed(2)).toBe(again.earned);
     // The owed moment moved with it.
     const entries = await prisma.inTenant(tenant.id, (tx) => owedBetween(tx, tStart, tSecondDone, tenant.castco));

@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { localDate } from '../src/modules/orders/dates';
 import { CapacitySnapshotHandler } from '../src/modules/partners/capacity-snapshot.handler';
 import { capacityHistoryResponseSchema } from '../src/modules/partners/partner-response';
 import { measuredDesign } from './catalog-fixtures';
@@ -173,6 +174,43 @@ describe('partners: capacity history', () => {
     // A range: today alone, or yesterday, which has nothing.
     expect(await history(tenant, tenant.castco, `?from=${day()}&to=${day()}`)).toHaveLength(6);
     expect(await history(tenant, tenant.castco, `?from=${day(-1)}&to=${day(-1)}`)).toEqual([]);
+  });
+
+  it("drops the day's rows when the workspace has no capabilities left", async () => {
+    const tenant = await freshTenant();
+    await snapshot.snapshot(tenant.id, new Date());
+    expect(await stored(tenant)).toBe(7);
+
+    for (const partnerId of [tenant.castco, tenant.newcomer]) {
+      await tenant.staff.put(`/partners/${partnerId}/capabilities`, { capabilities: [] }).expect(200);
+    }
+    await snapshot.snapshot(tenant.id, new Date());
+    expect(await stored(tenant)).toBe(0);
+    expect(await history(tenant, tenant.castco)).toEqual([]);
+  });
+
+  it('keeps and reads the workspace day, not the UTC day', async () => {
+    const tenant = await freshTenant();
+    const zone = 'Pacific/Auckland';
+    await prisma.inTenant(tenant.id, (tx) => tx.tenant.update({ where: { id: tenant.id }, data: { timezone: zone } }));
+
+    // 20:00 UTC on the 24th is 09:00 on the 25th in Auckland (UTC+13 in November).
+    await snapshot.snapshot(tenant.id, new Date('2026-11-24T20:00:00Z'));
+    const kept = await history(tenant, tenant.castco, '?from=2026-11-25&to=2026-11-25');
+    expect(kept).toHaveLength(6);
+    expect(kept.every((row) => row.date === '2026-11-25')).toBe(true);
+    expect(await history(tenant, tenant.castco, '?from=2026-11-24&to=2026-11-24')).toEqual([]);
+    expect(await stored(tenant)).toBe(7);
+
+    // 01:00 UTC on the 25th is 14:00 the same Auckland day: that day's rows are replaced, no next day is kept.
+    await snapshot.snapshot(tenant.id, new Date('2026-11-25T01:00:00Z'));
+    expect(await stored(tenant)).toBe(7);
+    expect(await history(tenant, tenant.castco, '?from=2026-11-26&to=2026-11-26')).toEqual([]);
+
+    // By default the range ends on the workspace's today, whatever the UTC day.
+    await snapshot.snapshot(tenant.id, new Date());
+    const today = localDate(new Date(), zone);
+    expect((await history(tenant, tenant.castco)).some((row) => row.date === today)).toBe(true);
   });
 
   it('refuses a bad range, and keeps the history to staff of the workspace', async () => {

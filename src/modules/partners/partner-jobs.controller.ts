@@ -51,7 +51,9 @@ export class PartnerJobsController {
   @ApiDoc({
     summary: "The partner's jobs finished and pieces at its steps for any dates; earnings per bucket for admins and owners.",
     description:
-      'Dates are in the workspace time zone, both ends included. `earned`, `previous_earned`, `currency` and `series` are left out for a member.',
+      'Dates are in the workspace time zone, both ends included. `pending` is money in a payout that has not been paid yet; ' +
+      'a failed or reversed payout counts as owed again. `earned`, `previous_earned`, `paid_total`, `pending_total`, ' +
+      '`owed_total`, `currency` and `series` are left out for a member.',
     query: rangeQuerySchema,
     response: partnerSummaryResponseSchema,
     errors: [400, 404],
@@ -69,7 +71,8 @@ export class PartnerJobsController {
     summary: 'What the partner is owed, per job it has or had, newest first, a page at a time.',
     description:
       'A job is owed once every live piece has passed the payout step: its cost, or an amount the workspace set. ' +
-      '`due_total` is what the next payout pays and `not_yet_total` what the jobs not owed yet will be, across every page.',
+      '`due_total` is what the next payout pays and `not_yet_total` what the jobs not owed yet will be, across every page. ' +
+      "A job's `paid` includes what payouts still pending hold; the summary shows those apart as `pending`.",
     query: paginationQuerySchema,
     response: portalOwedResponseSchema,
     errors: [400, 404],
