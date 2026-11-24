@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { HandlesJob, JobHandler } from '../../jobs/handles-job';
+import { localDate } from '../orders/dates';
 import { EligibilityService } from './eligibility.service';
 
 /**
  * Daily at 02:00 UTC (SCHEDULED_JOBS['partners.capacity.snapshot']). Keeps each partner's load and
- * capacity at each step type it can do, for the UTC day (Partners spec, D83). Safe to run again: a
- * second run the same day replaces that day's rows with the load as it is now.
+ * capacity at each step type it can do, for the workspace's day in its time zone (Partners spec, D83).
+ * Safe to run again: a second run the same workspace day replaces that day's rows with the load as it is now.
  */
 @Injectable()
 @HandlesJob('partners.capacity.snapshot')
@@ -31,10 +32,11 @@ export class CapacitySnapshotHandler implements JobHandler<Record<string, never>
     }
   }
 
-  /** One workspace's rows for the UTC day of `at`. */
+  /** One workspace's rows for its own day of `at`, in its time zone. */
   async snapshot(tenantId: string, at: Date): Promise<void> {
-    const date = new Date(`${at.toISOString().slice(0, 10)}T00:00:00Z`);
     await this.prisma.inTenant(tenantId, async (tx) => {
+      const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+      const date = new Date(`${localDate(at, timezone)}T00:00:00Z`);
       const capabilities = await tx.partnerCapability.findMany({
         select: { partnerId: true, stepTypeId: true, capacity: true, capacityPeriod: true },
       });

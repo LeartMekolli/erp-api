@@ -4,6 +4,7 @@ import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { localDate } from '../orders/dates';
 import { positiveAmountSchema } from '../pricing/decimals';
 import { CAPACITY_PERIODS } from './partner-response';
 import type { CapacityHistoryResponse, PartnerSetupResponse } from './partner-response';
@@ -54,7 +55,7 @@ export const limitsSchema = z.object({
   accepts_direct_orders: z.boolean().optional(),
 });
 
-/** The days to read capacity history for, both included; by default the last 30, up to today. */
+/** The workspace days to read capacity history for, both included; by default the last 30, up to the workspace's today. */
 export const capacityHistoryQuerySchema = z.object({
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
@@ -92,15 +93,17 @@ export class SetupService {
     partnerId: string,
     query: z.infer<typeof capacityHistoryQuerySchema>,
   ): Promise<CapacityHistoryResponse> {
-    const to = query.to ? date(query.to) : date(isoDate(new Date()));
-    const from = query.from ? date(query.from) : new Date(to.getTime() - 29 * DAY_MS);
-    if (from > to) {
-      throw new BadRequestException('to: must not be before from');
-    }
-    if ((to.getTime() - from.getTime()) / DAY_MS + 1 > MAX_HISTORY_DAYS) {
-      throw new BadRequestException(`from: a range covers at most ${MAX_HISTORY_DAYS} days`);
-    }
     return this.prisma.inTenant(tenantId, async (tx) => {
+      // Rows are kept by the workspace's day, so "today" is the workspace's too.
+      const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+      const to = query.to ? date(query.to) : date(localDate(new Date(), timezone));
+      const from = query.from ? date(query.from) : new Date(to.getTime() - 29 * DAY_MS);
+      if (from > to) {
+        throw new BadRequestException('to: must not be before from');
+      }
+      if ((to.getTime() - from.getTime()) / DAY_MS + 1 > MAX_HISTORY_DAYS) {
+        throw new BadRequestException(`from: a range covers at most ${MAX_HISTORY_DAYS} days`);
+      }
       if (!(await tx.partner.findUnique({ where: { id: partnerId }, select: { id: true } }))) {
         throw new NotFoundException('Partner not found');
       }
