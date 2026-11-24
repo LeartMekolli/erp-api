@@ -71,7 +71,8 @@ export class PartnerJobsController {
     summary: 'What the partner is owed, per job it has or had, newest first, a page at a time.',
     description:
       'A job is owed once every live piece has passed the payout step: its cost, or an amount the workspace set. ' +
-      '`due_total` is what the next payout pays and `not_yet_total` what the jobs not owed yet will be, across every page.',
+      '`due_total` is what the next payout pays and `not_yet_total` what the jobs not owed yet will be, across every page. ' +
+      "A job's `paid` includes what payouts still pending hold; the summary shows those apart as `pending`.",
     query: paginationQuerySchema,
     response: portalOwedResponseSchema,
     errors: [400, 404],
