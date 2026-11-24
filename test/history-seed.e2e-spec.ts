@@ -68,7 +68,7 @@ describe('history seed', () => {
 
   let w: { id: string; ownerId: string };
   let now: Date;
-  let made: { orders: number; payouts: number };
+  let made: { orders: number; payouts: number; pending: number };
 
   // The demo, then a year of orders, each quoted, placed, paid and handed to a workshop through the
   // services: far more work than one request, so it seeds once here, with much more than the usual 20 s.
@@ -132,13 +132,15 @@ describe('history seed', () => {
     expect(range.current.production.defects_by_kind.length).toBeGreaterThan(0);
     expect(range.on_time_target).toBe(0.9);
 
-    // Every history order is delivered, and every payout is paid.
+    // Every history order is delivered; every payout is paid but the latest one, still on its way.
+    expect(made.pending).toBe(1);
     const counts = await prisma.inTenant(w.id, async (tx) => ({
       undelivered: await tx.order.count({ where: { channelOrderId: { startsWith: 'history:' }, deliveredAt: null } }),
       delivered: await tx.order.count({ where: { channelOrderId: { startsWith: 'history:' }, deliveredAt: { not: null } } }),
-      payouts: await tx.payout.count({ where: { status: 'paid' } }),
+      payouts: await tx.payout.count({ where: { status: { in: ['paid', 'pending'] } } }),
+      pending: await tx.payout.count({ where: { status: 'pending', settledAt: null } }),
     }));
-    expect(counts).toEqual({ undelivered: 0, delivered: made.orders, payouts: made.payouts });
+    expect(counts).toEqual({ undelivered: 0, delivered: made.orders, payouts: made.payouts, pending: 1 });
   });
 
   it('fails one piece in eight at its check step, one in nine of the check moves, and leaves no notification for a history order', async () => {
@@ -180,7 +182,7 @@ describe('history seed', () => {
   it('makes nothing the second time', async () => {
     expect(await historyOrders(w.id)).toBe(made.orders);
 
-    expect(await seedHistory(deps(), w.id, now)).toEqual({ orders: 0, payouts: 0 });
+    expect(await seedHistory(deps(), w.id, now)).toEqual({ orders: 0, payouts: 0, pending: 0 });
     expect(await historyOrders(w.id)).toBe(made.orders);
   });
 

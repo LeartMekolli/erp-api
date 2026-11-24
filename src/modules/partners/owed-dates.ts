@@ -30,8 +30,10 @@ export interface OwedEntry {
   groupId: string;
   at: Date;
   amount: Prisma.Decimal;
-  /** What pending and paid payouts hold for it. */
+  /** What paid payouts hold for it. */
   paid: Prisma.Decimal;
+  /** What pending payouts hold for it: on its way, not paid yet. */
+  pending: Prisma.Decimal;
 }
 
 /** Pieces still to make or made; scrapped and cancelled ones are replaced or gone (as `owed.ts`). */
@@ -118,7 +120,7 @@ function movesByGroup(rows: MoveRow[], groupOf: Map<string, string>): Map<string
 /**
  * What partners became owed in `[from, to)`, of every partner or only `partnerId`'s hand-overs. An
  * accepted job is dated by `owedAt`; a replaced one by when the job's next hand-over was made; a cancelled
- * one by when its order line was cancelled. An amount of 0 is left out. Four queries, whatever
+ * one by when its order line was cancelled. An amount of 0 is left out. Five queries, whatever
  * the number of jobs.
  */
 export async function owedBetween(tx: Tx, from: Date, to: Date, partnerId?: string): Promise<OwedEntry[]> {
@@ -168,12 +170,17 @@ export async function owedBetween(tx: Tx, from: Date, to: Date, partnerId?: stri
   const moveRows = await tx.transition.findMany({ where: { workOrder: { groupId: { in: groupIds } } }, select: MOVE_SELECT });
   const moves = movesByGroup(moveRows, groupOf);
 
-  const held = await tx.payoutJob.groupBy({
-    by: ['assignmentId'],
-    _sum: { amount: true },
-    where: { assignmentId: { in: owedRows.map((row) => row.id) }, payout: { status: { in: ['pending', 'paid'] } } },
-  });
-  const paidFor = new Map(held.map((entry) => [entry.assignmentId, entry._sum.amount ?? new Prisma.Decimal(0)]));
+  // What payouts of each status hold per job; a failed or reversed payout holds nothing.
+  const heldBy = async (status: 'paid' | 'pending') => {
+    const held = await tx.payoutJob.groupBy({
+      by: ['assignmentId'],
+      _sum: { amount: true },
+      where: { assignmentId: { in: owedRows.map((row) => row.id) }, payout: { status } },
+    });
+    return new Map(held.map((entry) => [entry.assignmentId, entry._sum.amount ?? new Prisma.Decimal(0)]));
+  };
+  const paidFor = await heldBy('paid');
+  const pendingFor = await heldBy('pending');
 
   const byId = new Map(groups.map((group) => [group.id, group]));
   return owedRows.flatMap((row) => {
@@ -207,6 +214,7 @@ export async function owedBetween(tx: Tx, from: Date, to: Date, partnerId?: stri
         at,
         amount: owed.amount,
         paid: paidFor.get(row.id) ?? new Prisma.Decimal(0),
+        pending: pendingFor.get(row.id) ?? new Prisma.Decimal(0),
       },
     ];
   });

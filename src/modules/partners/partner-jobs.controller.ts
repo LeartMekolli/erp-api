@@ -51,7 +51,9 @@ export class PartnerJobsController {
   @ApiDoc({
     summary: "The partner's jobs finished and pieces at its steps for any dates; earnings per bucket for admins and owners.",
     description:
-      'Dates are in the workspace time zone, both ends included. `earned`, `previous_earned`, `currency` and `series` are left out for a member.',
+      'Dates are in the workspace time zone, both ends included. `pending` is money in a payout that has not been paid yet; ' +
+      'a failed or reversed payout counts as owed again. `earned`, `previous_earned`, `paid_total`, `pending_total`, ' +
+      '`owed_total`, `currency` and `series` are left out for a member.',
     query: rangeQuerySchema,
     response: partnerSummaryResponseSchema,
     errors: [400, 404],
