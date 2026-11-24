@@ -9,23 +9,14 @@ import { Prisma } from '../src/generated/prisma/client';
 import { claimDecisionResponseSchema, claimResponseSchema } from '../src/modules/claims/claim-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { payoutPageResponseSchema } from '../src/modules/payments/payment-response';
-import { pricedAssembly } from './assembly-fixtures';
-import { measuredDesign } from './catalog-fixtures';
+import { groupPromise } from '../src/modules/orders/order-lines';
+import { workspaceCalendar } from '../src/modules/orders/needs-today';
+import { SettingsService } from '../src/modules/settings/settings.service';
 import { expectDocumented } from './documented';
-import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
+import { deleteTestTenants } from './factories';
+import { orderWorkspace } from './order-fixtures';
+import type { Claim, Order, OrderWorkspace } from './order-fixtures';
 
-interface Order {
-  id: string;
-  number: number;
-  total: string;
-  lines: { id: string; position: number; total: string; group_id: string }[];
-}
-interface Claim {
-  id: string;
-  state: string;
-  lines: { id: string; pieces: number; decision: { outcome: string; remake_group_id: string | null } | null }[];
-  shipment: { courier: string | null; tracking: string | null; delivered_at: string | null } | null;
-}
 interface Decided extends Claim {
   remake: { group_id: string; unassigned_reasons: string[] } | null;
 }
@@ -44,15 +35,7 @@ interface OwedJob {
   order: { id: string; number: number; line_position: number } | null;
 }
 
-const KEYS = {
-  secret_key: 'sk_test_51SecretValueAAAA',
-  publishable_key: 'pk_test_51PublishableBBBB',
-  webhook_secret: 'whsec_paymentsCCCC',
-  connect_webhook_secret: 'whsec_connectDDDD',
-};
-const ADDRESS = { name: 'Luna Jewels', line1: 'Hauptstraße 1', city: 'Berlin', postal_code: '10115', country: 'DE' };
 const d = (value: string) => new Prisma.Decimal(value);
-const today = () => new Date().toISOString().slice(0, 10);
 
 /**
  * Orders 3a, Task 4: a remake goes back to the workshop at fault as an offer at cost 0. Declined, or
@@ -76,103 +59,8 @@ describe('claims: remakes', () => {
     get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`),
   });
 
-  async function person(tenantId: string, kind: 'customer' | 'partner', organisationId: string, role: string) {
-    const user = await createTestUser(prisma, tenantId, { roles: [] });
-    await prisma.inTenant(tenantId, async (tx) => {
-      await tx.user.update({ where: { id: user.id }, data: { kind } });
-      await tx.organisationMembership.create({ data: { userId: user.id, organisationType: kind, organisationId, role } });
-    });
-    return as((await tokens.issueForUser(tenantId, user.id)).accessToken);
-  }
-
-  /**
-   * The pendant set (`pricedAssembly`, with the cast part under it); CastCo and MetalWorks, each able to
-   * make the whole cast line, with a member; Luna Jewels paying by bank transfer, with a buyer.
-   */
-  async function workspace() {
-    const tenant = await createTestTenant(prisma);
-    createdTenants.push(tenant.id);
-    const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
-    const staff = as((await tokens.issueForUser(tenant.id, owner.id)).accessToken);
-    const set = await pricedAssembly(staff, prisma, { id: tenant.id, staffUserId: owner.id, runMetal });
-    const cast = set.cast;
-    await staff.patch(`/catalog/products/${cast.productId}`, { published: true }).expect(200);
-    await staff.post('/orders/shipping-methods', { key: 'courier', name: 'Standard courier', price: '9.90' }).expect(201);
-    await staff.put('/payments/account', KEYS).expect(200);
-    const agreement = (await measuredDesign(prisma, tenant.id, owner.id, { status: 'uploaded', measures: [] })).versionId;
-
-    const { printPattern, castingTree, casting, polishing } = cast.steps;
-    const { finalQc, packing } = cast.workflow.notPriced;
-    const workshop = async (name: string) => {
-      const id = ((await staff.post('/partners', { name, display_name: name }).expect(201)).body as { id: string }).id;
-      await staff
-        .put(`/partners/${id}/capabilities`, {
-          capabilities: [printPattern, castingTree, casting, polishing, finalQc, packing].map((step_type_id) => ({
-            step_type_id,
-            capacity: 200,
-            capacity_period: 'week',
-          })),
-        })
-        .expect(200);
-      await staff.put(`/partners/${id}/offerings`, { option_value_ids: [cast.v.silver, cast.v.polished] }).expect(200);
-      await staff.post(`/partners/${id}/prices/copy-from-workspace`).expect(200);
-      await staff.put(`/partners/${id}/agreement`, { file_version_id: agreement, signed_on: '2026-10-24' }).expect(200);
-      await staff.post(`/partners/${id}/approve`).expect(200);
-      return { id, person: await person(tenant.id, 'partner', id, 'member') };
-    };
-    const castco = await workshop('CastCo');
-    const metalworks = await workshop('MetalWorks');
-
-    const luna = ((await staff.post('/customers', { name: 'Luna Jewels' }).expect(201)).body as { id: string }).id;
-    const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
-    const buyer = await person(tenant.id, 'customer', luna, 'buyer');
-
-    /**
-     * Luna's order, paid by bank transfer, made by CastCo unless `inHouse`, then delivered: 10 cast parts,
-     * or 3 pendant sets with `assembly`. Pieces are finished directly: moving them is Workflow's to test.
-     */
-    const delivered = async (options: { inHouse?: boolean; assembly?: boolean } = {}) => {
-      const body = options.assembly
-        ? { product_id: set.set, options: { material: 'silver_925', finish: 'polished' }, quantity: 3, customer_id: luna }
-        : {
-            product_id: cast.productId,
-            options: { material: 'silver_925', finish: 'polished' },
-            size: { scale: '1.5' },
-            quantity: 10,
-            file_version_id: lunaDesign.versionId,
-            customer_id: luna,
-          };
-      const quote = ((await staff.post('/pricing/quotes', body).expect(201)).body as { quote: { id: string } }).quote.id;
-      const order = (await staff.post('/orders', { customer_id: luna, lines: [{ quote_id: quote }], address: ADDRESS, shipping_method: 'courier' }).expect(201))
-        .body as Order;
-      await staff.post(`/orders/${order.id}/paid-by-hand`, { reference: `Transfer ${order.number}`, received_on: today() }).expect(200);
-      const group = order.lines[0].group_id;
-      if (!options.inHouse && !options.assembly) {
-        await staff.post(`/partners/jobs/${group}/offer`, { partner_id: castco.id }).expect(201);
-        await castco.person.post(`/partner-portal/partners/${castco.id}/jobs/${group}/accept`).expect(200);
-      }
-      // Every group of the order: the line's, and an assembly's parts'.
-      await prisma.inTenant(tenant.id, (tx) =>
-        tx.workOrder.updateMany({
-          where: { group: { OR: [{ orderLine: { is: { orderId: order.id } } }, { orderLinePart: { is: { line: { orderId: order.id } } } }] } },
-          data: { status: 'finished', currentStepId: null },
-        }),
-      );
-      await staff.post(`/orders/${order.id}/ship`, { courier: 'DHL', tracking: 'JD0001' }).expect(200);
-      await staff.post(`/orders/${order.id}/deliver`).expect(200);
-      return order;
-    };
-    /** Luna's buyer claims 2 pieces of the first line as faulty, or `pieces`. */
-    const claim = async (order: Order, pieces = 2) =>
-      (
-        await buyer
-          .post(`/portal/customers/${luna}/orders/${order.id}/claims`, { reason: 'defect', description: 'Cracked shanks.', lines: [{ position: 0, pieces }] })
-          .expect(201)
-      ).body as Claim;
-
-    return { id: tenant.id, ownerId: owner.id, staff, castco, metalworks, workshop, luna, buyer, delivered, claim };
-  }
-  type Workspace = Awaited<ReturnType<typeof workspace>>;
+  const workspace = () => orderWorkspace(prisma, tokens, as, { runMetal, createdTenants });
+  type Workspace = OrderWorkspace;
 
   const decide = (w: Workspace, claim: Claim, body: object) => w.staff.post(`/claims/${claim.id}/lines/${claim.lines[0].id}/decision`, body);
   /** Decides the claim's line a remake at `fault`, and answers the decision. */
@@ -411,5 +299,32 @@ describe('claims: remakes', () => {
     const refused = await decide(w, claim, { fault: 'workspace', outcome: 'remake' }).expect(400);
     expect((refused.body as { errors: { path: string }[] }).errors[0].path).toBe('outcome');
     expect((await claimLine(w, claim)).outcome).toBeNull();
+  });
+
+  it("stores the promise on each group: the order's for a line and its parts, the decision's for a remake", async () => {
+    const w = await workspace();
+    const promiseOf = async (order: Order) =>
+      (await prisma.inTenant(w.id, (tx) => tx.order.findUniqueOrThrow({ where: { id: order.id }, select: { promisedOn: true } }))).promisedOn;
+    const dueOf = async (group: string) =>
+      (await prisma.inTenant(w.id, (tx) => tx.workOrderGroup.findUniqueOrThrow({ where: { id: group }, select: { dueOn: true } }))).dueOn;
+
+    const order = await w.delivered();
+    expect(await dueOf(order.lines[0].group_id)).toEqual(await promiseOf(order));
+
+    // The assembly's line and each of its parts: the assembly order's promise.
+    const assembly = await w.delivered({ assembly: true });
+    const parts = await prisma.inTenant(w.id, (tx) =>
+      tx.workOrderGroup.findMany({ where: { orderLinePart: { is: { line: { orderId: assembly.id } } } }, select: { dueOn: true } }),
+    );
+    expect(parts.length).toBeGreaterThan(0);
+    const promised = await promiseOf(assembly);
+    expect(await dueOf(assembly.lines[0].group_id)).toEqual(promised);
+    for (const part of parts) expect(part.dueOn).toEqual(promised);
+
+    // A remake: its own promise, counted from the decision with the order's speed.
+    const group = (await remake(w, await w.claim(order), 'workshop')).remake!.group_id;
+    const expected = await prisma.inTenant(w.id, async (tx) => (await groupPromise(tx, group, await workspaceCalendar(tx, new SettingsService()))).promised);
+    expect(expected).not.toBeNull();
+    expect((await dueOf(group))?.toISOString().slice(0, 10)).toBe(expected);
   });
 });

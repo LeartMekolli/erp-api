@@ -147,6 +147,8 @@ describe('workflow: starting work orders from a quote', () => {
     // The group knows the quote it was priced by, whatever started it (Orders plan, Task 3).
     const row = await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.findUniqueOrThrow({ where: { id: group.id } }));
     expect(row.quoteId).toBe(quoteId);
+    // A quote's pieces are nobody's order: they are due on no day.
+    expect(row.dueOn).toBeNull();
     expect(await pieces(tenant, 'step_key=print_pattern&limit=50')).toHaveLength(10);
     expect(await pieces(tenant, 'step_key=casting')).toHaveLength(0);
   });

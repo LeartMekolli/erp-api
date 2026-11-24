@@ -15,7 +15,10 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Quote, WorkOrder, WorkOrderGroup } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
+import { workspaceCalendar } from '../orders/needs-today';
+import { groupPromise } from '../orders/order-lines';
 import { keySchema } from '../pricing/decimals';
+import { SettingsService } from '../settings/settings.service';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import type { WorkflowStepRow } from './coverage';
 import { actionFacts, listActions } from './move-history';
@@ -133,6 +136,7 @@ export class WorkOrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   registerStartHook(hook: StartHook): void {
@@ -319,6 +323,12 @@ export class WorkOrdersService {
         createdByUserId: input.createdByUserId,
       },
     });
+    // When the pieces are due, kept on the group so the work list sorts by it. A remake's decision isn't
+    // written yet, so its promise counts from now: the decision's moment, in this same transaction.
+    const { promised } = await groupPromise(tx, group.id, await workspaceCalendar(tx, this.settings));
+    if (promised) {
+      await tx.workOrderGroup.update({ where: { id: group.id }, data: { dueOn: new Date(promised) } });
+    }
     // Ids in number order, so a list by id lists the pieces in order.
     await tx.workOrder.createMany({
       data: Array.from({ length: input.quantity }, (_, index) => ({

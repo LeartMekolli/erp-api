@@ -1401,6 +1401,9 @@ model WorkOrderGroup {
   // The step types the source priced, which decide the priced steps on the path; null: every step runs.
   chainStepTypeIds  Json?    @map("chain_step_type_ids")
   parentGroupId     String?  @map("parent_group_id") @db.Uuid
+  // When the pieces are due: their order's promised date, or a remake's own promise (`groupPromise`); null for a
+  // quote. Set when the group starts. Anything that later changes a promise must change it here too.
+  dueOn             DateTime? @map("due_on") @db.Date
   createdByUserId   String   @map("created_by_user_id") @db.Uuid
   createdAt         DateTime @default(now()) @map("created_at")
 
@@ -1424,6 +1427,7 @@ model WorkOrderGroup {
   @@unique([tenantId, sourceType, sourceId])
   @@unique([tenantId, id])
   @@index([tenantId, queueRank])
+  @@index([tenantId, dueOn, queueRank, id])
   @@map("work_order_group")
 }
 
