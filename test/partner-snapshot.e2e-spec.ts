@@ -176,6 +176,19 @@ describe('partners: capacity history', () => {
     expect(await history(tenant, tenant.castco, `?from=${day(-1)}&to=${day(-1)}`)).toEqual([]);
   });
 
+  it("drops the day's rows when the workspace has no capabilities left", async () => {
+    const tenant = await freshTenant();
+    await snapshot.snapshot(tenant.id, new Date());
+    expect(await stored(tenant)).toBe(7);
+
+    for (const partnerId of [tenant.castco, tenant.newcomer]) {
+      await tenant.staff.put(`/partners/${partnerId}/capabilities`, { capabilities: [] }).expect(200);
+    }
+    await snapshot.snapshot(tenant.id, new Date());
+    expect(await stored(tenant)).toBe(0);
+    expect(await history(tenant, tenant.castco)).toEqual([]);
+  });
+
   it('keeps and reads the workspace day, not the UTC day', async () => {
     const tenant = await freshTenant();
     const zone = 'Pacific/Auckland';

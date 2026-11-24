@@ -40,7 +40,11 @@ export class CapacitySnapshotHandler implements JobHandler<Record<string, never>
       const capabilities = await tx.partnerCapability.findMany({
         select: { partnerId: true, stepTypeId: true, capacity: true, capacityPeriod: true },
       });
-      if (capabilities.length === 0) return;
+      if (capabilities.length === 0) {
+        // Nothing left to keep: an earlier run today may still have rows for the day.
+        await tx.partnerCapacitySnapshot.deleteMany({ where: { date } });
+        return;
+      }
       const loads = await this.eligibility.loads(tx, [...new Set(capabilities.map((row) => row.partnerId))]);
       for (const row of capabilities) {
         const values = {
