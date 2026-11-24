@@ -103,9 +103,10 @@ export type PartnerSetupResponse = z.infer<typeof partnerSetupResponseSchema>;
 export const capacityHistoryResponseSchema = z.strictObject({
   data: z.array(
     z.strictObject({
+      /** The workspace's day the row was kept. */
       date: z.iso.date(),
       step_type: z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() }),
-      /** Pieces offered to or accepted by the partner that still had the step ahead of them. */
+      /** Pieces offered to or accepted by the partner that still had the step ahead of them; compared with `capacity` as is. */
       load: z.number().int(),
       /** Pieces per `capacity_period`, as the partner had it that day. */
       capacity: z.number().int(),
@@ -534,6 +535,8 @@ export const partnerMeResponseSchema = z.strictObject({
       role: z.enum(PARTNER_ROLES),
       /** A suspended partner can still be read, but not changed. */
       status: z.enum(PARTNER_STATUSES),
+      /** When the owner submitted the setup for approval; null until then. */
+      submitted_at: z.iso.datetime().nullable(),
     }),
   ),
 });

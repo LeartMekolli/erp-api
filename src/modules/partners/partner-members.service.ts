@@ -51,7 +51,7 @@ export class PartnerMembersService {
       const partners = await tx.partner.findMany({
         where: { id: { in: memberships.map((membership) => membership.organisationId) } },
         orderBy: { displayName: 'asc' },
-        select: { id: true, displayName: true, status: true },
+        select: { id: true, displayName: true, status: true, submittedAt: true },
       });
       const roleOf = new Map(memberships.map((membership) => [membership.organisationId, membership.role]));
       return {
@@ -61,6 +61,7 @@ export class PartnerMembersService {
           display_name: partner.displayName,
           role: roleOf.get(partner.id) as PartnerRole,
           status: partner.status as PartnerStatus,
+          submitted_at: partner.submittedAt?.toISOString() ?? null,
         })),
       };
     });
