@@ -18,6 +18,7 @@ import {
   groupResponseSchema,
   moveResponseSchema,
   stepCountsResponseSchema,
+  stepGroupSchema,
   transitionListItemSchema,
   workOrderDetailResponseSchema,
   workOrderListItemSchema,
@@ -27,6 +28,7 @@ import type {
   GroupResponse,
   MoveResponse,
   StepCountsResponse,
+  StepGroup,
   TransitionListItem,
   WorkOrderDetailResponse,
   WorkOrderListItem,
@@ -36,10 +38,11 @@ import {
   WorkOrdersService,
   startGroupSchema,
   stepCountsQuerySchema,
+  stepGroupsQuerySchema,
   transitionQuerySchema,
   workOrderQuerySchema,
 } from './work-orders.service';
-import type { StepCountsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
+import type { StepCountsQuery, StepGroupsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
 
 const idSchema = z.uuid();
 
@@ -163,6 +166,27 @@ export class WorkOrdersController {
     @Query(new ZodValidationPipe(stepCountsQuerySchema)) query: StepCountsQuery,
   ): Promise<StepCountsResponse> {
     return this.workOrders.counts(auth, query);
+  }
+
+  @ApiDoc({
+    summary: 'The order lines with active pieces at one step, one row each, with how many are there and what they need.',
+    description:
+      'One row per group (an order line, an assembly part, a remake or a quote) with active pieces at `step_key` of ' +
+      "`workflow_id` (every version). `count` is the group's pieces there that the filters pick; `in_rework`, `workable` " +
+      'and `to_inspect` are the part of `count` being redone, that the caller may pass or fail, and to inspect in full at ' +
+      'a step that samples. `q`, `workable` and `sort` work as on `GET /workflow/work-orders`, by group: `started` is as ' +
+      'the groups started. Pages are by group, so one is never split; a cursor made for another sort is a 400.',
+    query: stepGroupsQuerySchema,
+    response: pageSchema(stepGroupSchema),
+    errors: [400],
+  })
+  @RequirePermission('workflow.read')
+  @Get('work-orders/groups')
+  groupsAtStep(
+    @CurrentUser() auth: TenantAuth,
+    @Query(new ZodValidationPipe(stepGroupsQuerySchema)) query: StepGroupsQuery,
+  ): Promise<Page<StepGroup>> {
+    return this.workOrders.groupsAtStep(auth, query);
   }
 
   @ApiDoc({

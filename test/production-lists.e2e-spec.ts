@@ -8,7 +8,7 @@ import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import type { GroupSummary } from '../src/modules/workflow/group-summary';
-import { stepCountsResponseSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
+import { stepCountsResponseSchema, stepGroupSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { expectDocumented } from './documented';
 import { deleteTestTenants } from './factories';
 import { orderWorkspace } from './order-fixtures';
@@ -398,6 +398,113 @@ describe('workflow: production lists', () => {
     await w.staff.get('/workflow/work-orders/counts').expect(400);
     await w.staff.get('/workflow/work-orders/counts?workflow_id=not-a-uuid').expect(400);
     await w.staff.get(`/workflow/work-orders/counts?workflow_id=${randomUUID()}`).expect(404);
+  });
+
+  interface StepGroup {
+    group: GroupSummary;
+    count: number;
+    in_rework: number;
+    workable: number;
+    to_inspect: number;
+  }
+  /** Every row of the order lines at `step`, through every page. */
+  const linesAt = async (client: Client, workflowId: string, step: string, extra = '', limit = 50) => {
+    const rows: StepGroup[] = [];
+    const pages: number[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await client
+        .get(`/workflow/work-orders/groups?workflow_id=${workflowId}&step_key=${step}&limit=${limit}${extra}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)
+        .expect(200);
+      expectDocumented(pageSchema(stepGroupSchema), page.body);
+      const body = page.body as { data: StepGroup[]; next_cursor: string | null };
+      rows.push(...body.data);
+      pages.push(body.data.length);
+      cursor = body.next_cursor;
+    } while (cursor);
+    return { rows, pages };
+  };
+  /** Puts `pieces` at their workflow's step `key`. */
+  const putAt = (w: OrderWorkspace, pieces: string[], key: string) =>
+    prisma.inTenant(w.id, async (tx) => {
+      const [first] = await tx.workOrder.findMany({ where: { id: { in: pieces } }, select: { group: { select: { workflowVersionId: true } } } });
+      const step = await tx.workflowStep.findFirstOrThrow({ where: { versionId: first.group.workflowVersionId, key } });
+      await tx.workOrder.updateMany({ where: { id: { in: pieces } }, data: { currentStepId: step.id } });
+    });
+
+  it('lists one row per order line at a step, with its counts', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    const inspectionType = (
+      (await w.staff.post('/pricing/step-types', { key: 'inspection', name: 'Inspection', position: 85, summary_group: null }).expect(201)).body as {
+        id: string;
+      }
+    ).id;
+    await cast.setSteps([{ key: 'inspection', name: 'Inspection', step_type_id: inspectionType, done_by: 'workspace', sampling: { inspect: 2, of_every: 10 } }]);
+
+    // 6 of a line's 10 pieces at polishing, 4 past it; one of the 6 failed and sent back.
+    const polished = await w.placed({ inHouse: true });
+    const pieces = (await piecesOf(w.staff, polished.lines[0].group_id)).map((piece) => piece.id);
+    await putAt(w, pieces.slice(0, 6), 'polishing');
+    await putAt(w, pieces.slice(6), 'plating');
+    await w.staff
+      .post('/workflow/moves', {
+        work_order_ids: [pieces[0]],
+        at_step: 'polishing',
+        kind: 'fail',
+        defect_id: cast.defects.scratch,
+        comment: 'Seen under the lamp',
+        answers: [{ item: 'surface', value: 'pitted' }],
+      })
+      .expect(200);
+
+    const { rows } = await linesAt(w.staff, cast.workflowId, 'polishing');
+    expect(rows).toEqual([
+      { group: expect.objectContaining({ id: polished.lines[0].group_id, source: 'order_line' }), count: 6, in_rework: 1, workable: 6, to_inspect: 0 },
+    ]);
+    // Without workflow.move, nothing is workable.
+    expect((await linesAt(await w.holding(['workflow.read']), cast.workflowId, 'polishing')).rows[0]).toMatchObject({ count: 6, workable: 0 });
+
+    // At a step that samples: as many to inspect as the work list marks.
+    const sampled = await w.placed({ inHouse: true });
+    const all = (await piecesOf(w.staff, sampled.lines[0].group_id)).map((piece) => piece.id);
+    // Passed at polishing, the last step before inspection on their path (plating isn't priced for them).
+    await putAt(w, all, 'polishing');
+    await w.staff
+      .post('/workflow/moves', { work_order_ids: all, at_step: 'polishing', kind: 'pass', answers: [{ item: 'surface', value: 'ok' }] })
+      .expect(200);
+    const marked = (await listed(w.staff, `/workflow/work-orders?group_id=${sampled.lines[0].group_id}&step_key=inspection`)).filter(
+      (piece) => (piece as Piece & { to_inspect: boolean | null }).to_inspect === true,
+    ).length;
+    const [atInspection] = (await linesAt(w.staff, cast.workflowId, 'inspection')).rows;
+    expect(atInspection).toMatchObject({ group: { id: sampled.lines[0].group_id }, count: 10, to_inspect: marked });
+    expect(marked).toBeGreaterThan(0);
+    expect(marked).toBeLessThan(10);
+  });
+
+  it('pages by line, never splitting one, in the chosen sort', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    const lines: string[] = [];
+    for (let made = 0; made < 3; made += 1) lines.push((await w.placed({ inHouse: true })).lines[0].group_id);
+    const [late, early, middle] = lines;
+    const due = { [late]: day(12), [early]: day(4), [middle]: day(8) };
+    await prisma.inTenant(w.id, async (tx) => {
+      for (const group of lines) await tx.workOrderGroup.update({ where: { id: group }, data: { dueOn: new Date(due[group]) } });
+    });
+    for (const group of lines) await moveAllTo(w, group, 'casting');
+    // 3 of the middle line's pieces already past casting.
+    await putAt(w, (await piecesOf(w.staff, middle)).slice(0, 3).map((piece) => piece.id), 'polishing');
+
+    const { rows, pages } = await linesAt(w.staff, cast.workflowId, 'casting', '&sort=due_on', 1);
+    expect(pages).toEqual([1, 1, 1]);
+    expect(rows.map((row) => [row.group.id, row.group.due_on, row.count])).toEqual([
+      [early, due[early], 10],
+      [middle, due[middle], 7],
+      [late, due[late], 10],
+    ]);
+    const latest = await linesAt(w.staff, cast.workflowId, 'casting', '&sort=-due_on', 1);
+    expect(latest.rows.map((row) => row.group.id)).toEqual([late, middle, early]);
   });
 
   it('refuses a cursor made for another sort', async () => {

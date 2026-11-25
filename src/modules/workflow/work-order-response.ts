@@ -115,6 +115,20 @@ export const stepCountsResponseSchema = z.strictObject({
 });
 export type StepCountsResponse = z.infer<typeof stepCountsResponseSchema>;
 
+/** An order line (any group) with active pieces at one step, and what its pieces there need. */
+export const stepGroupSchema = z.strictObject({
+  group: groupSummarySchema,
+  /** The group's active pieces at the step that the filters pick. */
+  count: z.number().int(),
+  /** Of `count`, those being redone after a failed check. */
+  in_rework: z.number().int(),
+  /** Of `count`, those the caller may pass or fail there (`may_work`). */
+  workable: z.number().int(),
+  /** Of `count`, those to inspect in full at a step that samples (`to_inspect`); 0 elsewhere. */
+  to_inspect: z.number().int(),
+});
+export type StepGroup = z.infer<typeof stepGroupSchema>;
+
 /** A row of the QC history, with the piece it moved. */
 export const transitionListItemSchema = transitionResponseSchema.extend({
   work_order: z.strictObject({ id: z.uuid(), label: z.string() }),
