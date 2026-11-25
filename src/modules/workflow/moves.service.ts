@@ -11,7 +11,7 @@ import type { WorkflowStepRow } from './coverage';
 import { pathFor } from './path';
 import { drawsAt, ensureDraw, historiesOf, lockDraws, mustInspect } from './sampling';
 import { assertSkills } from './step-skills';
-import { groupReady } from './progress';
+import { groupsWaitingForParts } from './holds';
 import { MAX_TEXT, MOVE_KINDS, checkMove, judge } from './qc-gate';
 import type { GateStep, MoveProblem } from './qc-gate';
 import type { MoveResponse, WorkOrderStatus } from './work-order-response';
@@ -431,19 +431,15 @@ export class MovesService {
       return;
     }
     const parentIds = [...new Set(leaving.map((piece) => piece.groupId))].sort();
-    const children = await tx.workOrderGroup.findMany({ where: { parentGroupId: { in: parentIds } }, select: { id: true, parentGroupId: true } });
+    const children = await tx.workOrderGroup.findMany({ where: { parentGroupId: { in: parentIds } }, select: { id: true } });
     if (children.length === 0) {
       return;
     }
     const childIds = children.map((child) => child.id).sort();
     await tx.$queryRaw`
       SELECT id FROM work_order_group WHERE id IN (${Prisma.join(childIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY id FOR SHARE`;
-    const parts = await tx.workOrder.findMany({ where: { groupId: { in: childIds } }, select: { groupId: true, status: true } });
-    const waiting = new Set(
-      children
-        .filter((child) => !groupReady(parts.filter((part) => part.groupId === child.id)))
-        .map((child) => child.parentGroupId!),
-    );
+    // The same rule the work lists mark held pieces by (`holds.ts`).
+    const waiting = await groupsWaitingForParts(tx, { id: { in: parentIds } });
     const held: MoveProblem[] = [];
     pieces.forEach((piece, index) => {
       if (waiting.has(piece.groupId) && landings[index].stepId !== pathOf(piece)[0]) {

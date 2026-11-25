@@ -31,6 +31,7 @@ import { PayoutAccountsService } from '../src/modules/payments/payout-accounts.s
 import { RefundsService } from '../src/modules/payments/refunds.service';
 import { QuotesService } from '../src/modules/pricing/quotes.service';
 import { MovesService } from '../src/modules/workflow/moves.service';
+import { workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
@@ -106,7 +107,7 @@ describe('demo orders seed', () => {
     await seedPayments({ prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) }, tenant.id, KEYS);
 
     const first = await seedDemoOrders(deps(), tenant.id, owner.id);
-    expect(first).toMatchObject({ customers: 6, orders: 23, notInvoiced: 0, remakes: 1 });
+    expect(first).toMatchObject({ customers: 6, orders: 24, notInvoiced: 0, remakes: 1 });
     // The delivered order's remake: started, with its own promise, for Production's lists.
     const remakeGroups = await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.findMany({ where: { sourceType: 'claim_line' } }));
     expect(remakeGroups).toHaveLength(1);
@@ -128,8 +129,8 @@ describe('demo orders seed', () => {
     const counts = (await get('/orders/counts')).body as { all: number; states: Record<string, number>; needs_you: Record<string, number> };
     expectDocumented(orderCountsResponseSchema, counts);
     expect(counts).toEqual({
-      all: 23,
-      states: { awaiting_payment: 2, in_production: 11, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
+      all: 24,
+      states: { awaiting_payment: 2, in_production: 12, ready: 4, shipped: 3, delivered: 1, cancelled: 2 },
       needs_you: { total: 10, late: 2, to_ship: 4, to_collect: 3, due_soon: 2 },
       // The awaiting payment tile shows an amount: something is owed on the demo's orders to collect.
       to_collect_amounts: [{ currency: 'EUR', amount: expect.stringMatching(/^[1-9]\d*\.\d{2}$/) }],
@@ -146,7 +147,7 @@ describe('demo orders seed', () => {
     expect(orders.some((order) => order.lines.length === 3)).toBe(true);
     expect(orders.some((order) => order.customer.name.length === 40)).toBe(true);
     // Numbered from 1001 oldest first, as `-placed_at` lists them newest first.
-    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 23 }, (_, index) => 1023 - index));
+    expect(orders.map((order) => order.number)).toEqual(Array.from({ length: 24 }, (_, index) => 1024 - index));
 
     // One order with quality problems: a scrapped piece, two being redone, a comment for staff and one with the partner.
     const qualityId = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: 'demo:quality-issues' } })).id);
@@ -216,6 +217,19 @@ describe('demo orders seed', () => {
     const sentBack = inHousePieces.filter((piece) => piece.stage === 'yours');
     expect(sentBack).toHaveLength(1);
     expect(sentBack[0]).toMatchObject({ in_rework: false, last_move: { kind: 'correction' } });
+
+    // Production's work list shows both holds: a set waiting for its parts, and an order waiting for payment.
+    const piecesOfDemo = async (key: string) => {
+      const id = await prisma.inTenant(tenant.id, async (tx) => (await tx.order.findFirstOrThrow({ where: { channelOrderId: `demo:${key}` } })).id);
+      const group = orders.find((order) => order.id === id)!.lines[0].group_id!;
+      const listed = await get(`/workflow/work-orders?group_id=${group}&limit=200`);
+      expectDocumented(pageSchema(workOrderListItemSchema), listed.body);
+      return (listed.body as { data: { held: string | null; may_work: boolean }[] }).data;
+    };
+    const setPieces = await piecesOfDemo('set-waiting-parts');
+    expect(setPieces.length).toBeGreaterThan(0);
+    for (const piece of setPieces) expect(piece).toMatchObject({ held: 'waiting_for_parts', may_work: false });
+    expect((await piecesOfDemo('awaiting-set')).some((piece) => piece.held === 'waiting_for_payment')).toBe(true);
 
     const second = await seedDemoOrders(deps(), tenant.id, owner.id);
     expect(second).toMatchObject({ customers: 0, orders: 0, notInvoiced: 0, remakes: 0 });

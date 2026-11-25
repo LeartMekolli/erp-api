@@ -22,7 +22,8 @@ import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import { groupSummaries } from './group-summary';
-import { PIECE_SORTS, pieceFilterSchema, pieceWhere } from './piece-filters';
+import type { HoldReason } from './holds';
+import { PIECE_SORTS, pieceFilterSchema, pieceWhere, workContext } from './piece-filters';
 import type { PieceSort } from './piece-filters';
 import type { WorkflowStepRow } from './coverage';
 import { actionFacts, listActions, listMoves, transitionFilters } from './move-history';
@@ -32,7 +33,6 @@ import { pathFor } from './path';
 import { customerView, groupProgress, inRework, stepTotals } from './progress';
 import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
 import { ensureDraw, historiesOf, toInspect } from './sampling';
-import { barredStepIds } from './step-skills';
 import { nameRef, stepRef, toTransition, transitionInclude } from './transition-rows';
 import type { StepConfig } from './workflow-config';
 import { WORK_ORDER_STATUSES } from './work-order-response';
@@ -495,8 +495,9 @@ export class WorkOrdersService {
     const after = query.cursor ? piecesCursor('pieces', sort, query.cursor, secret) : undefined;
     const mayMove = auth.permissions.has('workflow.move');
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
-      const filtered = await pieceWhere(tx, query, auth, barred);
+      const known = await workContext(tx, auth);
+      const { barred } = known;
+      const filtered = await pieceWhere(tx, query, auth, known);
       let page: Prisma.WorkOrderWhereInput = {};
       if (after && sort === 'started') page = { id: { gt: after.id } };
       if (after && byDue(sort)) page = duePageWhere(sort, after);
@@ -528,6 +529,7 @@ export class WorkOrdersService {
       const data = rows.slice(0, query.limit);
       const last = data.at(-1);
       const inspect = await toInspect(tx, data);
+      const held = await known.holds.reasons(data);
       const moves = await this.moveSummaries(tx, data);
       const groups = await groupSummaries(
         tx,
@@ -539,7 +541,8 @@ export class WorkOrdersService {
         data: data.map((row) => ({
           ...toWorkOrder(row),
           to_inspect: inspect.get(row.id) ?? null,
-          may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
+          may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!) && !held.has(row.id),
+          held: held.get(row.id) ?? null,
           ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
           group: groups.get(row.groupId)!,
         })),
@@ -562,10 +565,13 @@ export class WorkOrdersService {
         select: { steps: { select: { key: true, name: true }, orderBy: { position: 'asc' } } },
       });
       if (!current) throw new NotFoundException('Workflow not found');
-      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
-      const active: Prisma.WorkOrderWhereInput = { AND: [{ status: 'active' }, await pieceWhere(tx, query, auth, barred)] };
+      const work = await workContext(tx, auth);
+      const { barred } = work;
+      const active: Prisma.WorkOrderWhereInput = { AND: [{ status: 'active' }, await pieceWhere(tx, query, auth, work)] };
       // Counted in the database by the step row the pieces are at (one per version); summed by key below.
       const byStep = await tx.workOrder.groupBy({ by: ['currentStepId'], where: active, _count: { _all: true } });
+      const heldByStep = await tx.workOrder.groupBy({ by: ['currentStepId'], where: { AND: [active, work.holds.held] }, _count: { _all: true } });
+      const heldAt = new Map(heldByStep.map((row) => [row.currentStepId!, row._count._all]));
       const stepRows = await tx.workflowStep.findMany({
         where: { id: { in: byStep.flatMap((row) => (row.currentStepId ? [row.currentStepId] : [])) } },
         select: { id: true, key: true, name: true, position: true },
@@ -581,7 +587,9 @@ export class WorkOrdersService {
         reworked.map((piece) => piece.id),
       );
 
-      const steps = new Map(current.steps.map((step) => [step.key, { key: step.key, name: step.name, active: 0, in_rework: 0, workable: 0 }]));
+      const steps = new Map(
+        current.steps.map((step) => [step.key, { key: step.key, name: step.name, active: 0, in_rework: 0, workable: 0, held: 0 }]),
+      );
       // Keys the current version dropped, by where they were on their own version; then by key.
       const older = new Map<string, { name: string; position: number }>();
       for (const step of stepRows) {
@@ -591,12 +599,14 @@ export class WorkOrdersService {
       }
       [...older.entries()]
         .sort(([a, first], [b, second]) => first.position - second.position || a.localeCompare(b))
-        .forEach(([key, { name }]) => steps.set(key, { key, name, active: 0, in_rework: 0, workable: 0 }));
+        .forEach(([key, { name }]) => steps.set(key, { key, name, active: 0, in_rework: 0, workable: 0, held: 0 }));
       for (const row of byStep) {
         const at = stepOf.get(row.currentStepId!)!;
         const step = steps.get(at.key)!;
+        const held = heldAt.get(at.id) ?? 0;
         step.active += row._count._all;
-        if (mayMove && !barred.has(at.id)) step.workable += row._count._all;
+        step.held += held;
+        if (mayMove && !barred.has(at.id)) step.workable += row._count._all - held;
       }
       for (const piece of reworked) {
         if (inRework(histories.get(piece.id) ?? []) !== null) steps.get(stepOf.get(piece.currentStepId!)!.key)!.in_rework += 1;
@@ -615,9 +625,10 @@ export class WorkOrdersService {
     const after = query.cursor ? piecesCursor('groups', sort, query.cursor, secret) : undefined;
     const mayMove = auth.permissions.has('workflow.move');
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
-      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
+      const known = await workContext(tx, auth);
+      const { barred } = known;
       const here: Prisma.WorkOrderWhereInput = {
-        AND: [{ status: 'active', currentStep: { key: query.step_key } }, await pieceWhere(tx, query, auth, barred)],
+        AND: [{ status: 'active', currentStep: { key: query.step_key } }, await pieceWhere(tx, query, auth, known)],
       };
       const rows = await tx.workOrderGroup.findMany({
         where: { AND: [{ workOrders: { some: here } }, after ? groupsPageWhere(sort, after) : {}] },
@@ -636,13 +647,21 @@ export class WorkOrdersService {
         pieces.map((piece) => piece.id),
       );
       const inspect = await toInspect(tx, pieces);
+      const held = await known.holds.reasons(pieces);
       const summaries = await groupSummaries(tx, ids, auth, this.settings);
-      const totals = new Map(ids.map((id) => [id, { count: 0, in_rework: 0, workable: 0, to_inspect: 0 }]));
+      const totals = new Map(
+        ids.map((id) => [id, { count: 0, in_rework: 0, workable: 0, to_inspect: 0, held: 0, held_reason: null as HoldReason | null }]),
+      );
       for (const piece of pieces) {
         const total = totals.get(piece.groupId)!;
+        const reason = held.get(piece.id);
         total.count += 1;
         if (inRework(histories.get(piece.id) ?? []) !== null) total.in_rework += 1;
-        if (mayMove && !barred.has(piece.currentStepId!)) total.workable += 1;
+        if (reason) {
+          total.held += 1;
+          // Payment holds the whole group, so it outranks parts.
+          if (total.held_reason !== 'waiting_for_payment') total.held_reason = reason;
+        } else if (mayMove && !barred.has(piece.currentStepId!)) total.workable += 1;
         if (inspect.get(piece.id) === true) total.to_inspect += 1;
       }
       const last = groups.at(-1);

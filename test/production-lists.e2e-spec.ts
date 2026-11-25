@@ -18,8 +18,10 @@ import type { Client, OrderWorkspace } from './order-fixtures';
 interface Piece {
   id: string;
   may_work: boolean;
+  held: 'waiting_for_payment' | 'waiting_for_parts' | null;
   in_rework: boolean;
   group: GroupSummary;
+  step: { key: string } | null;
 }
 
 const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
@@ -226,6 +228,75 @@ describe('workflow: production lists', () => {
       await tx.workOrder.updateMany({ where: { groupId: group }, data: { currentStepId: step.id } });
     });
 
+  it('marks the pieces of an order waiting for payment as held, never workable', async () => {
+    const w = await workspace();
+    const order = await w.placed({ inHouse: true, unpaid: true });
+    const group = order.lines[0].group_id;
+
+    const waiting = await piecesOf(w.staff, group);
+    expect(waiting).toHaveLength(10);
+    for (const piece of waiting) expect(piece).toMatchObject({ held: 'waiting_for_payment', may_work: false });
+    expect(await listed(w.staff, `/workflow/work-orders?workable=true&group_id=${group}`)).toHaveLength(0);
+
+    // Paid: workable, and a piece the list offers moves.
+    await w.pay(order);
+    const paid = await piecesOf(w.staff, group);
+    for (const piece of paid) expect(piece).toMatchObject({ held: null, may_work: true });
+    expect(await listed(w.staff, `/workflow/work-orders?workable=true&group_id=${group}`)).toHaveLength(10);
+    await w.staff.post('/workflow/moves', { work_order_ids: [paid[0].id], at_step: paid[0].step!.key, kind: 'pass' }).expect(200);
+  });
+
+  it('holds an assembly at its first step until its parts are ready', async () => {
+    const w = await workspace();
+    const set = await w.placed({ assembly: true });
+    const line = set.lines[0].group_id;
+    const parts = await partGroups(w, set.id);
+    const atAssembly = async () => (await piecesOf(w.staff, line)).filter((piece) => piece.step?.key === 'assembly');
+
+    const held = await piecesOf(w.staff, line);
+    expect(held.length).toBeGreaterThan(1);
+    for (const piece of held) expect(piece).toMatchObject({ step: { key: 'assembly' }, held: 'waiting_for_parts', may_work: false });
+    for (const part of parts) {
+      for (const piece of await piecesOf(w.staff, part.id)) expect(piece).toMatchObject({ held: null, may_work: true });
+    }
+    // The list and the move agree.
+    await w.staff.post('/workflow/moves', { work_order_ids: [held[0].id], at_step: 'assembly', kind: 'pass' }).expect(409);
+
+    // A piece already past its first step (a part reopened after the set moved on) is held too: the move
+    // guard refuses any move that doesn't land on the first step while a part isn't ready.
+    await putAt(w, [held[0].id], 'packing');
+    for (const piece of await piecesOf(w.staff, line)) expect(piece).toMatchObject({ held: 'waiting_for_parts', may_work: false });
+    await w.staff.post('/workflow/moves', { work_order_ids: [held[0].id], at_step: 'packing', kind: 'pass' }).expect(409);
+
+    // Every part finished: nothing held, and the list's workable piece moves.
+    const finishParts = () =>
+      prisma.inTenant(w.id, (tx) =>
+        tx.workOrder.updateMany({ where: { groupId: { in: parts.map((part) => part.id) } }, data: { status: 'finished', currentStepId: null } }),
+      );
+    await finishParts();
+    const ready = await atAssembly();
+    for (const piece of ready) expect(piece).toMatchObject({ held: null, may_work: true });
+
+    // A finished part reopened: held again.
+    const reopened = parts[0].id;
+    await prisma.inTenant(w.id, async (tx) => {
+      const { workflowVersionId } = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: reopened } });
+      const first = await tx.workflowStep.findFirstOrThrow({ where: { versionId: workflowVersionId }, orderBy: { position: 'asc' } });
+      await tx.workOrder.updateMany({ where: { groupId: reopened }, data: { status: 'active', currentStepId: first.id } });
+    });
+    for (const piece of await atAssembly()) expect(piece).toMatchObject({ held: 'waiting_for_parts', may_work: false });
+
+    // A part with nothing live (every piece scrapped) isn't ready either.
+    await prisma.inTenant(w.id, (tx) => tx.workOrder.updateMany({ where: { groupId: reopened }, data: { status: 'scrapped', currentStepId: null } }));
+    for (const piece of await atAssembly()) expect(piece.held).toBe('waiting_for_parts');
+
+    // Ready again: a pass at the first step goes through.
+    await finishParts();
+    const [first] = await atAssembly();
+    expect(first).toMatchObject({ held: null, may_work: true });
+    await w.staff.post('/workflow/moves', { work_order_ids: [first.id], at_step: 'assembly', kind: 'pass' }).expect(200);
+  });
+
   it('narrows to one workflow when step keys are shared', async () => {
     const w = await workspace();
     // A cast line, and an assembly whose bail part runs on the printed parts workflow; both have `packing`.
@@ -340,6 +411,7 @@ describe('workflow: production lists', () => {
     active: number;
     in_rework: number;
     workable: number;
+    held: number;
   }
   const countsOf = async (client: Client, query: string) => {
     const counted = await client.get(`/workflow/work-orders/counts?${query}`).expect(200);
@@ -375,12 +447,13 @@ describe('workflow: production lists', () => {
         expect({ key: step.key, active: step.active }).toEqual({ key: step.key, active: pieces.length });
         expect(step.in_rework).toBe(pieces.filter((piece) => piece.in_rework).length);
         expect(step.workable).toBe(pieces.filter((piece) => piece.may_work).length);
+        expect(step.held).toBe(pieces.filter((piece) => piece.held !== null).length);
       }
     }
 
     const byKey = (steps: StepCount[]) => Object.fromEntries(steps.map((step) => [step.key, step]));
     const all = byKey(await countsOf(w.staff, `workflow_id=${cast.workflowId}`));
-    expect(all.print_pattern).toEqual({ key: 'print_pattern', name: 'Print pattern', active: 10, in_rework: 0, workable: 10 });
+    expect(all.print_pattern).toEqual({ key: 'print_pattern', name: 'Print pattern', active: 10, in_rework: 0, workable: 10, held: 0 });
     expect(all.casting).toMatchObject({ active: 10, in_rework: 3, workable: 10 });
     expect(all.stone_setting).toMatchObject({ name: 'Stone setting', active: 10, workable: 10 });
     expect(all.packing).toMatchObject({ active: 0, in_rework: 0, workable: 0 });
@@ -404,7 +477,7 @@ describe('workflow: production lists', () => {
 
     const steps = await countsOf(w.staff, `workflow_id=${cast.workflowId}`);
     expect(steps.map((step) => step.key)).toEqual([...cast.stepKeys, 'stone_setting']);
-    expect(steps.at(-1)).toEqual({ key: 'stone_setting', name: 'Stone setting', active: 10, in_rework: 0, workable: 10 });
+    expect(steps.at(-1)).toEqual({ key: 'stone_setting', name: 'Stone setting', active: 10, in_rework: 0, workable: 10, held: 0 });
   });
 
   it('needs workflow_id', async () => {
@@ -420,6 +493,8 @@ describe('workflow: production lists', () => {
     in_rework: number;
     workable: number;
     to_inspect: number;
+    held: number;
+    held_reason: 'waiting_for_payment' | 'waiting_for_parts' | null;
   }
   /** Every row of the order lines at `step`, through every page. */
   const linesAt = async (client: Client, workflowId: string, step: string, extra = '', limit = 50) => {
@@ -474,7 +549,7 @@ describe('workflow: production lists', () => {
 
     const { rows } = await linesAt(w.staff, cast.workflowId, 'polishing');
     expect(rows).toEqual([
-      { group: expect.objectContaining({ id: polished.lines[0].group_id, source: 'order_line' }), count: 6, in_rework: 1, workable: 6, to_inspect: 0 },
+      { group: expect.objectContaining({ id: polished.lines[0].group_id, source: 'order_line' }), count: 6, in_rework: 1, workable: 6, to_inspect: 0, held: 0, held_reason: null },
     ]);
     // Without workflow.move, nothing is workable.
     expect((await linesAt(await w.holding(['workflow.read']), cast.workflowId, 'polishing')).rows[0]).toMatchObject({ count: 6, workable: 0 });
@@ -494,6 +569,38 @@ describe('workflow: production lists', () => {
     expect(atInspection).toMatchObject({ group: { id: sampled.lines[0].group_id }, count: 10, to_inspect: marked });
     expect(marked).toBeGreaterThan(0);
     expect(marked).toBeLessThan(10);
+  });
+
+  it('counts held pieces at each step and in each line, never as workable', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow.workflowId;
+    const unpaid = (await w.placed({ inHouse: true, unpaid: true })).lines[0].group_id;
+    // The set in a workspace of its own: its parts' pieces would otherwise count at the cast steps too.
+    const v = await workspace();
+    const set = (await v.placed({ assembly: true })).lines[0].group_id;
+    const setPieces = (await piecesOf(v.staff, set)).length;
+    const setWorkflow = (await summaryOf(v.staff, set)).workflow.id;
+    const at = async (client: Client, workflowId: string, key: string, extra = '') =>
+      (await countsOf(client, `workflow_id=${workflowId}${extra}`)).find((step) => step.key === key)!;
+
+    expect(await at(w.staff, cast, 'print_pattern')).toMatchObject({ active: 10, held: 10, workable: 0 });
+    expect(await at(v.staff, setWorkflow, 'assembly')).toMatchObject({ active: setPieces, held: setPieces, workable: 0 });
+
+    expect((await linesAt(w.staff, cast, 'print_pattern')).rows).toEqual([
+      expect.objectContaining({ group: expect.objectContaining({ id: unpaid }), count: 10, held: 10, held_reason: 'waiting_for_payment', workable: 0 }),
+    ]);
+    expect((await linesAt(v.staff, setWorkflow, 'assembly')).rows).toEqual([
+      expect.objectContaining({ group: expect.objectContaining({ id: set }), count: setPieces, held: setPieces, held_reason: 'waiting_for_parts', workable: 0 }),
+    ]);
+
+    // Only what I can work: nothing held.
+    expect(await at(w.staff, cast, 'print_pattern', '&workable=true')).toMatchObject({ active: 0, held: 0 });
+    expect((await linesAt(w.staff, cast, 'print_pattern', '&workable=true')).rows).toEqual([]);
+
+    // Without workflow.move: nothing is workable, and the holds still show.
+    const reader = await w.holding(['workflow.read']);
+    expect(await at(reader, cast, 'print_pattern')).toMatchObject({ active: 10, held: 10, workable: 0 });
+    expect((await linesAt(reader, cast, 'print_pattern')).rows[0]).toMatchObject({ held: 10, held_reason: 'waiting_for_payment' });
   });
 
   it('pages by line, never splitting one, in the chosen sort', async () => {

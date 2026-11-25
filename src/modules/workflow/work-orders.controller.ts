@@ -126,7 +126,9 @@ export class WorkOrdersController {
       "A customer whose priority band is first in line has its pieces listed first, higher bands before lower ones. " +
       'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
-      '`workable=true` keeps only those pieces. `in_rework` says whether an active piece is being redone after a failed ' +
+      '`held` says why a piece can\'t be passed or failed onward now by anyone: `waiting_for_payment` (its order hasn\'t ' +
+      "started), or `waiting_for_parts` (an assembly's piece while a part isn't ready); payment wins when both " +
+      'apply. A held piece is never `may_work`. `workable=true` keeps only `may_work` pieces. `in_rework` says whether an active piece is being redone after a failed ' +
       'check, `last_move` is what last happened to it, and `group` whose the piece is and when it is due. ' +
       '`workflow_id` keeps the pieces of every version of one workflow, so a step key two workflows share can be told ' +
       "apart. `q` finds part of the product's name, any case, with `%` and `_` taken literally; with `order.read`, also " +
@@ -155,7 +157,8 @@ export class WorkOrdersController {
       'version still has pieces at. `workflow_id` is required and covers every version; `q` and `workable` filter as on ' +
       '`GET /workflow/work-orders`, so a step\'s `active` is the number of pieces that list pages through for it with ' +
       '`status=active`. `in_rework` and `workable` are the part of `active` being redone, and the part the caller may ' +
-      'pass or fail there.',
+      'pass or fail there. `held` is the part nobody can move now (waiting for payment or for parts, as `held` on ' +
+      'the list says); it is never part of `workable`.',
     query: stepCountsQuerySchema,
     response: stepCountsResponseSchema,
     errors: [400, 404],
@@ -175,7 +178,8 @@ export class WorkOrdersController {
       'One row per group (an order line, an assembly part, a remake or a quote) with active pieces at `step_key` of ' +
       "`workflow_id` (every version). `count` is the group's pieces there that the filters pick; `in_rework`, `workable` " +
       'and `to_inspect` are the part of `count` being redone, that the caller may pass or fail, and to inspect in full at ' +
-      'a step that samples. `q`, `workable` and `sort` work as on `GET /workflow/work-orders`, by group: `started` is as ' +
+      'a step that samples. `held` is the part nobody can move now, never part of `workable`, and `held_reason` why ' +
+      '(`waiting_for_payment` before `waiting_for_parts`; null when none is). `q`, `workable` and `sort` work as on `GET /workflow/work-orders`, by group: `started` is as ' +
       'the groups started. Pages are by group, so one is never split; a cursor made for another sort is a 400.',
     query: stepGroupsQuerySchema,
     response: pageSchema(stepGroupSchema),

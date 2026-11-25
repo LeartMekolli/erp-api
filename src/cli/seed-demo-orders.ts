@@ -158,6 +158,8 @@ const ORDERS: DemoOrder[] = [
   { key: 'awaiting-set', customer: 'Kestrel Labs', lines: [{ product: 'pendant_set', options: { material: 'silver_925', finish: 'polished' }, quantity: 1 }], progress: 'waiting', promised: 0, hoursAgo: 5 },
   // Awaiting payment.
   { key: 'awaiting-prints', customer: 'Halden Audio', lines: [print('pla', 'raw', '0.5', 200)], progress: 'waiting', promised: 0, hoursAgo: 2 },
+  // Paid and in production, made in-house: its pieces wait at assembly until its parts are made.
+  { key: 'set-waiting-parts', customer: 'Mira Studio', lines: [{ product: 'pendant_set', options: { material: 'silver_925', finish: 'polished' }, quantity: 2 }], paid: true, progress: 'production', promised: 6 },
   // Several lines, paid, in production, for the 40-character customer.
   {
     key: 'several-lines',
