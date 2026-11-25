@@ -17,6 +17,7 @@ import {
   customerViewResponseSchema,
   groupResponseSchema,
   moveResponseSchema,
+  stepCountsResponseSchema,
   transitionListItemSchema,
   workOrderDetailResponseSchema,
   workOrderListItemSchema,
@@ -25,12 +26,20 @@ import type {
   CustomerViewResponse,
   GroupResponse,
   MoveResponse,
+  StepCountsResponse,
   TransitionListItem,
   WorkOrderDetailResponse,
   WorkOrderListItem,
 } from './work-order-response';
-import { MAX_PIECES, WorkOrdersService, startGroupSchema, transitionQuerySchema, workOrderQuerySchema } from './work-orders.service';
-import type { TransitionQuery, WorkOrderQuery } from './work-orders.service';
+import {
+  MAX_PIECES,
+  WorkOrdersService,
+  startGroupSchema,
+  stepCountsQuerySchema,
+  transitionQuerySchema,
+  workOrderQuerySchema,
+} from './work-orders.service';
+import type { StepCountsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
 
 const idSchema = z.uuid();
 
@@ -133,6 +142,27 @@ export class WorkOrdersController {
     @Query(new ZodValidationPipe(workOrderQuerySchema)) query: WorkOrderQuery,
   ): Promise<Page<WorkOrderListItem>> {
     return this.workOrders.list(auth, query);
+  }
+
+  @ApiDoc({
+    summary: 'How many active pieces are at each step of one workflow, for the tabs over a work list.',
+    description:
+      "Every step of the workflow's current version, in path order and zeros included, then any step key only an older " +
+      'version still has pieces at. `workflow_id` is required and covers every version; `q` and `workable` filter as on ' +
+      '`GET /workflow/work-orders`, so a step\'s `active` is the number of pieces that list pages through for it with ' +
+      '`status=active`. `in_rework` and `workable` are the part of `active` being redone, and the part the caller may ' +
+      'pass or fail there.',
+    query: stepCountsQuerySchema,
+    response: stepCountsResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('workflow.read')
+  @Get('work-orders/counts')
+  counts(
+    @CurrentUser() auth: TenantAuth,
+    @Query(new ZodValidationPipe(stepCountsQuerySchema)) query: StepCountsQuery,
+  ): Promise<StepCountsResponse> {
+    return this.workOrders.counts(auth, query);
   }
 
   @ApiDoc({

@@ -40,6 +40,7 @@ import type {
   CustomerViewResponse,
   GroupResponse,
   LastMove,
+  StepCountsResponse,
   TransitionListItem,
   WorkOrderDetailResponse,
   WorkOrderListItem,
@@ -61,6 +62,9 @@ export const workOrderQuerySchema = pieceFilterSchema.extend({
   sort: z.enum(PIECE_SORTS).default('priority'),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
+
+export const stepCountsQuerySchema = pieceFilterSchema.extend({ workflow_id: z.uuid() });
+export type StepCountsQuery = z.infer<typeof stepCountsQuerySchema>;
 
 const NO_DUE_DATE = 'none';
 const byDue = (sort: PieceSort) => sort === 'due_on' || sort === '-due_on';
@@ -490,6 +494,60 @@ export class WorkOrdersService {
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor(piecesCursorPayload(sort, last), secret) : null,
       };
+    });
+  }
+
+  /**
+   * The active pieces `query` picks at each step of its workflow (Production lists spec, goal 3), counted
+   * as the list pages them. Steps are the current version's in path order, then keys only an older version
+   * has, by their position there; a 404 for a workflow that isn't the workspace's.
+   */
+  async counts(auth: TenantAuth, query: StepCountsQuery): Promise<StepCountsResponse> {
+    const mayMove = auth.permissions.has('workflow.move');
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const current = await tx.workflowVersion.findFirst({
+        where: { workflowId: query.workflow_id },
+        orderBy: { number: 'desc' },
+        select: { steps: { select: { key: true, name: true }, orderBy: { position: 'asc' } } },
+      });
+      if (!current) throw new NotFoundException('Workflow not found');
+      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
+      const pieces = await tx.workOrder.findMany({
+        where: { AND: [{ status: 'active' }, await pieceWhere(tx, query, auth, barred)] },
+        select: { id: true, currentStepId: true, currentStep: { select: { key: true, name: true, position: true } } },
+      });
+      const facts = await tx.transition.findMany({
+        where: { workOrderId: { in: pieces.map((piece) => piece.id) } },
+        select: { workOrderId: true, kind: true, outcome: true, fromStepId: true },
+        orderBy: { id: 'asc' },
+      });
+      const histories = new Map<string, TransitionFacts[]>();
+      for (const row of facts) {
+        const history = histories.get(row.workOrderId);
+        if (history) history.push(row);
+        else histories.set(row.workOrderId, [row]);
+      }
+
+      const steps = new Map(current.steps.map((step) => [step.key, { key: step.key, name: step.name, active: 0, in_rework: 0, workable: 0 }]));
+      // Keys the current version dropped, by where they were on their own version; then by key.
+      const older = new Map<string, { name: string; position: number }>();
+      for (const piece of pieces) {
+        const at = piece.currentStep!;
+        if (!steps.has(at.key)) {
+          const known = older.get(at.key);
+          if (!known || at.position < known.position) older.set(at.key, { name: at.name, position: at.position });
+        }
+      }
+      [...older.entries()]
+        .sort(([a, first], [b, second]) => first.position - second.position || a.localeCompare(b))
+        .forEach(([key, { name }]) => steps.set(key, { key, name, active: 0, in_rework: 0, workable: 0 }));
+      for (const piece of pieces) {
+        const step = steps.get(piece.currentStep!.key)!;
+        step.active += 1;
+        if (inRework(histories.get(piece.id) ?? []) !== null) step.in_rework += 1;
+        if (mayMove && !barred.has(piece.currentStepId!)) step.workable += 1;
+      }
+      return { steps: [...steps.values()] };
     });
   }
 

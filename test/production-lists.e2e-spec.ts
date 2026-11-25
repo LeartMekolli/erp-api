@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -8,7 +8,7 @@ import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import type { GroupSummary } from '../src/modules/workflow/group-summary';
-import { workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
+import { stepCountsResponseSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { expectDocumented } from './documented';
 import { deleteTestTenants } from './factories';
 import { orderWorkspace } from './order-fixtures';
@@ -16,6 +16,8 @@ import type { Client, OrderWorkspace } from './order-fixtures';
 
 interface Piece {
   id: string;
+  may_work: boolean;
+  in_rework: boolean;
   group: GroupSummary;
 }
 
@@ -305,6 +307,97 @@ describe('workflow: production lists', () => {
       const pieces = await listed(w.staff, `/workflow/work-orders?sort=${sort}`, 3);
       expect(pieces.slice(-10).every((piece) => piece.group.id === quote)).toBe(true);
     }
+  });
+
+  /** A new version of the cast workflow with a workspace step `stone_setting` before final QC that needs a skill. */
+  const withSettingStep = async (w: OrderWorkspace) => {
+    const skillId = (((await w.staff.post('/skills', { name: 'Setting' }).expect(201)).body as { id: string })).id;
+    const stepTypeId = (
+      (await w.staff.post('/pricing/step-types', { key: 'stone_setting', name: 'Stone setting', position: 45, summary_group: null }).expect(201))
+        .body as { id: string }
+    ).id;
+    await w.set.cast.workflow.setSteps([
+      { key: 'stone_setting', name: 'Stone setting', step_type_id: stepTypeId, done_by: 'workspace', required_skill_id: skillId },
+    ]);
+  };
+  interface StepCount {
+    key: string;
+    name: string;
+    active: number;
+    in_rework: number;
+    workable: number;
+  }
+  const countsOf = async (client: Client, query: string) => {
+    const counted = await client.get(`/workflow/work-orders/counts?${query}`).expect(200);
+    expectDocumented(stepCountsResponseSchema, counted.body);
+    return (counted.body as { steps: StepCount[] }).steps;
+  };
+
+  it('counts the active pieces at every step of the workflow, matching the list', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    await withSettingStep(w);
+    const reworked = await w.placed({ inHouse: true });
+    const setting = await w.placed({ inHouse: true });
+    await w.staff.post('/workflow/groups', { quote_id: await w.quoted() }).expect(201);
+    await moveAllTo(w, reworked.lines[0].group_id, 'casting');
+    await moveAllTo(w, setting.lines[0].group_id, 'stone_setting');
+    const atCasting = await piecesOf(w.staff, reworked.lines[0].group_id);
+    await w.staff
+      .post('/workflow/moves', { work_order_ids: atCasting.slice(0, 3).map((piece) => piece.id), at_step: 'casting', kind: 'fail', defect_id: cast.defects.porosity })
+      .expect(200);
+
+    const keys = [...cast.stepKeys.slice(0, 5), 'stone_setting', 'final_qc', 'packing'];
+    const member = await w.holding(['workflow.read', 'workflow.move', 'order.read']);
+    for (const [client, q] of [
+      [w.staff, ''],
+      [member, ''],
+      [w.staff, `&q=${reworked.number}`],
+    ] as const) {
+      const steps = await countsOf(client, `workflow_id=${cast.workflowId}${q}`);
+      expect(steps.map((step) => step.key)).toEqual(keys);
+      for (const step of steps) {
+        const pieces = await listed(client, `/workflow/work-orders?workflow_id=${cast.workflowId}&step_key=${step.key}&status=active${q}`);
+        expect({ key: step.key, active: step.active }).toEqual({ key: step.key, active: pieces.length });
+        expect(step.in_rework).toBe(pieces.filter((piece) => piece.in_rework).length);
+        expect(step.workable).toBe(pieces.filter((piece) => piece.may_work).length);
+      }
+    }
+
+    const byKey = (steps: StepCount[]) => Object.fromEntries(steps.map((step) => [step.key, step]));
+    const all = byKey(await countsOf(w.staff, `workflow_id=${cast.workflowId}`));
+    expect(all.print_pattern).toEqual({ key: 'print_pattern', name: 'Print pattern', active: 10, in_rework: 0, workable: 10 });
+    expect(all.casting).toMatchObject({ active: 10, in_rework: 3, workable: 10 });
+    expect(all.stone_setting).toMatchObject({ name: 'Stone setting', active: 10, workable: 10 });
+    expect(all.packing).toMatchObject({ active: 0, in_rework: 0, workable: 0 });
+    // Without the skill, the step's pieces are counted but not workable.
+    expect(byKey(await countsOf(member, `workflow_id=${cast.workflowId}`)).stone_setting).toMatchObject({ active: 10, workable: 0 });
+    // Searched: only the reworked order's pieces.
+    const searched = byKey(await countsOf(w.staff, `workflow_id=${cast.workflowId}&q=${reworked.number}`));
+    expect(searched.casting).toMatchObject({ active: 10, in_rework: 3 });
+    expect(searched.stone_setting.active).toBe(0);
+    expect(searched.print_pattern.active).toBe(0);
+  });
+
+  it('keeps a step only an older version has, after the current steps', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    await withSettingStep(w);
+    const order = await w.placed({ inHouse: true });
+    await moveAllTo(w, order.lines[0].group_id, 'stone_setting');
+    // The next version drops the step; the pieces already there stay on theirs.
+    await cast.setSteps();
+
+    const steps = await countsOf(w.staff, `workflow_id=${cast.workflowId}`);
+    expect(steps.map((step) => step.key)).toEqual([...cast.stepKeys, 'stone_setting']);
+    expect(steps.at(-1)).toEqual({ key: 'stone_setting', name: 'Stone setting', active: 10, in_rework: 0, workable: 10 });
+  });
+
+  it('needs workflow_id', async () => {
+    const w = await workspace();
+    await w.staff.get('/workflow/work-orders/counts').expect(400);
+    await w.staff.get('/workflow/work-orders/counts?workflow_id=not-a-uuid').expect(400);
+    await w.staff.get(`/workflow/work-orders/counts?workflow_id=${randomUUID()}`).expect(404);
   });
 
   it('refuses a cursor made for another sort', async () => {
