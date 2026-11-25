@@ -25,9 +25,9 @@ import { groupSummaries } from './group-summary';
 import { PIECE_SORTS, pieceFilterSchema, pieceWhere } from './piece-filters';
 import type { PieceSort } from './piece-filters';
 import type { WorkflowStepRow } from './coverage';
-import { actionFacts, listActions } from './move-history';
+import { actionFacts, listActions, listMoves } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
-import type { MoveHistoryResponse } from './move-history-response';
+import type { MoveHistoryResponse, MoveListItem } from './move-history-response';
 import { pathFor } from './path';
 import { customerView, groupProgress, inRework, stepTotals } from './progress';
 import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
@@ -167,8 +167,17 @@ export const transitionQuerySchema = z.object({
   from: z.iso.datetime({ offset: true }).optional(),
   /** Before this moment. */
   to: z.iso.datetime({ offset: true }).optional(),
+  /** Only the rows one request wrote. */
+  move_id: z.uuid().optional(),
 });
 export type TransitionQuery = z.infer<typeof transitionQuerySchema>;
+
+export const moveListQuerySchema = transitionQuerySchema.extend({
+  kind: z.enum(['pass', 'fail', 'correction']).optional(),
+  workflow_id: pieceFilterSchema.shape.workflow_id,
+  q: pieceFilterSchema.shape.q,
+});
+export type MoveListQuery = z.infer<typeof moveListQuerySchema>;
 
 /** What a group starts from: a quote, an order line, or a claimed line it remakes. */
 export type GroupSourceType = 'quote' | 'order_line' | 'claim_line';
@@ -640,6 +649,7 @@ export class WorkOrdersService {
         where: {
           ...(after ? { id: { lt: after.id } } : {}),
           ...(query.work_order_id ? { workOrderId: query.work_order_id } : {}),
+          ...(query.move_id ? { moveId: query.move_id } : {}),
           ...(Object.keys(group).length > 0 ? { workOrder: { group } } : {}),
           ...(query.step_key ? { fromStep: { key: query.step_key } } : {}),
           ...(query.defect_key ? { defect: { key: query.defect_key } } : {}),
@@ -661,6 +671,43 @@ export class WorkOrdersService {
           work_order: { id: row.workOrder.id, label: `${row.workOrder.number}/${row.workOrder.group.quantity}` },
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
+      };
+    });
+  }
+
+  /**
+   * The QC history one move at a time, across every line (Production lists spec, goal 5): each move whole,
+   * with every line it touched, its count of pieces there and the partner it counts for there.
+   */
+  async moveList(auth: TenantAuth, query: MoveListQuery): Promise<Page<MoveListItem>> {
+    const secret = this.config.get('APP_SECRET');
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const { moves, next_cursor } = await listMoves(tx, query, auth, secret);
+      const summaries = await groupSummaries(
+        tx,
+        moves.flatMap((rows) => rows.map((row) => row.workOrder.groupId)),
+        auth,
+        this.settings,
+      );
+      return {
+        data: moves.map((rows) => {
+          const { representative, pieces: _pieces, ...facts } = actionFacts(rows);
+          const groups = new Map<string, { count: number; partner: { id: string; name: string } | null }>();
+          for (const row of rows) {
+            const entry = groups.get(row.workOrder.groupId) ?? { count: 0, partner: null };
+            entry.count += 1;
+            entry.partner ??= row.partner;
+            groups.set(row.workOrder.groupId, entry);
+          }
+          return {
+            ...facts,
+            override_reason: representative.overrideReason,
+            comment: representative.comment,
+            actor: { id: representative.actor.id, name: representative.actor.name },
+            groups: [...groups.entries()].map(([id, entry]) => ({ group: summaries.get(id)!, ...entry })),
+          };
+        }),
+        next_cursor,
       };
     });
   }

@@ -9,8 +9,8 @@ import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
 import { moveHistoryQuerySchema } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
-import { moveHistoryResponseSchema } from './move-history-response';
-import type { MoveHistoryResponse } from './move-history-response';
+import { moveHistoryResponseSchema, moveListItemSchema } from './move-history-response';
+import type { MoveHistoryResponse, MoveListItem } from './move-history-response';
 import { MAX_PHOTOS_PER_MOVE, MAX_PIECES_PER_MOVE, MovesService, moveSchema } from './moves.service';
 import type { MoveBody } from './moves.service';
 import {
@@ -37,12 +37,13 @@ import {
   MAX_PIECES,
   WorkOrdersService,
   startGroupSchema,
+  moveListQuerySchema,
   stepCountsQuerySchema,
   stepGroupsQuerySchema,
   transitionQuerySchema,
   workOrderQuerySchema,
 } from './work-orders.service';
-import type { StepCountsQuery, StepGroupsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
+import type { MoveListQuery, StepCountsQuery, StepGroupsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
 
 const idSchema = z.uuid();
 
@@ -218,8 +219,30 @@ export class WorkOrdersController {
   }
 
   @ApiDoc({
+    summary: 'The QC history one move at a time, newest first: each move whole, with every line it touched.',
+    description:
+      'Takes the filters of `GET /workflow/transitions`, plus `kind`, `workflow_id` (every version) and `q`, which ' +
+      'matches as on `GET /workflow/work-orders`. A filter picks the moves with a row it matches, and each move is then ' +
+      'listed whole: `groups` names every line the move touched, with how many of its pieces it moved and the partner ' +
+      "it counts for there, even a line the filter didn't match. Pages are by move, so one is never split.",
+    query: moveListQuerySchema,
+    response: pageSchema(moveListItemSchema),
+    errors: [400],
+  })
+  @RequirePermission('workflow.read')
+  @Get('moves')
+  moveList(
+    @CurrentUser() auth: TenantAuth,
+    @Query(new ZodValidationPipe(moveListQuerySchema)) query: MoveListQuery,
+  ): Promise<Page<MoveListItem>> {
+    return this.workOrders.moveList(auth, query);
+  }
+
+  @ApiDoc({
     summary: 'The QC history: every move of every piece, newest first, filtered by piece, group, step, defect, design file, actor or time.',
-    description: '`step_key` matches the step the move was made at. `from` is inclusive and `to` exclusive.',
+    description:
+      '`step_key` matches the step the move was made at. `from` is inclusive and `to` exclusive. `move_id` keeps the ' +
+      'rows one move wrote.',
     query: transitionQuerySchema,
     response: pageSchema(transitionListItemSchema),
     errors: [400],

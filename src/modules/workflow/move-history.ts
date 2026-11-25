@@ -3,9 +3,12 @@ import { z } from 'zod';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import { Prisma } from '../../generated/prisma/client';
+import type { TenantAuth } from '../identity/auth-context';
 import type { ActionResponse } from './move-history-response';
+import { searchGroups } from './piece-filters';
 import { readableAnswer, transitionInclude } from './transition-rows';
 import type { WorkOrderStatus } from './work-order-response';
+import type { MoveListQuery } from './work-orders.service';
 import type { StepConfig } from './workflow-config';
 
 // A line's moves, one item per action (Move history spec): every row one request wrote shares a `move_id`.
@@ -20,7 +23,7 @@ export const actionInclude = {
   ...transitionInclude,
   // With the user's kind, so a partner's list can tell its own people from the workspace's.
   actor: { select: { id: true, name: true, kind: true } },
-  workOrder: { select: { id: true, number: true, replacesId: true, group: { select: { quantity: true } } } },
+  workOrder: { select: { id: true, number: true, replacesId: true, groupId: true, group: { select: { quantity: true } } } },
 } as const satisfies Prisma.TransitionInclude;
 
 export type ActionRow = Prisma.TransitionGetPayload<{ include: typeof actionInclude }>;
@@ -70,6 +73,57 @@ export async function listActions(
     actions: ids.map((id) => byMove.get(id)!),
     next_cursor: page.length > query.limit ? encodeCursor({ id: ids.at(-1)! }, secret) : null,
     counts: { all: counts.all, fails: counts.fails },
+  };
+}
+
+/**
+ * A page of every line's moves, newest first, each as all its rows, every line it touched included: the
+ * filters pick the moves, never the rows within one. Paged by `move_id`, as `listActions` is; a fixed number
+ * of queries whatever the page size (one more for `q`, which `searchGroups` turns into group ids).
+ */
+export async function listMoves(
+  tx: Prisma.TransactionClient,
+  query: MoveListQuery,
+  auth: TenantAuth,
+  secret: string,
+): Promise<{ moves: ActionRow[][]; next_cursor: string | null }> {
+  const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+  const conditions: Prisma.Sql[] = [];
+  if (query.q) {
+    const found = await tx.workOrderGroup.findMany({ where: searchGroups(query.q, auth), select: { id: true } });
+    if (found.length === 0) return { moves: [], next_cursor: null };
+    conditions.push(Prisma.sql`w.group_id IN (${Prisma.join(found.map((group) => Prisma.sql`${group.id}::uuid`))})`);
+  }
+  if (after) conditions.push(Prisma.sql`t.move_id < ${after.id}::uuid`);
+  if (query.move_id) conditions.push(Prisma.sql`t.move_id = ${query.move_id}::uuid`);
+  if (query.work_order_id) conditions.push(Prisma.sql`t.work_order_id = ${query.work_order_id}::uuid`);
+  if (query.group_id) conditions.push(Prisma.sql`w.group_id = ${query.group_id}::uuid`);
+  if (query.file_version_id) conditions.push(Prisma.sql`g.file_version_id = ${query.file_version_id}::uuid`);
+  if (query.workflow_id) conditions.push(Prisma.sql`v.workflow_id = ${query.workflow_id}::uuid`);
+  if (query.step_key) conditions.push(Prisma.sql`EXISTS (SELECT 1 FROM workflow_step s WHERE s.id = t.from_step_id AND s.key = ${query.step_key})`);
+  if (query.defect_key) conditions.push(Prisma.sql`EXISTS (SELECT 1 FROM defect d WHERE d.id = t.defect_id AND d.key = ${query.defect_key})`);
+  if (query.actor_user_id) conditions.push(Prisma.sql`t.actor_user_id = ${query.actor_user_id}::uuid`);
+  if (query.inspected) conditions.push(Prisma.sql`t.inspected = ${query.inspected === 'true'}`);
+  if (query.kind) conditions.push(Prisma.sql`t.kind = ${query.kind}`);
+  if (query.from) conditions.push(Prisma.sql`t.created_at >= ${new Date(query.from)}`);
+  if (query.to) conditions.push(Prisma.sql`t.created_at < ${new Date(query.to)}`);
+
+  const page = await tx.$queryRaw<{ move_id: string }[]>`
+    SELECT t.move_id FROM transition t
+    JOIN work_order w ON w.id = t.work_order_id
+    JOIN work_order_group g ON g.id = w.group_id
+    JOIN workflow_version v ON v.id = g.workflow_version_id
+    ${conditions.length > 0 ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}` : Prisma.empty}
+    GROUP BY t.move_id ORDER BY t.move_id DESC LIMIT ${query.limit + 1}`;
+  const ids = page.slice(0, query.limit).map((row) => row.move_id);
+  const rows = ids.length > 0 ? await tx.transition.findMany({ where: { moveId: { in: ids } }, include: actionInclude, orderBy: { id: 'asc' } }) : [];
+  const byMove = new Map<string, ActionRow[]>(ids.map((id) => [id, []]));
+  for (const row of rows) {
+    byMove.get(row.moveId)!.push(row);
+  }
+  return {
+    moves: ids.map((id) => byMove.get(id)!),
+    next_cursor: page.length > query.limit ? encodeCursor({ id: ids.at(-1)! }, secret) : null,
   };
 }
 

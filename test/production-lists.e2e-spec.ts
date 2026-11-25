@@ -8,6 +8,7 @@ import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import type { GroupSummary } from '../src/modules/workflow/group-summary';
+import { moveListItemSchema } from '../src/modules/workflow/move-history-response';
 import { stepCountsResponseSchema, stepGroupSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { expectDocumented } from './documented';
 import { deleteTestTenants } from './factories';
@@ -505,6 +506,95 @@ describe('workflow: production lists', () => {
     ]);
     const latest = await linesAt(w.staff, cast.workflowId, 'casting', '&sort=-due_on', 1);
     expect(latest.rows.map((row) => row.group.id)).toEqual([late, middle, early]);
+  });
+
+  interface MoveRow {
+    id: string;
+    kind: string;
+    from_step: { key: string } | null;
+    groups: { group: GroupSummary; count: number; partner: { id: string; name: string } | null }[];
+  }
+  /** Every move `query` picks, through every page, and the size of each page. */
+  const movesOf = async (client: Client, query: string, limit = 50) => {
+    const rows: MoveRow[] = [];
+    const pages: number[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await client.get(`/workflow/moves?limit=${limit}${query}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`).expect(200);
+      expectDocumented(pageSchema(moveListItemSchema), page.body);
+      const body = page.body as { data: MoveRow[]; next_cursor: string | null };
+      rows.push(...body.data);
+      pages.push(body.data.length);
+      cursor = body.next_cursor;
+    } while (cursor);
+    return { rows, pages };
+  };
+  const passAt = (w: OrderWorkspace, pieces: string[], step: string) =>
+    w.staff.post('/workflow/moves', { work_order_ids: pieces, at_step: step, kind: 'pass' }).expect(200);
+
+  it('lists the history one row per move, newest first', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    const order = await w.placed({ inHouse: true });
+    const group = order.lines[0].group_id;
+    const pieces = (await piecesOf(w.staff, group)).map((piece) => piece.id);
+    await passAt(w, pieces, 'print_pattern');
+    await passAt(w, pieces, 'casting_tree');
+    await w.staff
+      .post('/workflow/moves', { work_order_ids: pieces.slice(0, 2), at_step: 'casting', kind: 'fail', defect_id: cast.defects.porosity })
+      .expect(200);
+
+    const { rows } = await movesOf(w.staff, '');
+    expect(rows.map((row) => [row.kind, row.from_step?.key, row.groups.map((entry) => [entry.group.id, entry.count, entry.partner])])).toEqual([
+      ['fail', 'casting', [[group, 2, null]]],
+      ['pass', 'casting_tree', [[group, 10, null]]],
+      ['pass', 'print_pattern', [[group, 10, null]]],
+    ]);
+    expect(rows[0].groups[0].group).toMatchObject({ source: 'order_line', order: { id: order.id } });
+
+    expect((await movesOf(w.staff, '&kind=fail')).rows.map((row) => row.id)).toEqual([rows[0].id]);
+    expect((await movesOf(w.staff, `&workflow_id=${cast.workflowId}`)).rows).toHaveLength(3);
+    expect((await movesOf(w.staff, `&workflow_id=${randomUUID()}`)).rows).toEqual([]);
+    await w.staff.get('/workflow/moves?kind=scrap').expect(400);
+  });
+
+  it('keeps a move whole when only one of its lines matches', async () => {
+    // One move can't span two workflow versions (moves.service), so the line left out is left out by `q`.
+    const w = await workspace();
+    const held = await w.placed();
+    const inHouse = await w.placed({ inHouse: true });
+    const pieces = [
+      ...(await piecesOf(w.staff, held.lines[0].group_id)).map((piece) => piece.id),
+      ...(await piecesOf(w.staff, inHouse.lines[0].group_id)).map((piece) => piece.id),
+    ];
+    await passAt(w, pieces, 'print_pattern');
+
+    const { rows } = await movesOf(w.staff, `&q=${held.number}`);
+    expect(rows).toHaveLength(1);
+    expect(
+      rows[0].groups
+        .map((entry) => ({ group: entry.group.id, count: entry.count, partner: entry.partner?.name ?? null }))
+        .sort((a, b) => (a.group < b.group ? -1 : 1)),
+    ).toEqual(
+      [
+        { group: held.lines[0].group_id, count: 10, partner: 'CastCo' },
+        { group: inHouse.lines[0].group_id, count: 10, partner: null },
+      ].sort((a, b) => (a.group < b.group ? -1 : 1)),
+    );
+    // Without order.read, the number finds no line, so no move.
+    expect((await movesOf(await w.holding(['workflow.read']), `&q=${held.number}`)).rows).toEqual([]);
+  });
+
+  it('pages by move', async () => {
+    const w = await workspace();
+    const order = await w.placed({ inHouse: true });
+    const pieces = (await piecesOf(w.staff, order.lines[0].group_id)).map((piece) => piece.id);
+    for (const step of ['print_pattern', 'casting_tree', 'casting']) await passAt(w, pieces, step);
+
+    const { rows, pages } = await movesOf(w.staff, '', 1);
+    expect(pages).toEqual([1, 1, 1]);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(3);
+    expect(rows.map((row) => row.from_step?.key)).toEqual(['casting', 'casting_tree', 'print_pattern']);
   });
 
   it('refuses a cursor made for another sort', async () => {
