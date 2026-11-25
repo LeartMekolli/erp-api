@@ -14,6 +14,7 @@ import { seedPricing } from '../src/cli/seed-pricing';
 import { seedProduction } from '../src/cli/seed-production';
 import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
+import { ClaimsService } from '../src/modules/claims/claims.service';
 import { CourierAccountService } from '../src/modules/couriers/courier-account.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { CommentsService } from '../src/modules/orders/comments.service';
@@ -85,6 +86,7 @@ describe('demo orders seed', () => {
     jobs: app.get(JobsService),
     moves: app.get(MovesService),
     comments: app.get(CommentsService),
+    claims: app.get(ClaimsService),
   });
 
   // 22 orders, each quoted, placed, paid, handed to its workshop and moved through every step through the
@@ -104,7 +106,11 @@ describe('demo orders seed', () => {
     await seedPayments({ prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) }, tenant.id, KEYS);
 
     const first = await seedDemoOrders(deps(), tenant.id, owner.id);
-    expect(first).toMatchObject({ customers: 6, orders: 23, notInvoiced: 0 });
+    expect(first).toMatchObject({ customers: 6, orders: 23, notInvoiced: 0, remakes: 1 });
+    // The delivered order's remake: started, with its own promise, for Production's lists.
+    const remakeGroups = await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.findMany({ where: { sourceType: 'claim_line' } }));
+    expect(remakeGroups).toHaveLength(1);
+    expect(remakeGroups[0].dueOn).not.toBeNull();
 
     const token = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     const get = (path: string) => request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${token}`).expect(200);
@@ -201,7 +207,8 @@ describe('demo orders seed', () => {
     expect(sentBack[0]).toMatchObject({ in_rework: false, last_move: { kind: 'correction' } });
 
     const second = await seedDemoOrders(deps(), tenant.id, owner.id);
-    expect(second).toMatchObject({ customers: 0, orders: 0, notInvoiced: 0 });
+    expect(second).toMatchObject({ customers: 0, orders: 0, notInvoiced: 0, remakes: 0 });
+    expect(await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.count({ where: { sourceType: 'claim_line' } }))).toBe(1);
     expect((await get('/orders/counts')).body).toEqual(counts);
   }, 180_000);
 });

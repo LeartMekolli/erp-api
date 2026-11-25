@@ -7,6 +7,8 @@ import { BrandProfileService } from '../modules/ai/customer-tools/brand-profile.
 import { ArticlesService } from '../modules/ai/knowledge/articles.service';
 import { KnowledgeModule } from '../modules/ai/knowledge/knowledge.module';
 import { AuditModule } from '../modules/audit/audit.module';
+import { ClaimsModule } from '../modules/claims/claims.module';
+import { ClaimsService } from '../modules/claims/claims.service';
 import { CourierAccountService } from '../modules/couriers/courier-account.service';
 import { IdempotencyModule } from '../modules/idempotency/idempotency.module';
 import { CommentsService } from '../modules/orders/comments.service';
@@ -71,10 +73,11 @@ const SEED_TENANTS: CreateTenantInput[] = [
  * modules their imports rely on, as the worker does (without consuming jobs). The brand profile service
  * is provided on its own: the AI module would bring the AI and image providers the seed never calls. So
  * is the courier account service, which only seals and stores the demo's key. The demo orders use the
- * Orders, Pricing, Partners, Workflow and Payments services, which Payments' imports already load.
+ * Orders, Pricing, Partners, Workflow and Payments services, which Payments' imports already load, and
+ * Claims for the delivered order's remake.
  */
 @Module({
-  imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule, AuditModule],
+  imports: [CliModule, LoggingModule, ReportingModule, StorageModule, IdempotencyModule, PaymentsModule, KnowledgeModule, AuditModule, ClaimsModule],
   providers: [BrandProfileService, CourierAccountService],
 })
 class SeedModule {}
@@ -226,6 +229,7 @@ void runCli(async (app) => {
       jobs: app.get(JobsService),
       moves: app.get(MovesService),
       comments: app.get(CommentsService),
+      claims: app.get(ClaimsService),
     },
     demo.id,
     uploader.id,
@@ -234,6 +238,7 @@ void runCli(async (app) => {
   process.stdout.write(
     `orders for demo: created ${demoOrders.customers} customers, ${demoOrders.orders} orders ` +
       `(${needs.total} need you today: ${needs.late} late, ${needs.to_ship} to ship, ${needs.to_collect} to collect, ${needs.due_soon} due soon)` +
+      (demoOrders.remakes ? '; remade 2 pieces of the delivered order under a claim' : '') +
       (demoOrders.notInvoiced
         ? `; no payment account, so ${demoOrders.notInvoiced} shipped pay-later ${demoOrders.notInvoiced === 1 ? 'order is' : 'orders are'} not invoiced`
         : '') +

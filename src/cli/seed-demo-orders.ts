@@ -1,4 +1,5 @@
 import type { PrismaService } from '../database/prisma.service';
+import type { ClaimsService } from '../modules/claims/claims.service';
 import type { Prisma } from '../generated/prisma/client';
 import type { PartnerAuth, TenantAuth } from '../modules/identity/auth-context';
 import type { TenantPermission } from '../modules/identity/permissions';
@@ -221,11 +222,14 @@ export interface DemoOrdersDeps {
   jobs: JobsService;
   moves: MovesService;
   comments: CommentsService;
+  claims: ClaimsService;
 }
 
 export interface DemoOrdersSeed {
   customers: number;
   orders: number;
+  /** 1 when the delivered order's remake was made now, 0 when it had its claim already. */
+  remakes: number;
   /** Shipped pay-later orders left not billed: the workspace has no payment account to invoice through. */
   notInvoiced: number;
   /** The workspace's tab and needs-you counts once seeded, as `GET /orders/counts` gives them. */
@@ -660,5 +664,21 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     });
   }
 
-  return { customers, orders: plan.length, notInvoiced, counts: await deps.orders.counts(tenantId, {}) };
+  // A remake for Production's lists: two pieces of the delivered order claimed and remade at the workshop's
+  // fault. After every order, so a run that finds the order but not its claim still makes it; none twice.
+  let remakes = 0;
+  const delivered = await prisma.inTenant(tenantId, (tx) =>
+    tx.order.findFirst({ where: { channel: 'staff', channelOrderId: 'demo:delivered' }, select: { id: true } }),
+  );
+  if (delivered && !(await prisma.inTenant(tenantId, (tx) => tx.claim.findFirst({ where: { orderId: delivered.id }, select: { id: true } })))) {
+    const claim = await deps.claims.staffOpen(staff, delivered.id, {
+      reason: 'defect',
+      description: 'Two pieces arrived bent.',
+      lines: [{ position: 0, pieces: 2 }],
+    });
+    await deps.claims.decide(staff, claim.id, claim.lines[0].id, { fault: 'workshop', outcome: 'remake', note: 'Bent in the workshop; remade there.' });
+    remakes = 1;
+  }
+
+  return { customers, orders: plan.length, remakes, notInvoiced, counts: await deps.orders.counts(tenantId, {}) };
 }

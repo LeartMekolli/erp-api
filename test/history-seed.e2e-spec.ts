@@ -13,6 +13,7 @@ import { seedPricing } from '../src/cli/seed-pricing';
 import { seedProduction } from '../src/cli/seed-production';
 import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
+import { ClaimsService } from '../src/modules/claims/claims.service';
 import { CourierAccountService } from '../src/modules/couriers/courier-account.service';
 import { TENANT_PERMISSIONS } from '../src/modules/identity/permissions';
 import type { TenantAuth } from '../src/modules/identity/auth-context';
@@ -64,6 +65,7 @@ describe('history seed', () => {
     invoices: app.get(InvoicesService),
     moves: app.get(MovesService),
     comments: app.get(CommentsService),
+    claims: app.get(ClaimsService),
   });
 
   let w: { id: string; ownerId: string };
