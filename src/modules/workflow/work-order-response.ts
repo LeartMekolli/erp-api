@@ -83,6 +83,9 @@ export const lastMoveSchema = transitionResponseSchema.pick({
 });
 export type LastMove = z.infer<typeof lastMoveSchema>;
 
+/** A skill a step requires that the caller lacks. */
+export const missingSkillSchema = z.strictObject({ id: z.uuid(), name: z.string() });
+
 /** A piece in a work list, for the staff member reading it. */
 export const workOrderListItemSchema = workOrderResponseSchema.extend({
   to_inspect: toInspectSchema,
@@ -96,6 +99,11 @@ export const workOrderListItemSchema = workOrderResponseSchema.extend({
    * is an assembly's piece while a part isn't ready. Null when it can, and for a piece that isn't active.
    */
   held: z.enum(HOLD_REASONS).nullable(),
+  /**
+   * The skill the step the piece is at requires and the caller doesn't hold today, so the row can say whom
+   * to ask. Null when the caller may work it, for a piece that isn't active, and without `workflow.move`.
+   */
+  missing_skill: missingSkillSchema.nullable(),
   /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */
   in_rework: z.boolean(),
   /** Null until the piece first moves. */
@@ -141,6 +149,8 @@ export const stepGroupSchema = z.strictObject({
   held: z.number().int(),
   /** Why they are held, `waiting_for_payment` first; null when none is. */
   held_reason: z.enum(HOLD_REASONS).nullable(),
+  /** The skill the step requires and the caller doesn't hold today (`missing_skill` on the list); null when none is missing. */
+  missing_skill: missingSkillSchema.nullable(),
 });
 export type StepGroup = z.infer<typeof stepGroupSchema>;
 

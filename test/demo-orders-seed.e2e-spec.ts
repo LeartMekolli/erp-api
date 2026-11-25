@@ -12,6 +12,7 @@ import { seedPartners } from '../src/cli/seed-partners';
 import { seedPayments } from '../src/cli/seed-payments';
 import { seedPricing } from '../src/cli/seed-pricing';
 import { seedProduction } from '../src/cli/seed-production';
+import { seedStaff } from '../src/cli/seed-staff';
 import { seedWorkflows } from '../src/cli/seed-workflows';
 import { PrismaService } from '../src/database/prisma.service';
 import { ClaimsService } from '../src/modules/claims/claims.service';
@@ -100,13 +101,17 @@ describe('demo orders seed', () => {
     await seedCatalog(prisma, tenant.id, { partVersionId: design });
     await seedPricing(prisma, tenant.id);
     await seedWorkflows(prisma, tenant.id);
+    // As in the real seed, the orders are made by a staff user with no role who isn't the owner, so the
+    // in-house Final QC's skill must be theirs for the seed to move pieces through it.
+    const acting = await createTestUser(prisma, tenant.id, { roles: [] });
+    await seedStaff(prisma, tenant.id, { actingUserId: acting.id, password: PASSWORD });
     await seedCustomers(prisma, tenant.id, { password: PASSWORD });
     await seedPartners(prisma, tenant.id, { password: PASSWORD });
     await seedOrders(prisma, tenant.id);
     await seedProduction({ prisma, accounts: app.get(CourierAccountService) }, tenant.id);
     await seedPayments({ prisma, accounts: app.get(PaymentAccountService), payoutAccounts: app.get(PayoutAccountsService) }, tenant.id, KEYS);
 
-    const first = await seedDemoOrders(deps(), tenant.id, owner.id);
+    const first = await seedDemoOrders(deps(), tenant.id, acting.id);
     expect(first).toMatchObject({ customers: 6, orders: 24, notInvoiced: 0, remakes: 1 });
     // The delivered order's remake: started, with its own promise, for Production's lists.
     const remakeGroups = await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.findMany({ where: { sourceType: 'claim_line' } }));
@@ -231,7 +236,24 @@ describe('demo orders seed', () => {
     for (const piece of setPieces) expect(piece).toMatchObject({ held: 'waiting_for_parts', may_work: false });
     expect((await piecesOfDemo('awaiting-set')).some((piece) => piece.held === 'waiting_for_payment')).toBe(true);
 
-    const second = await seedDemoOrders(deps(), tenant.id, owner.id);
+    // The floor member lacks the Final QC skill, so the in-house check's pieces name it; the piece sent back
+    // to the workshop is at a step that needs none.
+    const floor = await prisma.inTenant(tenant.id, (tx) => tx.user.findFirstOrThrow({ where: { email: 'floor@demo.example.test' } }));
+    const finalQcSkill = await prisma.inTenant(tenant.id, (tx) => tx.skill.findFirstOrThrow({ where: { name: 'Final QC' } }));
+    const floorToken = (await tokens.issueForUser(tenant.id, floor.id)).accessToken;
+    const floorList = await request(app.getHttpServer())
+      .get(`/workflow/work-orders?group_id=${inHouseGroup}&limit=200`)
+      .set('Authorization', `Bearer ${floorToken}`)
+      .expect(200);
+    expectDocumented(pageSchema(workOrderListItemSchema), floorList.body);
+    const floorPieces = (floorList.body as { data: { step: { key: string } | null; may_work: boolean; missing_skill: { id: string; name: string } | null }[] })
+      .data;
+    const atQc = floorPieces.filter((piece) => piece.step?.key === 'final_qc');
+    expect(atQc).toHaveLength(7);
+    for (const piece of atQc) expect(piece).toMatchObject({ may_work: false, missing_skill: { id: finalQcSkill.id, name: 'Final QC' } });
+    expect(floorPieces.filter((piece) => piece.step?.key !== 'final_qc').map((piece) => piece.missing_skill)).toEqual([null]);
+
+    const second = await seedDemoOrders(deps(), tenant.id, acting.id);
     expect(second).toMatchObject({ customers: 0, orders: 0, notInvoiced: 0, remakes: 0 });
     expect(await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.count({ where: { sourceType: 'claim_line' } }))).toBe(1);
     expect((await get('/orders/counts')).body).toEqual(counts);

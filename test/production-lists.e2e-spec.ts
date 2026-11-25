@@ -549,7 +549,7 @@ describe('workflow: production lists', () => {
 
     const { rows } = await linesAt(w.staff, cast.workflowId, 'polishing');
     expect(rows).toEqual([
-      { group: expect.objectContaining({ id: polished.lines[0].group_id, source: 'order_line' }), count: 6, in_rework: 1, workable: 6, to_inspect: 0, held: 0, held_reason: null },
+      { group: expect.objectContaining({ id: polished.lines[0].group_id, source: 'order_line' }), count: 6, in_rework: 1, workable: 6, to_inspect: 0, held: 0, held_reason: null, missing_skill: null },
     ]);
     // Without workflow.move, nothing is workable.
     expect((await linesAt(await w.holding(['workflow.read']), cast.workflowId, 'polishing')).rows[0]).toMatchObject({ count: 6, workable: 0 });
