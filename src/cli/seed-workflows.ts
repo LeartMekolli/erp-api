@@ -103,11 +103,13 @@ const WORKFLOWS: Record<string, { key: string; name: string; steps: Record<strin
         customer: { visible: true, name: 'Finishing' },
       },
       // The workspace checks and packs prints itself: a print partner's part ends at finish, its payout step.
+      // Only staff holding the Final QC skill may pass or fail prints there.
       {
         ...finalQc,
         defects: [{ defect: 'scratch', outcome: 'rework', rework_to: 'finish' }],
         rework_targets: ['finish'],
         done_by: 'workspace',
+        required_skill: 'Final QC',
       },
       { key: 'packing', name: 'Packing', done_by: 'workspace' },
     ],

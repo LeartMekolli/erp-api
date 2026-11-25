@@ -43,6 +43,7 @@ import { seedPayments } from './seed-payments';
 import { seedPlans } from './seed-plans';
 import { seedPricing } from './seed-pricing';
 import { seedProduction } from './seed-production';
+import { seedStaff } from './seed-staff';
 import { seedWorkflows } from './seed-workflows';
 
 const SEED_ADMIN = { email: 'admin@example.test', name: 'Platform Admin' };
@@ -84,7 +85,8 @@ class SeedModule {}
 
 /**
  * Idempotent: existing records are skipped, any other failure stops the run.
- * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`)
+ * The demo workspace also gets the example catalog (`seed-catalog.ts`), its pricing (`seed-pricing.ts`),
+ * its workflows (`seed-workflows.ts`), a floor member without the Final QC skill (`seed-staff.ts`),
  * demo customers (`seed-customers.ts`), demo partners (`seed-partners.ts`), its ordering setup
  * (`seed-orders.ts`), its claim settings, an accountant and the accountant's monthly files (`seed-claims.ts`), its fake
  * courier account, a live-rate method, daily capacities and the job summary (`seed-production.ts`), its payments (`seed-payments.ts`, keys from `DEMO_STRIPE_*`),
@@ -92,7 +94,7 @@ class SeedModule {}
  * behind them with the on-time target (`seed-history.ts`), its plans, packs
  * and campaign (`seed-plans.ts`) and its AI limit, knowledge articles, AI plan switches and a brand
  * profile (`seed-ai.ts`). The admin's, the
- * customer people's and the partner owners' generated passwords are printed here, once. The owners'
+ * customer people's, the partner owners' and the floor member's generated passwords are printed here, once. The owners'
  * invitations are emailed: queued here, sent by the worker, readable in
  * Mailpit locally.
  */
@@ -153,6 +155,14 @@ void runCli(async (app) => {
   const workflows = await seedWorkflows(prisma, demo.id);
   process.stdout.write(
     `workflows for demo: created ${workflows.skills} skills, ${workflows.defects} defects, ${workflows.stepTypes} step types, ${workflows.workflows} workflows\n`,
+  );
+
+  // The catalog user moves the demo orders through the in-house Final QC, so it holds that skill.
+  const staff = await seedStaff(prisma, demo.id, { actingUserId: uploader.id });
+  process.stdout.write(
+    `staff for demo: ${staff.counts.skills ? 'gave the catalog user Final QC, ' : ''}created ${staff.counts.members} floor members` +
+      (staff.password ? ` with password ${staff.password} (floor@demo.example.test)` : '') +
+      '\n',
   );
 
   const customers = await seedCustomers(prisma, demo.id);
