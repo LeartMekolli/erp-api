@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { groupSummarySchema } from './group-summary-response';
 import { transitionResponseSchema, WORK_ORDER_STATUSES } from './work-order-response';
 
 // What clients receive for a line's moves, one item per action; checked against real responses in the e2e tests.
@@ -41,6 +42,22 @@ export const actionResponseSchema = z.strictObject({
   pieces: z.array(actionPieceSchema),
 });
 export type ActionResponse = z.infer<typeof actionResponseSchema>;
+
+/**
+ * A move in the QC history across every line (Production lists spec, goal 5): the action as a line's history
+ * shows it, with every line it touched, whatever the filters matched.
+ */
+export const moveListItemSchema = actionResponseSchema.omit({ pieces: true, partner: true }).extend({
+  /** Each line the move touched, in the order it moved them: how many of its pieces, and the partner it counts for. */
+  groups: z.array(
+    z.strictObject({
+      group: groupSummarySchema,
+      count: z.number().int(),
+      partner: move.partner,
+    }),
+  ),
+});
+export type MoveListItem = z.infer<typeof moveListItemSchema>;
 
 export const moveHistoryResponseSchema = z.strictObject({
   data: z.array(actionResponseSchema),

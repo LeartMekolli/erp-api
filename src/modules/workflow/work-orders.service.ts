@@ -9,22 +9,29 @@ import {
 import { z } from 'zod';
 import { newId } from '../../common/ids/uuid';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
+import type { CursorPayload } from '../../common/pagination/cursor';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import type { Quote, WorkOrder, WorkOrderGroup } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
+import { workspaceCalendar } from '../orders/needs-today';
+import { groupPromise } from '../orders/order-lines';
 import { keySchema } from '../pricing/decimals';
+import { SettingsService } from '../settings/settings.service';
 import { missingStepTypes, resolveWorkflow } from './coverage';
+import { groupSummaries } from './group-summary';
+import { PIECE_SORTS, pieceFilterSchema, pieceWhere } from './piece-filters';
+import type { PieceSort } from './piece-filters';
 import type { WorkflowStepRow } from './coverage';
-import { actionFacts, listActions } from './move-history';
+import { actionFacts, listActions, listMoves, transitionFilters } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
-import type { MoveHistoryResponse } from './move-history-response';
+import type { MoveHistoryResponse, MoveListItem } from './move-history-response';
 import { pathFor } from './path';
 import { customerView, groupProgress, inRework, stepTotals } from './progress';
 import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
-import { ensureDraw, toInspect } from './sampling';
+import { ensureDraw, historiesOf, toInspect } from './sampling';
 import { barredStepIds } from './step-skills';
 import { nameRef, stepRef, toTransition, transitionInclude } from './transition-rows';
 import type { StepConfig } from './workflow-config';
@@ -33,6 +40,8 @@ import type {
   CustomerViewResponse,
   GroupResponse,
   LastMove,
+  StepCountsResponse,
+  StepGroup,
   TransitionListItem,
   WorkOrderDetailResponse,
   WorkOrderListItem,
@@ -45,16 +54,111 @@ export const MAX_PIECES = 10_000;
 
 export const startGroupSchema = z.object({ quote_id: z.uuid() });
 
-export const workOrderQuerySchema = z.object({
+export const workOrderQuerySchema = pieceFilterSchema.extend({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().optional(),
   group_id: z.uuid().optional(),
   step_key: keySchema.optional(),
   status: z.enum(WORK_ORDER_STATUSES).optional(),
-  /** Only the pieces the caller may pass or fail where they are (`may_work`). */
-  workable: z.literal('true').optional(),
+  sort: z.enum(PIECE_SORTS).default('priority'),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
+
+export const stepCountsQuerySchema = pieceFilterSchema.extend({ workflow_id: z.uuid() });
+export type StepCountsQuery = z.infer<typeof stepCountsQuerySchema>;
+
+export const stepGroupsQuerySchema = pieceFilterSchema.extend({
+  workflow_id: z.uuid(),
+  step_key: keySchema,
+  sort: z.enum(PIECE_SORTS).default('priority'),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().optional(),
+});
+export type StepGroupsQuery = z.infer<typeof stepGroupsQuerySchema>;
+
+const NO_DUE_DATE = 'none';
+const byDue = (sort: PieceSort) => sort === 'due_on' || sort === '-due_on';
+const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
+const dayOf = (date: Date | null) => (date ? date.toISOString().slice(0, 10) : NO_DUE_DATE);
+
+/** The work list's order: see `PIECE_SORTS`. Ties between groups break by rank, then by id. */
+function piecesOrderBy(sort: PieceSort): Prisma.WorkOrderOrderByWithRelationInput[] {
+  if (sort === 'started') return [{ id: 'asc' }];
+  const ranked: Prisma.WorkOrderOrderByWithRelationInput[] = [{ group: { queueRank: 'desc' } }, { id: 'asc' }];
+  if (!byDue(sort)) return ranked;
+  return [{ group: { dueOn: { sort: sort === 'due_on' ? 'asc' : 'desc', nulls: 'last' } } }, ...ranked];
+}
+
+/** After a row of rank `rank` and id `id`, in rank order, among the pieces whose group matches `group`. */
+const afterRanked = (group: Prisma.WorkOrderGroupWhereInput, rank: number, id: string): Prisma.WorkOrderWhereInput[] => [
+  { group: { ...group, queueRank: { lt: rank } } },
+  { group: { ...group, queueRank: rank }, id: { gt: id } },
+];
+
+/** Where a due date page starts, after the cursor's row; every undated piece comes after the dated ones. */
+function duePageWhere(sort: PieceSort, after: CursorPayload): Prisma.WorkOrderWhereInput {
+  const rank = after.rank!;
+  if (after.key === NO_DUE_DATE) return { OR: afterRanked({ dueOn: null }, rank, after.id) };
+  const day = asDay(after.key!);
+  return {
+    OR: [
+      { group: { dueOn: sort === 'due_on' ? { gt: day } : { lt: day } } },
+      ...afterRanked({ dueOn: day }, rank, after.id),
+      { group: { dueOn: null } },
+    ],
+  };
+}
+
+/** Which list a cursor pages: the work list's pieces, or the groups at a step (`groups:` before the sort). */
+type CursorList = 'pieces' | 'groups';
+const madeFor = (list: CursorList, sort: PieceSort) => (list === 'groups' ? `groups:${sort}` : sort);
+
+/** The cursor for `sort` on `list`, refused (400) when made for another sort or list, or when its key isn't that sort's. */
+function piecesCursor(list: CursorList, sort: PieceSort, cursor: string, secret: string): CursorPayload {
+  const after = decodeCursor(cursor, secret);
+  // A work list cursor from before the sorts carries none: it was made for `priority`.
+  const made = after.sort ?? 'priority';
+  const ranked = sort !== 'started';
+  const keyOk = byDue(sort)
+    ? after.rank !== undefined && (after.key === NO_DUE_DATE || z.iso.date().safeParse(after.key).success)
+    : after.key === undefined && (list === 'pieces' || !ranked || after.rank !== undefined);
+  if (made !== madeFor(list, sort) || !keyOk) throw new BadRequestException('Invalid cursor: made for another sort or list');
+  return after;
+}
+
+/** The order of a list of groups: the work list's sorts, with the group's own id where it has the piece's. */
+function groupsOrderBy(sort: PieceSort): Prisma.WorkOrderGroupOrderByWithRelationInput[] {
+  if (sort === 'started') return [{ id: 'asc' }];
+  const ranked: Prisma.WorkOrderGroupOrderByWithRelationInput[] = [{ queueRank: 'desc' }, { id: 'asc' }];
+  if (!byDue(sort)) return ranked;
+  return [{ dueOn: { sort: sort === 'due_on' ? 'asc' : 'desc', nulls: 'last' } }, ...ranked];
+}
+
+/** Where a page of groups starts, after the cursor's group, as `piecesOrderBy`'s pages do for pieces. */
+function groupsPageWhere(sort: PieceSort, after: CursorPayload): Prisma.WorkOrderGroupWhereInput {
+  if (sort === 'started') return { id: { gt: after.id } };
+  const rank = after.rank!;
+  const ranked = (on: Prisma.WorkOrderGroupWhereInput): Prisma.WorkOrderGroupWhereInput[] => [
+    { ...on, queueRank: { lt: rank } },
+    { ...on, queueRank: rank, id: { gt: after.id } },
+  ];
+  if (!byDue(sort)) return { OR: ranked({}) };
+  if (after.key === NO_DUE_DATE) return { OR: ranked({ dueOn: null }) };
+  const day = asDay(after.key!);
+  return { OR: [{ dueOn: sort === 'due_on' ? { gt: day } : { lt: day } }, ...ranked({ dueOn: day }), { dueOn: null }] };
+}
+
+/** What the next page's cursor carries for `sort` on `list`: a work list `priority` cursor stays as it was before the sorts. */
+function piecesCursorPayload(
+  list: CursorList,
+  sort: PieceSort,
+  row: { id: string; group: { queueRank: number; dueOn: Date | null } },
+): CursorPayload {
+  const made = madeFor(list, sort);
+  if (sort === 'priority') return list === 'pieces' ? { id: row.id, rank: row.group.queueRank } : { id: row.id, rank: row.group.queueRank, sort: made };
+  if (sort === 'started') return { id: row.id, sort: made };
+  return { id: row.id, rank: row.group.queueRank, sort: made, key: dayOf(row.group.dueOn) };
+}
 
 export const transitionQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -73,8 +177,17 @@ export const transitionQuerySchema = z.object({
   from: z.iso.datetime({ offset: true }).optional(),
   /** Before this moment. */
   to: z.iso.datetime({ offset: true }).optional(),
+  /** Only the rows one request wrote. */
+  move_id: z.uuid().optional(),
 });
 export type TransitionQuery = z.infer<typeof transitionQuerySchema>;
+
+export const moveListQuerySchema = transitionQuerySchema.extend({
+  kind: z.enum(['pass', 'fail', 'correction']).optional(),
+  workflow_id: pieceFilterSchema.shape.workflow_id,
+  q: pieceFilterSchema.shape.q,
+});
+export type MoveListQuery = z.infer<typeof moveListQuerySchema>;
 
 /** What a group starts from: a quote, an order line, or a claimed line it remakes. */
 export type GroupSourceType = 'quote' | 'order_line' | 'claim_line';
@@ -133,6 +246,7 @@ export class WorkOrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   registerStartHook(hook: StartHook): void {
@@ -319,6 +433,12 @@ export class WorkOrdersService {
         createdByUserId: input.createdByUserId,
       },
     });
+    // When the pieces are due, kept on the group so the work list sorts by it. A remake's decision isn't
+    // written yet, so its promise counts from now: the decision's moment, in this same transaction.
+    const { promised } = await groupPromise(tx, group.id, await workspaceCalendar(tx, this.settings));
+    if (promised) {
+      await tx.workOrderGroup.update({ where: { id: group.id }, data: { dueOn: new Date(promised) } });
+    }
     // Ids in number order, so a list by id lists the pieces in order.
     await tx.workOrder.createMany({
       data: Array.from({ length: input.quantity }, (_, index) => ({
@@ -366,28 +486,28 @@ export class WorkOrdersService {
 
   /**
    * Pieces in the order they started, filtered by group, current step or status, each marked with whether
-   * the caller may work it (Workflow 2 spec, goal 13); `workable=true` keeps only those.
+   * the caller may work it (Workflow 2 spec, goal 13); `workable=true` keeps only those. Searched, narrowed to
+   * a workflow and sorted as `pieceWhere` and `PIECE_SORTS` say (Production lists spec, goal 2).
    */
   async list(auth: TenantAuth, query: WorkOrderQuery): Promise<Page<WorkOrderListItem>> {
     const secret = this.config.get('APP_SECRET');
-    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const { sort } = query;
+    const after = query.cursor ? piecesCursor('pieces', sort, query.cursor, secret) : undefined;
     const mayMove = auth.permissions.has('workflow.move');
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
-      let workable: Prisma.WorkOrderWhereInput = {};
-      if (query.workable === 'true') {
-        // Without the move permission, nothing is workable.
-        workable = mayMove ? { status: 'active', currentStepId: { notIn: [...barred] } } : { id: { in: [] } };
-      }
-      // First-in-line customers' groups first (Customers 2 spec, goal 17), then in id order. A cursor from
-      // before ranks existed carries none: the rank its piece's group has now is taken.
+      const filtered = await pieceWhere(tx, query, auth, barred);
       let page: Prisma.WorkOrderWhereInput = {};
-      if (after) {
+      if (after && sort === 'started') page = { id: { gt: after.id } };
+      if (after && byDue(sort)) page = duePageWhere(sort, after);
+      if (after && sort === 'priority') {
+        // First-in-line customers' groups first (Customers 2 spec, goal 17), then in id order. A cursor from
+        // before ranks existed carries none: the rank its piece's group has now is taken.
         const rank =
           after.rank ??
           (await tx.workOrder.findUnique({ where: { id: after.id }, select: { group: { select: { queueRank: true } } } }))?.group.queueRank ??
           0;
-        page = { OR: [{ group: { queueRank: { lt: rank } } }, { group: { queueRank: rank }, id: { gt: after.id } }] };
+        page = { OR: afterRanked({}, rank, after.id) };
       }
       const rows = await tx.workOrder.findMany({
         where: {
@@ -398,10 +518,10 @@ export class WorkOrdersService {
               ...(query.status ? { status: query.status } : {}),
             },
             page,
-            workable,
+            filtered,
           ],
         },
-        orderBy: [{ group: { queueRank: 'desc' } }, { id: 'asc' }],
+        orderBy: piecesOrderBy(sort),
         take: query.limit + 1,
         include: pieceInclude,
       });
@@ -409,14 +529,129 @@ export class WorkOrdersService {
       const last = data.at(-1);
       const inspect = await toInspect(tx, data);
       const moves = await this.moveSummaries(tx, data);
+      const groups = await groupSummaries(
+        tx,
+        data.map((row) => row.groupId),
+        auth,
+        this.settings,
+      );
       return {
         data: data.map((row) => ({
           ...toWorkOrder(row),
           to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
           ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
+          group: groups.get(row.groupId)!,
         })),
-        next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id, rank: last.group.queueRank }, secret) : null,
+        next_cursor: rows.length > query.limit && last ? encodeCursor(piecesCursorPayload('pieces', sort, last), secret) : null,
+      };
+    });
+  }
+
+  /**
+   * The active pieces `query` picks at each step of its workflow (Production lists spec, goal 3), counted
+   * as the list pages them. Steps are the current version's in path order, then keys only an older version
+   * has, by their position there; a 404 for a workflow that isn't the workspace's.
+   */
+  async counts(auth: TenantAuth, query: StepCountsQuery): Promise<StepCountsResponse> {
+    const mayMove = auth.permissions.has('workflow.move');
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const current = await tx.workflowVersion.findFirst({
+        where: { workflowId: query.workflow_id },
+        orderBy: { number: 'desc' },
+        select: { steps: { select: { key: true, name: true }, orderBy: { position: 'asc' } } },
+      });
+      if (!current) throw new NotFoundException('Workflow not found');
+      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
+      const active: Prisma.WorkOrderWhereInput = { AND: [{ status: 'active' }, await pieceWhere(tx, query, auth, barred)] };
+      // Counted in the database by the step row the pieces are at (one per version); summed by key below.
+      const byStep = await tx.workOrder.groupBy({ by: ['currentStepId'], where: active, _count: { _all: true } });
+      const stepRows = await tx.workflowStep.findMany({
+        where: { id: { in: byStep.flatMap((row) => (row.currentStepId ? [row.currentStepId] : [])) } },
+        select: { id: true, key: true, name: true, position: true },
+      });
+      const stepOf = new Map(stepRows.map((step) => [step.id, step]));
+      // Only a piece once failed for rework can be in rework, so only those pieces' histories are read.
+      const reworked = await tx.workOrder.findMany({
+        where: { AND: [active, { transitions: { some: { kind: 'fail', outcome: 'rework' } } }] },
+        select: { id: true, currentStepId: true },
+      });
+      const histories = await historiesOf(
+        tx,
+        reworked.map((piece) => piece.id),
+      );
+
+      const steps = new Map(current.steps.map((step) => [step.key, { key: step.key, name: step.name, active: 0, in_rework: 0, workable: 0 }]));
+      // Keys the current version dropped, by where they were on their own version; then by key.
+      const older = new Map<string, { name: string; position: number }>();
+      for (const step of stepRows) {
+        if (steps.has(step.key)) continue;
+        const known = older.get(step.key);
+        if (!known || step.position < known.position) older.set(step.key, { name: step.name, position: step.position });
+      }
+      [...older.entries()]
+        .sort(([a, first], [b, second]) => first.position - second.position || a.localeCompare(b))
+        .forEach(([key, { name }]) => steps.set(key, { key, name, active: 0, in_rework: 0, workable: 0 }));
+      for (const row of byStep) {
+        const at = stepOf.get(row.currentStepId!)!;
+        const step = steps.get(at.key)!;
+        step.active += row._count._all;
+        if (mayMove && !barred.has(at.id)) step.workable += row._count._all;
+      }
+      for (const piece of reworked) {
+        if (inRework(histories.get(piece.id) ?? []) !== null) steps.get(stepOf.get(piece.currentStepId!)!.key)!.in_rework += 1;
+      }
+      return { steps: [...steps.values()] };
+    });
+  }
+
+  /**
+   * The groups with active pieces `query` picks at one step (Production lists spec, goal 4), one row each,
+   * paged by group so a page never splits one, in the work list's sorts. A fixed number of reads per page.
+   */
+  async groupsAtStep(auth: TenantAuth, query: StepGroupsQuery): Promise<Page<StepGroup>> {
+    const secret = this.config.get('APP_SECRET');
+    const { sort } = query;
+    const after = query.cursor ? piecesCursor('groups', sort, query.cursor, secret) : undefined;
+    const mayMove = auth.permissions.has('workflow.move');
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
+      const here: Prisma.WorkOrderWhereInput = {
+        AND: [{ status: 'active', currentStep: { key: query.step_key } }, await pieceWhere(tx, query, auth, barred)],
+      };
+      const rows = await tx.workOrderGroup.findMany({
+        where: { AND: [{ workOrders: { some: here } }, after ? groupsPageWhere(sort, after) : {}] },
+        orderBy: groupsOrderBy(sort),
+        take: query.limit + 1,
+        select: { id: true, queueRank: true, dueOn: true },
+      });
+      const groups = rows.slice(0, query.limit);
+      const ids = groups.map((group) => group.id);
+      const pieces = await tx.workOrder.findMany({
+        where: { AND: [here, { groupId: { in: ids } }] },
+        select: { id: true, groupId: true, status: true, currentStepId: true, replacesId: true },
+      });
+      const histories = await historiesOf(
+        tx,
+        pieces.map((piece) => piece.id),
+      );
+      const inspect = await toInspect(tx, pieces);
+      const summaries = await groupSummaries(tx, ids, auth, this.settings);
+      const totals = new Map(ids.map((id) => [id, { count: 0, in_rework: 0, workable: 0, to_inspect: 0 }]));
+      for (const piece of pieces) {
+        const total = totals.get(piece.groupId)!;
+        total.count += 1;
+        if (inRework(histories.get(piece.id) ?? []) !== null) total.in_rework += 1;
+        if (mayMove && !barred.has(piece.currentStepId!)) total.workable += 1;
+        if (inspect.get(piece.id) === true) total.to_inspect += 1;
+      }
+      const last = groups.at(-1);
+      return {
+        data: groups.map((group) => ({ group: summaries.get(group.id)!, ...totals.get(group.id)! })),
+        next_cursor:
+          rows.length > query.limit && last
+            ? encodeCursor(piecesCursorPayload('groups', sort, { id: last.id, group: { queueRank: last.queueRank, dueOn: last.dueOn } }), secret)
+            : null,
       };
     });
   }
@@ -425,24 +660,11 @@ export class WorkOrdersService {
   async transitions(tenantId: string, query: TransitionQuery): Promise<Page<TransitionListItem>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
-    const group = {
-      ...(query.group_id ? { id: query.group_id } : {}),
-      ...(query.file_version_id ? { fileVersionId: query.file_version_id } : {}),
-    };
+    // A transitions cursor carries the row's id alone; one with a sort is another list's.
+    if (after?.sort !== undefined) throw new BadRequestException('Invalid cursor: made for another list');
     return this.prisma.inTenant(tenantId, async (tx) => {
       const rows = await tx.transition.findMany({
-        where: {
-          ...(after ? { id: { lt: after.id } } : {}),
-          ...(query.work_order_id ? { workOrderId: query.work_order_id } : {}),
-          ...(Object.keys(group).length > 0 ? { workOrder: { group } } : {}),
-          ...(query.step_key ? { fromStep: { key: query.step_key } } : {}),
-          ...(query.defect_key ? { defect: { key: query.defect_key } } : {}),
-          ...(query.actor_user_id ? { actorUserId: query.actor_user_id } : {}),
-          ...(query.inspected ? { inspected: query.inspected === 'true' } : {}),
-          ...(query.from || query.to
-            ? { createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lt: new Date(query.to) } : {}) } }
-            : {}),
-        },
+        where: { ...transitionFilters(query), ...(after ? { id: { lt: after.id } } : {}) },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
         include: { ...transitionInclude, workOrder: { select: { id: true, number: true, group: { select: { quantity: true } } } } },
@@ -455,6 +677,43 @@ export class WorkOrdersService {
           work_order: { id: row.workOrder.id, label: `${row.workOrder.number}/${row.workOrder.group.quantity}` },
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
+      };
+    });
+  }
+
+  /**
+   * The QC history one move at a time, across every line (Production lists spec, goal 5): each move whole,
+   * with every line it touched, its count of pieces there and the partner it counts for there.
+   */
+  async moveList(auth: TenantAuth, query: MoveListQuery): Promise<Page<MoveListItem>> {
+    const secret = this.config.get('APP_SECRET');
+    return this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const { moves, next_cursor } = await listMoves(tx, query, auth, secret);
+      const summaries = await groupSummaries(
+        tx,
+        moves.flatMap((rows) => rows.map((row) => row.workOrder.groupId)),
+        auth,
+        this.settings,
+      );
+      return {
+        data: moves.map((rows) => {
+          const { representative, pieces: _pieces, ...facts } = actionFacts(rows);
+          const groups = new Map<string, { count: number; partner: { id: string; name: string } | null }>();
+          for (const row of rows) {
+            const entry = groups.get(row.workOrder.groupId) ?? { count: 0, partner: null };
+            entry.count += 1;
+            entry.partner ??= row.partner;
+            groups.set(row.workOrder.groupId, entry);
+          }
+          return {
+            ...facts,
+            override_reason: representative.overrideReason,
+            comment: representative.comment,
+            actor: { id: representative.actor.id, name: representative.actor.name },
+            groups: [...groups.entries()].map(([id, entry]) => ({ group: summaries.get(id)!, ...entry })),
+          };
+        }),
+        next_cursor,
       };
     });
   }
@@ -680,7 +939,7 @@ export class WorkOrdersService {
 
 export const pieceInclude = {
   currentStep: { select: { id: true, key: true, name: true } },
-  group: { select: { quantity: true, queueRank: true } },
+  group: { select: { quantity: true, queueRank: true, dueOn: true } },
 } as const;
 
 export function stepsForPath(steps: WorkflowStepRow[]) {

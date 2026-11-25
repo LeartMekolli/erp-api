@@ -9,14 +9,16 @@ import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
 import { moveHistoryQuerySchema } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
-import { moveHistoryResponseSchema } from './move-history-response';
-import type { MoveHistoryResponse } from './move-history-response';
+import { moveHistoryResponseSchema, moveListItemSchema } from './move-history-response';
+import type { MoveHistoryResponse, MoveListItem } from './move-history-response';
 import { MAX_PHOTOS_PER_MOVE, MAX_PIECES_PER_MOVE, MovesService, moveSchema } from './moves.service';
 import type { MoveBody } from './moves.service';
 import {
   customerViewResponseSchema,
   groupResponseSchema,
   moveResponseSchema,
+  stepCountsResponseSchema,
+  stepGroupSchema,
   transitionListItemSchema,
   workOrderDetailResponseSchema,
   workOrderListItemSchema,
@@ -25,12 +27,23 @@ import type {
   CustomerViewResponse,
   GroupResponse,
   MoveResponse,
+  StepCountsResponse,
+  StepGroup,
   TransitionListItem,
   WorkOrderDetailResponse,
   WorkOrderListItem,
 } from './work-order-response';
-import { MAX_PIECES, WorkOrdersService, startGroupSchema, transitionQuerySchema, workOrderQuerySchema } from './work-orders.service';
-import type { TransitionQuery, WorkOrderQuery } from './work-orders.service';
+import {
+  MAX_PIECES,
+  WorkOrdersService,
+  startGroupSchema,
+  moveListQuerySchema,
+  stepCountsQuerySchema,
+  stepGroupsQuerySchema,
+  transitionQuerySchema,
+  workOrderQuerySchema,
+} from './work-orders.service';
+import type { MoveListQuery, StepCountsQuery, StepGroupsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
 
 const idSchema = z.uuid();
 
@@ -114,7 +127,14 @@ export class WorkOrdersController {
       'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
       '`workable=true` keeps only those pieces. `in_rework` says whether an active piece is being redone after a failed ' +
-      'check, and `last_move` is what last happened to it.',
+      'check, `last_move` is what last happened to it, and `group` whose the piece is and when it is due. ' +
+      '`workflow_id` keeps the pieces of every version of one workflow, so a step key two workflows share can be told ' +
+      "apart. `q` finds part of the product's name, any case, with `%` and `_` taken literally; with `order.read`, also " +
+      "an order's or a claim's number (`#` optional); with `customer.read`, also part of the customer's name. " +
+      "`sort` is `priority` when left out (first-in-line customers' groups first, then as the pieces started); " +
+      '`due_on` and `-due_on` order by `group.due_on`, soonest or latest first, with undated pieces last either way and ' +
+      'ties as `priority`; `started` is as the pieces started. Every filter applies before paging; a cursor made for ' +
+      'another sort is a 400.',
     query: workOrderQuerySchema,
     response: pageSchema(workOrderListItemSchema),
     errors: [400],
@@ -126,6 +146,48 @@ export class WorkOrdersController {
     @Query(new ZodValidationPipe(workOrderQuerySchema)) query: WorkOrderQuery,
   ): Promise<Page<WorkOrderListItem>> {
     return this.workOrders.list(auth, query);
+  }
+
+  @ApiDoc({
+    summary: 'How many active pieces are at each step of one workflow, for the tabs over a work list.',
+    description:
+      "Every step of the workflow's current version, in path order and zeros included, then any step key only an older " +
+      'version still has pieces at. `workflow_id` is required and covers every version; `q` and `workable` filter as on ' +
+      '`GET /workflow/work-orders`, so a step\'s `active` is the number of pieces that list pages through for it with ' +
+      '`status=active`. `in_rework` and `workable` are the part of `active` being redone, and the part the caller may ' +
+      'pass or fail there.',
+    query: stepCountsQuerySchema,
+    response: stepCountsResponseSchema,
+    errors: [400, 404],
+  })
+  @RequirePermission('workflow.read')
+  @Get('work-orders/counts')
+  counts(
+    @CurrentUser() auth: TenantAuth,
+    @Query(new ZodValidationPipe(stepCountsQuerySchema)) query: StepCountsQuery,
+  ): Promise<StepCountsResponse> {
+    return this.workOrders.counts(auth, query);
+  }
+
+  @ApiDoc({
+    summary: 'The order lines with active pieces at one step, one row each, with how many are there and what they need.',
+    description:
+      'One row per group (an order line, an assembly part, a remake or a quote) with active pieces at `step_key` of ' +
+      "`workflow_id` (every version). `count` is the group's pieces there that the filters pick; `in_rework`, `workable` " +
+      'and `to_inspect` are the part of `count` being redone, that the caller may pass or fail, and to inspect in full at ' +
+      'a step that samples. `q`, `workable` and `sort` work as on `GET /workflow/work-orders`, by group: `started` is as ' +
+      'the groups started. Pages are by group, so one is never split; a cursor made for another sort is a 400.',
+    query: stepGroupsQuerySchema,
+    response: pageSchema(stepGroupSchema),
+    errors: [400],
+  })
+  @RequirePermission('workflow.read')
+  @Get('work-orders/groups')
+  groupsAtStep(
+    @CurrentUser() auth: TenantAuth,
+    @Query(new ZodValidationPipe(stepGroupsQuerySchema)) query: StepGroupsQuery,
+  ): Promise<Page<StepGroup>> {
+    return this.workOrders.groupsAtStep(auth, query);
   }
 
   @ApiDoc({
@@ -157,8 +219,30 @@ export class WorkOrdersController {
   }
 
   @ApiDoc({
+    summary: 'The QC history one move at a time, newest first: each move whole, with every line it touched.',
+    description:
+      'Takes the filters of `GET /workflow/transitions`, plus `kind`, `workflow_id` (every version) and `q`, which ' +
+      'matches as on `GET /workflow/work-orders`. A filter picks the moves with a row it matches, and each move is then ' +
+      'listed whole: `groups` names every line the move touched, with how many of its pieces it moved and the partner ' +
+      "it counts for there, even a line the filter didn't match. Pages are by move, so one is never split.",
+    query: moveListQuerySchema,
+    response: pageSchema(moveListItemSchema),
+    errors: [400],
+  })
+  @RequirePermission('workflow.read')
+  @Get('moves')
+  moveList(
+    @CurrentUser() auth: TenantAuth,
+    @Query(new ZodValidationPipe(moveListQuerySchema)) query: MoveListQuery,
+  ): Promise<Page<MoveListItem>> {
+    return this.workOrders.moveList(auth, query);
+  }
+
+  @ApiDoc({
     summary: 'The QC history: every move of every piece, newest first, filtered by piece, group, step, defect, design file, actor or time.',
-    description: '`step_key` matches the step the move was made at. `from` is inclusive and `to` exclusive.',
+    description:
+      '`step_key` matches the step the move was made at. `from` is inclusive and `to` exclusive. `move_id` keeps the ' +
+      'rows one move wrote.',
     query: transitionQuerySchema,
     response: pageSchema(transitionListItemSchema),
     errors: [400],

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { groupSummarySchema } from './group-summary-response';
 
 // What clients receive for work orders; checked against real responses in the e2e tests.
 
@@ -90,8 +91,43 @@ export const workOrderListItemSchema = workOrderResponseSchema.extend({
   in_rework: z.boolean(),
   /** Null until the piece first moves. */
   last_move: lastMoveSchema.nullable(),
+  /** Whose the piece is and when it is due, shared by every piece of its group. */
+  group: groupSummarySchema,
 });
 export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
+
+/**
+ * The active pieces at each step of one workflow, for the tabs over a work list: the current version's steps
+ * in path order, zeros included, then any step only an older version still has pieces at.
+ */
+export const stepCountsResponseSchema = z.strictObject({
+  steps: z.array(
+    z.strictObject({
+      key: z.string(),
+      name: z.string(),
+      active: z.number().int(),
+      /** Of `active`, those being redone after a failed check. */
+      in_rework: z.number().int(),
+      /** Of `active`, those the caller may pass or fail there (`may_work`). */
+      workable: z.number().int(),
+    }),
+  ),
+});
+export type StepCountsResponse = z.infer<typeof stepCountsResponseSchema>;
+
+/** An order line (any group) with active pieces at one step, and what its pieces there need. */
+export const stepGroupSchema = z.strictObject({
+  group: groupSummarySchema,
+  /** The group's active pieces at the step that the filters pick. */
+  count: z.number().int(),
+  /** Of `count`, those being redone after a failed check. */
+  in_rework: z.number().int(),
+  /** Of `count`, those the caller may pass or fail there (`may_work`). */
+  workable: z.number().int(),
+  /** Of `count`, those to inspect in full at a step that samples (`to_inspect`); 0 elsewhere. */
+  to_inspect: z.number().int(),
+});
+export type StepGroup = z.infer<typeof stepGroupSchema>;
 
 /** A row of the QC history, with the piece it moved. */
 export const transitionListItemSchema = transitionResponseSchema.extend({

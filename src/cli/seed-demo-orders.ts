@@ -1,4 +1,6 @@
 import type { PrismaService } from '../database/prisma.service';
+import { claimSettings } from '../modules/claims/claim-settings';
+import type { ClaimsService } from '../modules/claims/claims.service';
 import type { Prisma } from '../generated/prisma/client';
 import type { PartnerAuth, TenantAuth } from '../modules/identity/auth-context';
 import type { TenantPermission } from '../modules/identity/permissions';
@@ -221,11 +223,14 @@ export interface DemoOrdersDeps {
   jobs: JobsService;
   moves: MovesService;
   comments: CommentsService;
+  claims: ClaimsService;
 }
 
 export interface DemoOrdersSeed {
   customers: number;
   orders: number;
+  /** 1 when the delivered order's remake was decided now; 0 when it was already, or the claim window has closed. */
+  remakes: number;
   /** Shipped pay-later orders left not billed: the workspace has no payment account to invoice through. */
   notInvoiced: number;
   /** The workspace's tab and needs-you counts once seeded, as `GET /orders/counts` gives them. */
@@ -637,6 +642,8 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
       });
       const lines = await tx.orderLine.findMany({ where: { orderId: id }, select: { groupId: true, parts: { select: { groupId: true } } } });
       const groupIds = lines.flatMap((line) => [line.groupId, ...line.parts.map((part) => part.groupId)]).flatMap((groupId) => (groupId ? [groupId] : []));
+      // The groups carry the order's promise (`WorkOrderGroup.dueOn`), so they follow it back in time too.
+      await tx.workOrderGroup.updateMany({ where: { id: { in: groupIds } }, data: { dueOn: asDate(timeline.promisedOn) } });
       await tx.jobAssignment.updateMany({
         where: { groupId: { in: groupIds }, status: { in: ['offered', 'accepted'] } },
         data: { dueOn: asDate(workingDaysBefore(timeline.promisedOn, context.bufferDays, context.clock.calendar)) },
@@ -660,5 +667,27 @@ export async function seedDemoOrders(deps: DemoOrdersDeps, tenantId: string, sta
     });
   }
 
-  return { customers, orders: plan.length, notInvoiced, counts: await deps.orders.counts(tenantId, {}) };
+  // A remake for Production's lists: two pieces of the delivered order claimed and remade at the workshop's
+  // fault. After every order, so a run that finds the order but not its claim still makes it, and a claim
+  // left undecided by a failed run is decided now. Skipped once the claim window has closed.
+  let remakes = 0;
+  const found = await prisma.inTenant(tenantId, async (tx) => {
+    const order = await tx.order.findFirst({ where: { channel: 'staff', channelOrderId: 'demo:delivered' }, select: { id: true, deliveredAt: true } });
+    if (!order) return null;
+    const claim = await tx.claim.findFirst({ where: { orderId: order.id }, select: { id: true, lines: { select: { id: true, outcome: true } } } });
+    return { order, claim, windowDays: (await claimSettings(tx, new SettingsService())).windowDays };
+  });
+  const open = found?.order.deliveredAt && found.order.deliveredAt.getTime() + found.windowDays * DAY_MS > Date.now();
+  if (found && (found.claim || open)) {
+    const claim =
+      found.claim ??
+      (await deps.claims.staffOpen(staff, found.order.id, { reason: 'defect', description: 'Two pieces arrived bent.', lines: [{ position: 0, pieces: 2 }] }));
+    const undecided = found.claim ? found.claim.lines.find((line) => line.outcome === null) : claim.lines[0];
+    if (undecided) {
+      await deps.claims.decide(staff, claim.id, undecided.id, { fault: 'workshop', outcome: 'remake', note: 'Bent in the workshop; remade there.' });
+      remakes = 1;
+    }
+  }
+
+  return { customers, orders: plan.length, remakes, notInvoiced, counts: await deps.orders.counts(tenantId, {}) };
 }

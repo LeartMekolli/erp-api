@@ -888,12 +888,12 @@ export class OrdersService {
       orderBy: { position: 'asc' },
       select: { position: true, groupId: true, parts: { select: { groupId: true } } },
     });
+    const groupIds = (line: (typeof lines)[number]) => [line.groupId, ...line.parts.map((part) => part.groupId)].flatMap((id) => (id ? [id] : []));
+    // The groups carry the promise too (`WorkOrderGroup.dueOn`), set when they started at placing.
+    await tx.workOrderGroup.updateMany({ where: { id: { in: lines.flatMap(groupIds) } }, data: { dueOn: updated.promisedOn } });
     return {
       number: order.number,
-      lines: lines.map((line) => ({
-        position: line.position,
-        groupIds: [line.groupId, ...line.parts.map((part) => part.groupId)].flatMap((id) => (id ? [id] : [])),
-      })),
+      lines: lines.map((line) => ({ position: line.position, groupIds: groupIds(line) })),
     };
   }
 

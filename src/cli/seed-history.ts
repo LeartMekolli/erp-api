@@ -358,13 +358,13 @@ export async function seedHistory(deps: HistoryDeps, tenantId: string, now: Date
         }),
       });
       await tx.workOrder.updateMany({ where: { groupId }, data: { status: 'finished', currentStepId: null, createdAt: placedAt } });
-      await tx.workOrderGroup.update({ where: { id: groupId }, data: { createdAt: placedAt } });
-
       // Shipped the day the last piece was done, delivered the next working day.
       const readyDay = moves.reduce((latest, move) => (move.day > latest ? move.day : latest), order.day);
       const shippedAt = at(readyDay, 15 * 60 + 30);
       const deliveredDay = workingDaysAfter(readyDay, 1, calendar);
       const promisedOn = workingDaysAfter(order.day, PROMISE_DAYS, calendar);
+      // The group's promise follows the order's, as when it was placed.
+      await tx.workOrderGroup.update({ where: { id: groupId }, data: { createdAt: placedAt, dueOn: asDate(promisedOn) } });
 
       const row = await tx.order.findUniqueOrThrow({ where: { id: placed.id } });
       const shift = row.placedAt.getTime() - placedAt.getTime();

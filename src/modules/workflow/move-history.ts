@@ -1,11 +1,14 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import { Prisma } from '../../generated/prisma/client';
+import type { TenantAuth } from '../identity/auth-context';
 import type { ActionResponse } from './move-history-response';
+import { searchGroups } from './piece-filters';
 import { readableAnswer, transitionInclude } from './transition-rows';
 import type { WorkOrderStatus } from './work-order-response';
+import type { MoveListQuery, TransitionQuery } from './work-orders.service';
 import type { StepConfig } from './workflow-config';
 
 // A line's moves, one item per action (Move history spec): every row one request wrote shares a `move_id`.
@@ -20,7 +23,7 @@ export const actionInclude = {
   ...transitionInclude,
   // With the user's kind, so a partner's list can tell its own people from the workspace's.
   actor: { select: { id: true, name: true, kind: true } },
-  workOrder: { select: { id: true, number: true, replacesId: true, group: { select: { quantity: true } } } },
+  workOrder: { select: { id: true, number: true, replacesId: true, groupId: true, group: { select: { quantity: true } } } },
 } as const satisfies Prisma.TransitionInclude;
 
 export type ActionRow = Prisma.TransitionGetPayload<{ include: typeof actionInclude }>;
@@ -70,6 +73,71 @@ export async function listActions(
     actions: ids.map((id) => byMove.get(id)!),
     next_cursor: page.length > query.limit ? encodeCursor({ id: ids.at(-1)! }, secret) : null,
     counts: { all: counts.all, fails: counts.fails },
+  };
+}
+
+/** The rows `GET /workflow/transitions` filters to, shared with the moves list so both read the same. */
+export function transitionFilters(query: TransitionQuery): Prisma.TransitionWhereInput {
+  const group = {
+    ...(query.group_id ? { id: query.group_id } : {}),
+    ...(query.file_version_id ? { fileVersionId: query.file_version_id } : {}),
+  };
+  return {
+    ...(query.work_order_id ? { workOrderId: query.work_order_id } : {}),
+    ...(query.move_id ? { moveId: query.move_id } : {}),
+    ...(Object.keys(group).length > 0 ? { workOrder: { group } } : {}),
+    ...(query.step_key ? { fromStep: { key: query.step_key } } : {}),
+    ...(query.defect_key ? { defect: { key: query.defect_key } } : {}),
+    ...(query.actor_user_id ? { actorUserId: query.actor_user_id } : {}),
+    ...(query.inspected ? { inspected: query.inspected === 'true' } : {}),
+    ...(query.from || query.to
+      ? { createdAt: { ...(query.from ? { gte: new Date(query.from) } : {}), ...(query.to ? { lt: new Date(query.to) } : {}) } }
+      : {}),
+  };
+}
+
+/** What a moves list cursor carries besides the move id, so another list's cursor is refused. */
+const MOVES_CURSOR = 'moves';
+
+/**
+ * A page of every line's moves, newest first, each as all its rows, every line it touched included: the
+ * filters pick the moves, never the rows within one. Paged by `move_id`, as `listActions` is; two queries
+ * whatever the page size, `q` and every filter run in the database.
+ */
+export async function listMoves(
+  tx: Prisma.TransactionClient,
+  query: MoveListQuery,
+  auth: TenantAuth,
+  secret: string,
+): Promise<{ moves: ActionRow[][]; next_cursor: string | null }> {
+  const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+  if (after && after.sort !== MOVES_CURSOR) throw new BadRequestException('Invalid cursor: made for another list');
+  const group: Prisma.WorkOrderGroupWhereInput[] = [
+    ...(query.workflow_id ? [{ workflowVersion: { workflowId: query.workflow_id } }] : []),
+    ...(query.q ? [searchGroups(query.q, auth)] : []),
+  ];
+  const page = await tx.transition.groupBy({
+    by: ['moveId'],
+    where: {
+      AND: [
+        transitionFilters(query),
+        ...(query.kind ? [{ kind: query.kind }] : []),
+        ...(group.length > 0 ? [{ workOrder: { group: { AND: group } } }] : []),
+        ...(after ? [{ moveId: { lt: after.id } }] : []),
+      ],
+    },
+    orderBy: { moveId: 'desc' },
+    take: query.limit + 1,
+  });
+  const ids = page.slice(0, query.limit).map((row) => row.moveId);
+  const rows = ids.length > 0 ? await tx.transition.findMany({ where: { moveId: { in: ids } }, include: actionInclude, orderBy: { id: 'asc' } }) : [];
+  const byMove = new Map<string, ActionRow[]>(ids.map((id) => [id, []]));
+  for (const row of rows) {
+    byMove.get(row.moveId)!.push(row);
+  }
+  return {
+    moves: ids.map((id) => byMove.get(id)!),
+    next_cursor: page.length > query.limit ? encodeCursor({ id: ids.at(-1)!, sort: MOVES_CURSOR }, secret) : null,
   };
 }
 

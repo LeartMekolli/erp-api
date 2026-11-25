@@ -3,6 +3,7 @@ import type { ConfigService } from '../../config/config.service';
 import type { PrismaService } from '../../database/prisma.service';
 import type { Prisma, Quote } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
+import type { SettingsService } from '../settings/settings.service';
 import { WorkOrdersService } from './work-orders.service';
 
 describe('starting a quote', () => {
@@ -20,7 +21,7 @@ describe('starting a quote', () => {
       workOrderGroup: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
     };
     const prisma = { inTenant: (_tenantId: string, work: (client: typeof tx) => unknown) => work(tx) } as unknown as PrismaService;
-    const service = new WorkOrdersService(prisma, {} as ConfigService);
+    const service = new WorkOrdersService(prisma, {} as ConfigService, {} as SettingsService);
 
     await expect(service.startFromQuote({ tenantId: 'tenant', userId: 'user' } as TenantAuth, 'quote')).rejects.toBeInstanceOf(
       InternalServerErrorException,
@@ -41,7 +42,7 @@ describe('starting a quote', () => {
       workOrderGroup: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
       product: { findUnique: jest.fn().mockResolvedValue({ workflowId: null, category: { workflowId: null } }) },
     });
-    const service = new WorkOrdersService({} as PrismaService, {} as ConfigService);
+    const service = new WorkOrdersService({} as PrismaService, {} as ConfigService, {} as SettingsService);
     const auth = { tenantId: 'tenant', userId: 'user' };
 
     it('refuses a lapsed quote started on its own', async () => {

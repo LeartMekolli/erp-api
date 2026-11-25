@@ -15,6 +15,7 @@ import { pricedCastPart } from './pricing-fixtures';
 
 interface Row {
   id: string;
+  move_id: string;
   kind: string;
   from_step: { key: string } | null;
   defect: { key: string } | null;
@@ -163,6 +164,16 @@ describe('workflow: the QC history', () => {
     expect((await history(tenant, `from=${encodeURIComponent(between)}`)).data).toHaveLength(2);
     expect((await history(tenant, `to=${encodeURIComponent(between)}`)).data).toHaveLength(33);
     expect((await history(tenant, `group_id=${first.groupId}&from=${encodeURIComponent(between)}`)).data).toHaveLength(0);
+  });
+
+  it('filters by move', async () => {
+    const { tenant, first } = await workedTenant();
+    const [fail] = (await history(tenant, 'defect_key=scratch')).data;
+    const rows = (await history(tenant, `move_id=${fail.move_id}`)).data;
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.move_id === fail.move_id)).toBe(true);
+    expect(rows.map((row) => row.work_order.id).sort()).toEqual(first.ids.slice(0, 3).sort());
+    await tenant.owner.get('/workflow/transitions?move_id=not-a-uuid').expect(400);
   });
 
   it('pages through the history without repeats', async () => {
