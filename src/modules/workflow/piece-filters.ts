@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { likeLiteral } from '../../database/like';
 import type { Prisma } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
+import { readHolds } from './holds';
+import type { Holds } from './holds';
 import { barredStepIds } from './step-skills';
 
 /**
@@ -48,22 +50,36 @@ export function searchGroups(q: string, auth: TenantAuth): Prisma.WorkOrderGroup
   };
 }
 
+/** What decides whether the caller may work a piece, read once per request. */
+export interface WorkContext {
+  /** The steps whose skill the caller lacks. */
+  barred: Set<string>;
+  holds: Holds;
+}
+
+export async function workContext(tx: Prisma.TransactionClient, auth: TenantAuth): Promise<WorkContext> {
+  const barred = auth.permissions.has('workflow.move') ? await barredStepIds(tx, auth) : new Set<string>();
+  return { barred, holds: await readHolds(tx) };
+}
+
 /**
  * The pieces `filters` pick. `workable` keeps the active pieces at a step the caller may work, which takes
- * `workflow.move` and, at a step that requires a skill, that skill; `barred` are those steps when already read.
+ * `workflow.move` and, at a step that requires a skill, that skill, and that aren't held (`holds.ts`);
+ * `known` is what decides that when already read.
  */
 export async function pieceWhere(
   tx: Prisma.TransactionClient,
   filters: PieceFilters,
   auth: TenantAuth,
-  barred?: Set<string>,
+  known?: WorkContext,
 ): Promise<Prisma.WorkOrderWhereInput> {
   const and: Prisma.WorkOrderWhereInput[] = [];
   if (filters.workflow_id) and.push({ group: { workflowVersion: { workflowId: filters.workflow_id } } });
   if (filters.q) and.push({ group: searchGroups(filters.q, auth) });
   if (filters.workable === 'true') {
     if (!auth.permissions.has('workflow.move')) return { id: { in: [] } };
-    and.push({ status: 'active', currentStepId: { notIn: [...(barred ?? (await barredStepIds(tx, auth)))] } });
+    const { barred, holds } = known ?? (await workContext(tx, auth));
+    and.push({ status: 'active', currentStepId: { notIn: [...barred] } }, { NOT: holds.held });
   }
   return { AND: and };
 }

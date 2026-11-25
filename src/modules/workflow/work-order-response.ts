@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { groupSummarySchema } from './group-summary-response';
+import { HOLD_REASONS } from './holds';
 
 // What clients receive for work orders; checked against real responses in the e2e tests.
 
@@ -85,8 +86,16 @@ export type LastMove = z.infer<typeof lastMoveSchema>;
 /** A piece in a work list, for the staff member reading it. */
 export const workOrderListItemSchema = workOrderResponseSchema.extend({
   to_inspect: toInspectSchema,
-  /** Whether the caller may pass or fail the piece where it is now: active, and the step's skill held (or the owner). */
+  /**
+   * Whether the caller may pass or fail the piece where it is now: active, the step's skill held (or the
+   * owner), and not `held`.
+   */
   may_work: z.boolean(),
+  /**
+   * Why the piece can't be moved now, by anyone: its order is waiting for payment, or it is an assembly's
+   * piece at its first step while a part isn't ready. Null when it can, and for a piece that isn't active.
+   */
+  held: z.enum(HOLD_REASONS).nullable(),
   /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */
   in_rework: z.boolean(),
   /** Null until the piece first moves. */
@@ -110,6 +119,8 @@ export const stepCountsResponseSchema = z.strictObject({
       in_rework: z.number().int(),
       /** Of `active`, those the caller may pass or fail there (`may_work`). */
       workable: z.number().int(),
+      /** Of `active`, those nobody can move now (`held`); never part of `workable`. */
+      held: z.number().int(),
     }),
   ),
 });
@@ -126,6 +137,10 @@ export const stepGroupSchema = z.strictObject({
   workable: z.number().int(),
   /** Of `count`, those to inspect in full at a step that samples (`to_inspect`); 0 elsewhere. */
   to_inspect: z.number().int(),
+  /** Of `count`, those nobody can move now (`held`); never part of `workable`. */
+  held: z.number().int(),
+  /** Why they are held, `waiting_for_payment` first; null when none is. */
+  held_reason: z.enum(HOLD_REASONS).nullable(),
 });
 export type StepGroup = z.infer<typeof stepGroupSchema>;
 
