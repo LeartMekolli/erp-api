@@ -120,12 +120,20 @@ export async function orderWorkspace(
     return as((await tokens.issueForUser(tenant.id, user.id)).accessToken);
   };
 
-  /** Luna's order, paid by bank transfer, made by CastCo unless `inHouse`: 10 cast parts, or 3 pendant sets with `assembly`. */
-  const placed = async (options: { inHouse?: boolean; assembly?: boolean } = {}) => {
+  /** Records Luna's bank transfer for `order`. */
+  const pay = (order: Order) =>
+    staff.post(`/orders/${order.id}/paid-by-hand`, { reference: `Transfer ${order.number}`, received_on: today() }).expect(200);
+
+  /**
+   * Luna's order, paid by bank transfer, made by CastCo unless `inHouse`: 10 cast parts, or 3 pendant sets
+   * with `assembly`. With `unpaid`, only placed: waiting for its payment (`pay`), with nobody.
+   */
+  const placed = async (options: { inHouse?: boolean; assembly?: boolean; unpaid?: boolean } = {}) => {
     const quote = await quoted(options);
     const order = (await staff.post('/orders', { customer_id: luna, lines: [{ quote_id: quote }], address: ADDRESS, shipping_method: 'courier' }).expect(201))
       .body as Order;
-    await staff.post(`/orders/${order.id}/paid-by-hand`, { reference: `Transfer ${order.number}`, received_on: today() }).expect(200);
+    if (options.unpaid) return order;
+    await pay(order);
     const group = order.lines[0].group_id;
     if (!options.inHouse && !options.assembly) {
       await staff.post(`/partners/jobs/${group}/offer`, { partner_id: castco.id }).expect(201);
@@ -158,6 +166,6 @@ export async function orderWorkspace(
         .expect(201)
     ).body as Claim;
 
-  return { id: tenant.id, ownerId: owner.id, staff, set, castco, metalworks, workshop, luna, buyer, person, holding, quoted, placed, delivered, claim };
+  return { id: tenant.id, ownerId: owner.id, staff, set, castco, metalworks, workshop, luna, buyer, person, holding, quoted, placed, pay, delivered, claim };
 }
 export type OrderWorkspace = Awaited<ReturnType<typeof orderWorkspace>>;

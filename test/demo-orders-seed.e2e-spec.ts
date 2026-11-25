@@ -111,6 +111,17 @@ describe('demo orders seed', () => {
     const remakeGroups = await prisma.inTenant(tenant.id, (tx) => tx.workOrderGroup.findMany({ where: { sourceType: 'claim_line' } }));
     expect(remakeGroups).toHaveLength(1);
     expect(remakeGroups[0].dueOn).not.toBeNull();
+    // Every line's and part's group is due when its order is promised, after the seed moved the dates back.
+    const lineGroups = await prisma.inTenant(tenant.id, (tx) =>
+      tx.workOrderGroup.findMany({
+        where: { sourceType: 'order_line' },
+        select: { dueOn: true, orderLine: { select: { order: { select: { promisedOn: true } } } }, orderLinePart: { select: { line: { select: { order: { select: { promisedOn: true } } } } } } },
+      }),
+    );
+    expect(lineGroups.length).toBeGreaterThan(0);
+    for (const group of lineGroups) {
+      expect(group.dueOn).toEqual((group.orderLine ?? group.orderLinePart!.line).order.promisedOn);
+    }
 
     const token = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     const get = (path: string) => request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${token}`).expect(200);

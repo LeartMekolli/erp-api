@@ -171,6 +171,19 @@ describe('workflow: production lists', () => {
     expect(await summaryOf(w.staff, group)).toMatchObject({ late: false, partner: { late: false } });
   });
 
+  it("moves a group's promise with its order's when the order is paid", async () => {
+    const w = await workspace();
+    const order = await w.placed({ unpaid: true });
+    const group = order.lines[0].group_id;
+    // As if placed on an earlier day: the promise it started with is long gone by the time it is paid.
+    await prisma.inTenant(w.id, (tx) => tx.workOrderGroup.update({ where: { id: group }, data: { dueOn: new Date(day(-30)) } }));
+
+    await w.pay(order);
+    const promised = await promiseOf(w, order.id);
+    expect(promised).not.toBe(day(-30));
+    expect(await summaryOf(w.staff, group)).toMatchObject({ due_on: promised, late: false });
+  });
+
   it('leaves the order, claim and customer out without order.read or customer.read', async () => {
     const w = await workspace();
     const order = await w.placed();
@@ -508,6 +521,42 @@ describe('workflow: production lists', () => {
     expect(latest.rows.map((row) => row.group.id)).toEqual([late, middle, early]);
   });
 
+  it('pages lines in every sort, undated and rank ties included', async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    const lines: string[] = [];
+    for (let made = 0; made < 3; made += 1) lines.push((await w.placed({ inHouse: true })).lines[0].group_id);
+    const quotes: string[] = [];
+    for (let made = 0; made < 2; made += 1) {
+      quotes.push(((await w.staff.post('/workflow/groups', { quote_id: await w.quoted() }).expect(201)).body as { id: string }).id);
+    }
+    // Two lines due the same day at different ranks, one later; two undated quotes, one ranked higher.
+    const dueOf: Record<string, string | null> = { [lines[0]]: day(6), [lines[1]]: day(6), [lines[2]]: day(9), [quotes[0]]: null, [quotes[1]]: null };
+    const rankOf: Record<string, number> = { [lines[0]]: 0, [lines[1]]: 3, [lines[2]]: 0, [quotes[0]]: 0, [quotes[1]]: 3 };
+    await prisma.inTenant(w.id, async (tx) => {
+      for (const group of [...lines, ...quotes]) {
+        await tx.workOrderGroup.update({ where: { id: group }, data: { dueOn: dueOf[group] ? new Date(dueOf[group]) : null, queueRank: rankOf[group] } });
+      }
+    });
+    for (const group of [...lines, ...quotes]) await moveAllTo(w, group, 'casting');
+
+    const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    const byRank = (a: string, b: string) => rankOf[b] - rankOf[a] || byId(a, b);
+    const byDue = (direction: 1 | -1) => (a: string, b: string) => {
+      const [first, second] = [dueOf[a], dueOf[b]];
+      if (first === second) return byRank(a, b);
+      if (first === null) return 1;
+      if (second === null) return -1;
+      return (first < second ? -1 : 1) * direction;
+    };
+    const rules: Record<string, (a: string, b: string) => number> = { due_on: byDue(1), '-due_on': byDue(-1), priority: byRank, started: byId };
+    for (const [sort, rule] of Object.entries(rules)) {
+      const { rows, pages } = await linesAt(w.staff, cast.workflowId, 'casting', `&sort=${sort}`, 2);
+      expect(pages).toEqual([2, 2, 1]);
+      expect(rows.map((row) => row.group.id)).toEqual([...lines, ...quotes].sort(rule));
+    }
+  });
+
   interface MoveRow {
     id: string;
     kind: string;
@@ -610,5 +659,34 @@ describe('workflow: production lists', () => {
     // Left out, the sort is `priority`.
     await w.staff.get(`/workflow/work-orders?cursor=${cursor}`).expect(400);
     await w.staff.get(`/workflow/work-orders?sort=due_on&cursor=${cursor}`).expect(200);
+  });
+
+  it("refuses another list's cursor", async () => {
+    const w = await workspace();
+    const cast = w.set.cast.workflow;
+    for (let made = 0; made < 2; made += 1) {
+      const order = await w.placed({ inHouse: true });
+      const pieces = (await piecesOf(w.staff, order.lines[0].group_id)).map((piece) => piece.id);
+      await w.staff.post('/workflow/moves', { work_order_ids: pieces, at_step: 'print_pattern', kind: 'pass' }).expect(200);
+    }
+    const next = async (path: string) => {
+      const page = await w.staff.get(path).expect(200);
+      return encodeURIComponent((page.body as { next_cursor: string }).next_cursor);
+    };
+    const lines = `/workflow/work-orders/groups?workflow_id=${cast.workflowId}&step_key=casting_tree`;
+
+    for (const sort of ['priority', 'due_on', 'started']) {
+      const pieces = await next(`/workflow/work-orders?sort=${sort}&limit=1`);
+      const groups = await next(`${lines}&sort=${sort}&limit=1`);
+      await w.staff.get(`${lines}&sort=${sort}&cursor=${pieces}`).expect(400);
+      await w.staff.get(`/workflow/work-orders?sort=${sort}&cursor=${groups}`).expect(400);
+      await w.staff.get(`${lines}&sort=${sort}&cursor=${groups}`).expect(200);
+    }
+
+    const moves = await next('/workflow/moves?limit=1');
+    const transitions = await next('/workflow/transitions?limit=1');
+    await w.staff.get(`/workflow/transitions?cursor=${moves}`).expect(400);
+    await w.staff.get(`/workflow/moves?cursor=${transitions}`).expect(400);
+    await w.staff.get(`/workflow/moves?cursor=${moves}`).expect(200);
   });
 });
