@@ -92,8 +92,8 @@ export const workOrderListItemSchema = workOrderResponseSchema.extend({
    */
   may_work: z.boolean(),
   /**
-   * Why the piece can't be moved now, by anyone: its order is waiting for payment, or it is an assembly's
-   * piece at its first step while a part isn't ready. Null when it can, and for a piece that isn't active.
+   * Why the piece can't be passed or failed onward now, by anyone: its order is waiting for payment, or it
+   * is an assembly's piece while a part isn't ready. Null when it can, and for a piece that isn't active.
    */
   held: z.enum(HOLD_REASONS).nullable(),
   /** Being redone after a failed check; false once the piece is finished, scrapped or cancelled. */

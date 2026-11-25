@@ -126,8 +126,8 @@ export class WorkOrdersController {
       "A customer whose priority band is first in line has its pieces listed first, higher bands before lower ones. " +
       'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
-      '`held` says why a piece can\'t be moved now by anyone: `waiting_for_payment` (its order hasn\'t started), or ' +
-      "`waiting_for_parts` (an assembly's piece at its first step while a part isn't ready); payment wins when both " +
+      '`held` says why a piece can\'t be passed or failed onward now by anyone: `waiting_for_payment` (its order hasn\'t ' +
+      "started), or `waiting_for_parts` (an assembly's piece while a part isn't ready); payment wins when both " +
       'apply. A held piece is never `may_work`. `workable=true` keeps only `may_work` pieces. `in_rework` says whether an active piece is being redone after a failed ' +
       'check, `last_move` is what last happened to it, and `group` whose the piece is and when it is due. ' +
       '`workflow_id` keeps the pieces of every version of one workflow, so a step key two workflows share can be told ' +

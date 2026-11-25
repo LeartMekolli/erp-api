@@ -262,14 +262,11 @@ describe('workflow: production lists', () => {
     // The list and the move agree.
     await w.staff.post('/workflow/moves', { work_order_ids: [held[0].id], at_step: 'assembly', kind: 'pass' }).expect(409);
 
-    // A piece already past its first step isn't held: the move guard lets it move from there.
+    // A piece already past its first step (a part reopened after the set moved on) is held too: the move
+    // guard refuses any move that doesn't land on the first step while a part isn't ready.
     await putAt(w, [held[0].id], 'packing');
-    const [moved, ...rest] = await piecesOf(w.staff, line).then((pieces) => [
-      pieces.find((piece) => piece.id === held[0].id)!,
-      ...pieces.filter((piece) => piece.id !== held[0].id),
-    ]);
-    expect(moved).toMatchObject({ held: null, may_work: true });
-    for (const piece of rest) expect(piece.held).toBe('waiting_for_parts');
+    for (const piece of await piecesOf(w.staff, line)) expect(piece).toMatchObject({ held: 'waiting_for_parts', may_work: false });
+    await w.staff.post('/workflow/moves', { work_order_ids: [held[0].id], at_step: 'packing', kind: 'pass' }).expect(409);
 
     // Every part finished: nothing held, and the list's workable piece moves.
     const finishParts = () =>
