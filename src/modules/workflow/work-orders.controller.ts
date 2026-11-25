@@ -128,7 +128,9 @@ export class WorkOrdersController {
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
       '`held` says why a piece can\'t be passed or failed onward now by anyone: `waiting_for_payment` (its order hasn\'t ' +
       "started), or `waiting_for_parts` (an assembly's piece while a part isn't ready); payment wins when both " +
-      'apply. A held piece is never `may_work`. `workable=true` keeps only `may_work` pieces. `in_rework` says whether an active piece is being redone after a failed ' +
+      'apply. A held piece is never `may_work`. `missing_skill` names the skill the step requires that the caller ' +
+      "doesn't hold today, so a row can say whom to ask; null for the owner, at a step requiring none, for a piece " +
+      'that isn\'t active, and without `workflow.move`. `workable=true` keeps only `may_work` pieces. `in_rework` says whether an active piece is being redone after a failed ' +
       'check, `last_move` is what last happened to it, and `group` whose the piece is and when it is due. ' +
       '`workflow_id` keeps the pieces of every version of one workflow, so a step key two workflows share can be told ' +
       "apart. `q` finds part of the product's name, any case, with `%` and `_` taken literally; with `order.read`, also " +
@@ -179,7 +181,9 @@ export class WorkOrdersController {
       "`workflow_id` (every version). `count` is the group's pieces there that the filters pick; `in_rework`, `workable` " +
       'and `to_inspect` are the part of `count` being redone, that the caller may pass or fail, and to inspect in full at ' +
       'a step that samples. `held` is the part nobody can move now, never part of `workable`, and `held_reason` why ' +
-      '(`waiting_for_payment` before `waiting_for_parts`; null when none is). `q`, `workable` and `sort` work as on `GET /workflow/work-orders`, by group: `started` is as ' +
+      '(`waiting_for_payment` before `waiting_for_parts`; null when none is). `missing_skill` is the skill the step ' +
+      "requires that the caller doesn't hold today, as on the list; null when none is missing. " +
+      '`q`, `workable` and `sort` work as on `GET /workflow/work-orders`, by group: `started` is as ' +
       'the groups started. Pages are by group, so one is never split; a cursor made for another sort is a 400.',
     query: stepGroupsQuerySchema,
     response: pageSchema(stepGroupSchema),

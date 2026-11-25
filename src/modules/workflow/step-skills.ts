@@ -39,13 +39,25 @@ export async function assertSkills(
   }
 }
 
-/** The steps, across every workflow version, whose skill the caller doesn't hold today. */
-export async function barredStepIds(tx: Prisma.TransactionClient, caller: Caller): Promise<Set<string>> {
-  const requiring = await tx.$queryRaw<{ id: string; skill_id: string }[]>`
-    SELECT id, config->>'required_skill_id' AS skill_id FROM workflow_step WHERE config->>'required_skill_id' IS NOT NULL`;
+/** A skill a step requires that the caller doesn't hold, named so staff know whom to ask. */
+export type MissingSkill = { id: string; name: string };
+
+/**
+ * The steps, across every workflow version, whose skill the caller doesn't hold today, each with that
+ * skill; empty for the owner. One read: an archived skill is never held, so it stays missing and named.
+ */
+export async function barredSteps(tx: Prisma.TransactionClient, caller: Caller): Promise<Map<string, MissingSkill>> {
+  const requiring = await tx.$queryRaw<{ id: string; skill_id: string; name: string }[]>`
+    SELECT step.id, skill.id AS skill_id, skill.name
+    FROM workflow_step step
+    JOIN skill ON skill.id = (step.config->>'required_skill_id')::uuid
+    WHERE step.config->>'required_skill_id' IS NOT NULL`;
   if (requiring.length === 0) {
-    return new Set();
+    return new Map();
   }
   const held = await skillsOf(tx, caller);
-  return new Set(held ? requiring.filter((step) => !held.has(step.skill_id)).map((step) => step.id) : []);
+  if (!held) {
+    return new Map();
+  }
+  return new Map(requiring.filter((step) => !held.has(step.skill_id)).map((step) => [step.id, { id: step.skill_id, name: step.name }]));
 }

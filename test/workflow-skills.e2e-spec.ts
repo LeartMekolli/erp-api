@@ -9,7 +9,7 @@ import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { localDate } from '../src/modules/orders/dates';
-import { moveResponseSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
+import { moveResponseSchema, stepGroupSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { workflowVersionResponseSchema } from '../src/modules/workflow/workflow-response';
 import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -22,6 +22,7 @@ interface Piece {
   status: string;
   step: { key: string } | null;
   may_work: boolean;
+  missing_skill: { id: string; name: string } | null;
 }
 
 /**
@@ -257,12 +258,23 @@ describe('workflow: a step requires a skill', () => {
       ['print_pattern', true],
       ['print_pattern', true],
     ]);
+    // The member is told which skill the stone setting pieces need; the others need none.
+    const named = (listed: Piece[]) => listed.map((piece) => [piece.step?.key, piece.missing_skill]);
+    const setting = { id: tenant.skillId, name: 'Setting' };
+    expect(named(await list(tenant.member))).toEqual([
+      ['stone_setting', setting],
+      ['stone_setting', setting],
+      ['print_pattern', null],
+      ['print_pattern', null],
+    ]);
     expect((await list(tenant.member, '&workable=true')).map((piece) => piece.id)).toEqual(ids(pieces.slice(2)));
     expect(mayWork(await list(tenant.owner)).every(([, may]) => may === true)).toBe(true);
+    expect((await list(tenant.owner)).every((piece) => piece.missing_skill === null)).toBe(true);
     expect(await list(tenant.owner, '&workable=true')).toHaveLength(4);
 
     await giveSkill(tenant, null);
     expect(mayWork(await list(tenant.member)).every(([, may]) => may === true)).toBe(true);
+    expect((await list(tenant.member)).every((piece) => piece.missing_skill === null)).toBe(true);
     expect(await list(tenant.member, '&workable=true')).toHaveLength(4);
 
     // The filter combines with the others.
@@ -272,6 +284,41 @@ describe('workflow: a step requires a skill', () => {
     // Only `true` filters; anything else is refused rather than ignored.
     await tenant.member.get(`/workflow/work-orders?workable=false`).expect(400);
     await tenant.member.get(`/workflow/work-orders?workable=yes`).expect(400);
+  });
+
+  it('names the missing skill on step groups, also once archived, and never without workflow.move', async () => {
+    const tenant = await freshTenant();
+    const pieces = await started(tenant);
+    await toSetting(tenant, pieces);
+    const lines = async (client: Tenant['owner']) => {
+      const response = await client
+        .get(`/workflow/work-orders/groups?workflow_id=${tenant.setup.workflow.workflowId}&step_key=stone_setting`)
+        .expect(200);
+      expectDocumented(pageSchema(stepGroupSchema), response.body);
+      return (response.body as { data: { missing_skill: { id: string; name: string } | null }[] }).data;
+    };
+    const setting = { id: tenant.skillId, name: 'Setting' };
+
+    expect(await lines(tenant.member)).toEqual([expect.objectContaining({ count: 4, workable: 0, missing_skill: setting })]);
+    expect(await lines(tenant.owner)).toEqual([expect.objectContaining({ count: 4, workable: 4, missing_skill: null })]);
+
+    // Nobody holds an archived skill, so it is still the one missing; the owner still needs none.
+    await tenant.owner.patch(`/skills/${tenant.skillId}`, { archived: true }).expect(200);
+    expect(await lines(tenant.member)).toEqual([expect.objectContaining({ workable: 0, missing_skill: setting })]);
+    expect(await lines(tenant.owner)).toEqual([expect.objectContaining({ missing_skill: null })]);
+
+    // Someone who may only read work lists can't move anything, so no skill is what they lack.
+    const readerUser = await createTestUser(prisma, tenant.id, { roles: [] });
+    await prisma.inTenant(tenant.id, async (tx) => {
+      const role = await tx.role.create({ data: { name: 'only workflow.read', isSystem: false } });
+      await tx.rolePermission.create({ data: { roleId: role.id, permission: 'workflow.read' } });
+      await tx.userRole.create({ data: { userId: readerUser.id, roleId: role.id } });
+    });
+    const token = (await tokens.issueForUser(tenant.id, readerUser.id)).accessToken;
+    const reader = { ...tenant.member, get: (path: string) => http().get(path).set('Authorization', `Bearer ${token}`) };
+    expect(await lines(reader)).toEqual([expect.objectContaining({ workable: 0, missing_skill: null })]);
+    const listed = await reader.get(`/workflow/work-orders?group_id=${(pieces[0] as Piece).group_id}&limit=100`).expect(200);
+    expect((listed.body as { data: Piece[] }).data.map((piece) => piece.missing_skill)).toEqual([null, null, null, null]);
   });
 
   it("reads a skill's last day in the workspace's time zone (review fix, Review Focus 5)", async () => {

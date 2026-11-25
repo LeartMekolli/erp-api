@@ -25,6 +25,7 @@ import { groupSummaries } from './group-summary';
 import type { HoldReason } from './holds';
 import { PIECE_SORTS, pieceFilterSchema, pieceWhere, workContext } from './piece-filters';
 import type { PieceSort } from './piece-filters';
+import type { MissingSkill } from './step-skills';
 import type { WorkflowStepRow } from './coverage';
 import { actionFacts, listActions, listMoves, transitionFilters } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
@@ -543,6 +544,7 @@ export class WorkOrdersService {
           to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!) && !held.has(row.id),
           held: held.get(row.id) ?? null,
+          missing_skill: row.status === 'active' ? (barred.get(row.currentStepId!) ?? null) : null,
           ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
           group: groups.get(row.groupId)!,
         })),
@@ -650,12 +652,17 @@ export class WorkOrdersService {
       const held = await known.holds.reasons(pieces);
       const summaries = await groupSummaries(tx, ids, auth, this.settings);
       const totals = new Map(
-        ids.map((id) => [id, { count: 0, in_rework: 0, workable: 0, to_inspect: 0, held: 0, held_reason: null as HoldReason | null }]),
+        ids.map((id) => [
+          id,
+          { count: 0, in_rework: 0, workable: 0, to_inspect: 0, held: 0, held_reason: null as HoldReason | null, missing_skill: null as MissingSkill | null },
+        ]),
       );
       for (const piece of pieces) {
         const total = totals.get(piece.groupId)!;
         const reason = held.get(piece.id);
         total.count += 1;
+        // A group is on one version, so its pieces at the step share one step row and one skill.
+        total.missing_skill ??= barred.get(piece.currentStepId!) ?? null;
         if (inRework(histories.get(piece.id) ?? []) !== null) total.in_rework += 1;
         if (reason) {
           total.held += 1;

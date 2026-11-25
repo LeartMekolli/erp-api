@@ -4,7 +4,8 @@ import type { Prisma } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
 import { readHolds } from './holds';
 import type { Holds } from './holds';
-import { barredStepIds } from './step-skills';
+import { barredSteps } from './step-skills';
+import type { MissingSkill } from './step-skills';
 
 /**
  * How a work list may be sorted (Production lists spec, goal 2). `priority`: first-in-line customers' groups
@@ -52,13 +53,13 @@ export function searchGroups(q: string, auth: TenantAuth): Prisma.WorkOrderGroup
 
 /** What decides whether the caller may work a piece, read once per request. */
 export interface WorkContext {
-  /** The steps whose skill the caller lacks. */
-  barred: Set<string>;
+  /** The steps whose skill the caller lacks, each with that skill. */
+  barred: Map<string, MissingSkill>;
   holds: Holds;
 }
 
 export async function workContext(tx: Prisma.TransactionClient, auth: TenantAuth): Promise<WorkContext> {
-  const barred = auth.permissions.has('workflow.move') ? await barredStepIds(tx, auth) : new Set<string>();
+  const barred = auth.permissions.has('workflow.move') ? await barredSteps(tx, auth) : new Map<string, MissingSkill>();
   return { barred, holds: await readHolds(tx) };
 }
 
@@ -79,7 +80,7 @@ export async function pieceWhere(
   if (filters.workable === 'true') {
     if (!auth.permissions.has('workflow.move')) return { id: { in: [] } };
     const { barred, holds } = known ?? (await workContext(tx, auth));
-    and.push({ status: 'active', currentStepId: { notIn: [...barred] } }, { NOT: holds.held });
+    and.push({ status: 'active', currentStepId: { notIn: [...barred.keys()] } }, { NOT: holds.held });
   }
   return { AND: and };
 }
