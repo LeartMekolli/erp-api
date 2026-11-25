@@ -187,4 +187,138 @@ describe('workflow: production lists', () => {
     expect(customers).toMatchObject({ customer: { name: 'Luna Jewels' } });
     expect(customers).not.toHaveProperty('order');
   });
+
+  /** The group ids of every piece `path` lists, through every page. */
+  const listed = async (client: Client, path: string, limit = 200) => {
+    const pieces: Piece[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await client.get(`${path}&limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`).expect(200);
+      expectDocumented(pageSchema(workOrderListItemSchema), page.body);
+      const body = page.body as { data: Piece[]; next_cursor: string | null };
+      pieces.push(...body.data);
+      cursor = body.next_cursor;
+    } while (cursor);
+    return pieces;
+  };
+  const groupsOf = (pieces: Piece[]) => new Set(pieces.map((piece) => piece.group.id));
+  /** Puts every piece of `group` at its workflow's step `key`. */
+  const moveAllTo = (w: OrderWorkspace, group: string, key: string) =>
+    prisma.inTenant(w.id, async (tx) => {
+      const { workflowVersionId } = await tx.workOrderGroup.findUniqueOrThrow({ where: { id: group } });
+      const step = await tx.workflowStep.findFirstOrThrow({ where: { versionId: workflowVersionId, key } });
+      await tx.workOrder.updateMany({ where: { groupId: group }, data: { currentStepId: step.id } });
+    });
+
+  it('narrows to one workflow when step keys are shared', async () => {
+    const w = await workspace();
+    // A cast line, and an assembly whose bail part runs on the printed parts workflow; both have `packing`.
+    const order = await w.placed();
+    const cast = order.lines[0].group_id;
+    const assembly = await w.placed({ assembly: true });
+    const parts = await partGroups(w, assembly.id);
+    const summaries = await Promise.all(parts.map((part) => summaryOf(w.staff, part.id)));
+    const castWorkflow = (await summaryOf(w.staff, cast)).workflow.id;
+    const printed = summaries.find((summary) => summary.workflow.id !== castWorkflow)!;
+    await moveAllTo(w, cast, 'packing');
+    await moveAllTo(w, printed.id, 'packing');
+
+    expect(groupsOf(await listed(w.staff, '/workflow/work-orders?step_key=packing'))).toEqual(new Set([cast, printed.id]));
+    expect(groupsOf(await listed(w.staff, `/workflow/work-orders?step_key=packing&workflow_id=${castWorkflow}`))).toEqual(new Set([cast]));
+    expect(groupsOf(await listed(w.staff, `/workflow/work-orders?step_key=packing&workflow_id=${printed.workflow.id}`))).toEqual(
+      new Set([printed.id]),
+    );
+  });
+
+  it('finds pieces by order number, claim number, product and customer', async () => {
+    const w = await workspace();
+    const order = await w.placed();
+    const line = order.lines[0].group_id;
+    const remake = await remade(w);
+    const assembly = await w.placed({ assembly: true });
+    const found = async (client: Client, q: string) => groupsOf(await listed(client, `/workflow/work-orders?q=${encodeURIComponent(q)}`));
+
+    // By order number, with or without `#`: the line's group, and nothing of another order.
+    for (const q of [`#${order.number}`, `${order.number}`]) {
+      const groups = await found(w.staff, q);
+      expect(groups).toContain(line);
+      expect(groups).not.toContain(assembly.lines[0].group_id);
+    }
+    // By claim number: the remake.
+    expect(await found(w.staff, `${remake.claim.number}`)).toContain(remake.group);
+    // By product name, any case: the cast lines and the remake, not the pendant set.
+    const byProduct = await found(w.staff, 'CUSTOM CAST');
+    expect(byProduct).toContain(line);
+    expect(byProduct).toContain(remake.group);
+    expect(byProduct).not.toContain(assembly.lines[0].group_id);
+    // By customer name: every group of Luna's.
+    expect(await found(w.staff, 'luna')).toEqual(await found(w.staff, 'Jewels'));
+    expect(await found(w.staff, 'luna')).toContain(assembly.lines[0].group_id);
+    // Wildcards are literal.
+    expect(await found(w.staff, '%')).toEqual(new Set());
+    expect(await found(w.staff, 'Custom_cast')).toEqual(new Set());
+
+    // Without order.read or customer.read, neither the number nor the name finds anything; the product still does.
+    const bare = await w.holding(['workflow.read']);
+    expect(await found(bare, `${order.number}`)).toEqual(new Set());
+    expect(await found(bare, `${remake.claim.number}`)).toEqual(new Set());
+    expect(await found(bare, 'luna')).toEqual(new Set());
+    expect(await found(bare, 'custom cast')).toContain(line);
+  });
+
+  it('sorts due soonest, due latest, by priority and by start, and pages each without repeats', async () => {
+    const w = await workspace();
+    // Five groups of 10: two due the same day (one ranked higher), one due earlier, one later, and a quote's, undated.
+    const groups: string[] = [];
+    for (let made = 0; made < 4; made += 1) groups.push((await w.placed()).lines[0].group_id);
+    const [early, sameLow, sameHigh, late] = groups;
+    const quote = ((await w.staff.post('/workflow/groups', { quote_id: await w.quoted() }).expect(201)).body as { id: string }).id;
+    const dueOf: Record<string, string | null> = { [early]: day(5), [sameLow]: day(8), [sameHigh]: day(8), [late]: day(12), [quote]: null };
+    const rankOf: Record<string, number> = { [early]: 0, [sameLow]: 0, [sameHigh]: 2, [late]: 0, [quote]: 0 };
+    await prisma.inTenant(w.id, async (tx) => {
+      for (const group of [early, sameLow, sameHigh, late]) {
+        await tx.workOrderGroup.update({ where: { id: group }, data: { dueOn: new Date(dueOf[group]!), queueRank: rankOf[group] } });
+      }
+    });
+
+    const byId = (a: Piece, b: Piece) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const byRank = (a: Piece, b: Piece) => rankOf[b.group.id] - rankOf[a.group.id] || byId(a, b);
+    const byDue = (direction: 1 | -1) => (a: Piece, b: Piece) => {
+      const [first, second] = [dueOf[a.group.id], dueOf[b.group.id]];
+      if (first !== second) {
+        if (first === null) return 1;
+        if (second === null) return -1;
+        return (first < second ? -1 : 1) * direction;
+      }
+      return byRank(a, b);
+    };
+    const rules: Record<string, (a: Piece, b: Piece) => number> = { due_on: byDue(1), '-due_on': byDue(-1), priority: byRank, started: byId };
+
+    for (const [sort, rule] of Object.entries(rules)) {
+      const pieces = await listed(w.staff, `/workflow/work-orders?sort=${sort}`, 3);
+      expect(new Set(pieces.map((piece) => piece.id)).size).toBe(50);
+      expect(pieces).toHaveLength(50);
+      expect(pieces.map((piece) => piece.id)).toEqual([...pieces].sort(rule).map((piece) => piece.id));
+    }
+    // The undated quote's pieces come last in both directions.
+    for (const sort of ['due_on', '-due_on']) {
+      const pieces = await listed(w.staff, `/workflow/work-orders?sort=${sort}`, 3);
+      expect(pieces.slice(-10).every((piece) => piece.group.id === quote)).toBe(true);
+    }
+  });
+
+  it('refuses a cursor made for another sort', async () => {
+    const w = await workspace();
+    await w.placed();
+    const page = await w.staff.get('/workflow/work-orders?sort=due_on&limit=1').expect(200);
+    const cursor = encodeURIComponent((page.body as { next_cursor: string }).next_cursor);
+
+    for (const other of ['priority', '-due_on', 'started']) {
+      const refused = await w.staff.get(`/workflow/work-orders?sort=${other}&cursor=${cursor}`).expect(400);
+      expect((refused.body as { detail: string }).detail).toMatch(/cursor/i);
+    }
+    // Left out, the sort is `priority`.
+    await w.staff.get(`/workflow/work-orders?cursor=${cursor}`).expect(400);
+    await w.staff.get(`/workflow/work-orders?sort=due_on&cursor=${cursor}`).expect(200);
+  });
 });

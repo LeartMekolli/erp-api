@@ -9,6 +9,7 @@ import {
 import { z } from 'zod';
 import { newId } from '../../common/ids/uuid';
 import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
+import type { CursorPayload } from '../../common/pagination/cursor';
 import type { Page } from '../../common/pagination/page';
 import { ConfigService } from '../../config/config.service';
 import { PrismaService } from '../../database/prisma.service';
@@ -21,6 +22,8 @@ import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
 import { missingStepTypes, resolveWorkflow } from './coverage';
 import { groupSummaries } from './group-summary';
+import { PIECE_SORTS, pieceFilterSchema, pieceWhere } from './piece-filters';
+import type { PieceSort } from './piece-filters';
 import type { WorkflowStepRow } from './coverage';
 import { actionFacts, listActions } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
@@ -49,16 +52,67 @@ export const MAX_PIECES = 10_000;
 
 export const startGroupSchema = z.object({ quote_id: z.uuid() });
 
-export const workOrderQuerySchema = z.object({
+export const workOrderQuerySchema = pieceFilterSchema.extend({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().optional(),
   group_id: z.uuid().optional(),
   step_key: keySchema.optional(),
   status: z.enum(WORK_ORDER_STATUSES).optional(),
-  /** Only the pieces the caller may pass or fail where they are (`may_work`). */
-  workable: z.literal('true').optional(),
+  sort: z.enum(PIECE_SORTS).default('priority'),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
+
+const NO_DUE_DATE = 'none';
+const byDue = (sort: PieceSort) => sort === 'due_on' || sort === '-due_on';
+const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
+const dayOf = (date: Date | null) => (date ? date.toISOString().slice(0, 10) : NO_DUE_DATE);
+
+/** The work list's order: see `PIECE_SORTS`. Ties between groups break by rank, then by id. */
+function piecesOrderBy(sort: PieceSort): Prisma.WorkOrderOrderByWithRelationInput[] {
+  if (sort === 'started') return [{ id: 'asc' }];
+  const ranked: Prisma.WorkOrderOrderByWithRelationInput[] = [{ group: { queueRank: 'desc' } }, { id: 'asc' }];
+  if (!byDue(sort)) return ranked;
+  return [{ group: { dueOn: { sort: sort === 'due_on' ? 'asc' : 'desc', nulls: 'last' } } }, ...ranked];
+}
+
+/** After a row of rank `rank` and id `id`, in rank order, among the pieces whose group matches `group`. */
+const afterRanked = (group: Prisma.WorkOrderGroupWhereInput, rank: number, id: string): Prisma.WorkOrderWhereInput[] => [
+  { group: { ...group, queueRank: { lt: rank } } },
+  { group: { ...group, queueRank: rank }, id: { gt: id } },
+];
+
+/** Where a due date page starts, after the cursor's row; every undated piece comes after the dated ones. */
+function duePageWhere(sort: PieceSort, after: CursorPayload): Prisma.WorkOrderWhereInput {
+  const rank = after.rank!;
+  if (after.key === NO_DUE_DATE) return { OR: afterRanked({ dueOn: null }, rank, after.id) };
+  const day = asDay(after.key!);
+  return {
+    OR: [
+      { group: { dueOn: sort === 'due_on' ? { gt: day } : { lt: day } } },
+      ...afterRanked({ dueOn: day }, rank, after.id),
+      { group: { dueOn: null } },
+    ],
+  };
+}
+
+/** The cursor for `sort`, refused (400) when made for another sort or when its key isn't that sort's. */
+function piecesCursor(sort: PieceSort, cursor: string, secret: string): CursorPayload {
+  const after = decodeCursor(cursor, secret);
+  // A cursor from before the sorts carries none: it was made for `priority`.
+  const made = after.sort ?? 'priority';
+  const keyOk = byDue(sort)
+    ? after.rank !== undefined && (after.key === NO_DUE_DATE || z.iso.date().safeParse(after.key).success)
+    : after.key === undefined;
+  if (made !== sort || !keyOk) throw new BadRequestException('Invalid cursor: made for another sort');
+  return after;
+}
+
+/** What the next page's cursor carries for `sort`: a `priority` cursor stays as it was before the sorts. */
+function piecesCursorPayload(sort: PieceSort, row: { id: string; group: { queueRank: number; dueOn: Date | null } }): CursorPayload {
+  if (sort === 'priority') return { id: row.id, rank: row.group.queueRank };
+  if (sort === 'started') return { id: row.id, sort };
+  return { id: row.id, rank: row.group.queueRank, sort, key: dayOf(row.group.dueOn) };
+}
 
 export const transitionQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -377,28 +431,28 @@ export class WorkOrdersService {
 
   /**
    * Pieces in the order they started, filtered by group, current step or status, each marked with whether
-   * the caller may work it (Workflow 2 spec, goal 13); `workable=true` keeps only those.
+   * the caller may work it (Workflow 2 spec, goal 13); `workable=true` keeps only those. Searched, narrowed to
+   * a workflow and sorted as `pieceWhere` and `PIECE_SORTS` say (Production lists spec, goal 2).
    */
   async list(auth: TenantAuth, query: WorkOrderQuery): Promise<Page<WorkOrderListItem>> {
     const secret = this.config.get('APP_SECRET');
-    const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
+    const { sort } = query;
+    const after = query.cursor ? piecesCursor(sort, query.cursor, secret) : undefined;
     const mayMove = auth.permissions.has('workflow.move');
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       const barred = mayMove ? await barredStepIds(tx, auth) : new Set<string>();
-      let workable: Prisma.WorkOrderWhereInput = {};
-      if (query.workable === 'true') {
-        // Without the move permission, nothing is workable.
-        workable = mayMove ? { status: 'active', currentStepId: { notIn: [...barred] } } : { id: { in: [] } };
-      }
-      // First-in-line customers' groups first (Customers 2 spec, goal 17), then in id order. A cursor from
-      // before ranks existed carries none: the rank its piece's group has now is taken.
+      const filtered = await pieceWhere(tx, query, auth, barred);
       let page: Prisma.WorkOrderWhereInput = {};
-      if (after) {
+      if (after && sort === 'started') page = { id: { gt: after.id } };
+      if (after && byDue(sort)) page = duePageWhere(sort, after);
+      if (after && sort === 'priority') {
+        // First-in-line customers' groups first (Customers 2 spec, goal 17), then in id order. A cursor from
+        // before ranks existed carries none: the rank its piece's group has now is taken.
         const rank =
           after.rank ??
           (await tx.workOrder.findUnique({ where: { id: after.id }, select: { group: { select: { queueRank: true } } } }))?.group.queueRank ??
           0;
-        page = { OR: [{ group: { queueRank: { lt: rank } } }, { group: { queueRank: rank }, id: { gt: after.id } }] };
+        page = { OR: afterRanked({}, rank, after.id) };
       }
       const rows = await tx.workOrder.findMany({
         where: {
@@ -409,10 +463,10 @@ export class WorkOrdersService {
               ...(query.status ? { status: query.status } : {}),
             },
             page,
-            workable,
+            filtered,
           ],
         },
-        orderBy: [{ group: { queueRank: 'desc' } }, { id: 'asc' }],
+        orderBy: piecesOrderBy(sort),
         take: query.limit + 1,
         include: pieceInclude,
       });
@@ -434,7 +488,7 @@ export class WorkOrdersService {
           ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
           group: groups.get(row.groupId)!,
         })),
-        next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id, rank: last.group.queueRank }, secret) : null,
+        next_cursor: rows.length > query.limit && last ? encodeCursor(piecesCursorPayload(sort, last), secret) : null,
       };
     });
   }
@@ -698,7 +752,7 @@ export class WorkOrdersService {
 
 export const pieceInclude = {
   currentStep: { select: { id: true, key: true, name: true } },
-  group: { select: { quantity: true, queueRank: true } },
+  group: { select: { quantity: true, queueRank: true, dueOn: true } },
 } as const;
 
 export function stepsForPath(steps: WorkflowStepRow[]) {

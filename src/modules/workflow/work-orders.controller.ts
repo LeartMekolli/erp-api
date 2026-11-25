@@ -114,7 +114,14 @@ export class WorkOrdersController {
       'Every step is listed to everyone who may read work lists; `may_work` says whether the caller may pass or ' +
       "fail the piece where it is, which at a step that requires a skill needs that skill (the owner always may). " +
       '`workable=true` keeps only those pieces. `in_rework` says whether an active piece is being redone after a failed ' +
-      'check, and `last_move` is what last happened to it.',
+      'check, `last_move` is what last happened to it, and `group` whose the piece is and when it is due. ' +
+      '`workflow_id` keeps the pieces of every version of one workflow, so a step key two workflows share can be told ' +
+      "apart. `q` finds part of the product's name, any case, with `%` and `_` taken literally; with `order.read`, also " +
+      "an order's or a claim's number (`#` optional); with `customer.read`, also part of the customer's name. " +
+      "`sort` is `priority` when left out (first-in-line customers' groups first, then as the pieces started); " +
+      '`due_on` and `-due_on` order by `group.due_on`, soonest or latest first, with undated pieces last either way and ' +
+      'ties as `priority`; `started` is as the pieces started. Every filter applies before paging; a cursor made for ' +
+      'another sort is a 400.',
     query: workOrderQuerySchema,
     response: pageSchema(workOrderListItemSchema),
     errors: [400],
