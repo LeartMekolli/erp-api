@@ -20,6 +20,7 @@ import { groupPromise } from '../orders/order-lines';
 import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
 import { missingStepTypes, resolveWorkflow } from './coverage';
+import { groupSummaries } from './group-summary';
 import type { WorkflowStepRow } from './coverage';
 import { actionFacts, listActions } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
@@ -419,12 +420,19 @@ export class WorkOrdersService {
       const last = data.at(-1);
       const inspect = await toInspect(tx, data);
       const moves = await this.moveSummaries(tx, data);
+      const groups = await groupSummaries(
+        tx,
+        data.map((row) => row.groupId),
+        auth,
+        this.settings,
+      );
       return {
         data: data.map((row) => ({
           ...toWorkOrder(row),
           to_inspect: inspect.get(row.id) ?? null,
           may_work: mayMove && row.status === 'active' && !barred.has(row.currentStepId!),
           ...(moves.get(row.id) ?? { in_rework: false, last_move: null }),
+          group: groups.get(row.groupId)!,
         })),
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id, rank: last.group.queueRank }, secret) : null,
       };

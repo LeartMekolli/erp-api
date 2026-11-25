@@ -94,8 +94,8 @@ export async function orderWorkspace(
   const lunaDesign = await measuredDesign(prisma, tenant.id, owner.id, { customerId: luna });
   const buyer = await person(tenant.id, 'customer', luna, 'buyer');
 
-  /** Luna's order, paid by bank transfer, made by CastCo unless `inHouse`: 10 cast parts, or 3 pendant sets with `assembly`. */
-  const placed = async (options: { inHouse?: boolean; assembly?: boolean } = {}) => {
+  /** A quote for Luna: 10 cast parts, or 3 pendant sets with `assembly`. */
+  const quoted = async (options: { assembly?: boolean } = {}) => {
     const body = options.assembly
       ? { product_id: set.set, options: { material: 'silver_925', finish: 'polished' }, quantity: 3, customer_id: luna }
       : {
@@ -106,7 +106,23 @@ export async function orderWorkspace(
           file_version_id: lunaDesign.versionId,
           customer_id: luna,
         };
-    const quote = ((await staff.post('/pricing/quotes', body).expect(201)).body as { quote: { id: string } }).quote.id;
+    return ((await staff.post('/pricing/quotes', body).expect(201)).body as { quote: { id: string } }).quote.id;
+  };
+
+  /** A staff member holding only `permissions`, through a role of its own. */
+  const holding = async (permissions: string[]) => {
+    const user = await createTestUser(prisma, tenant.id, { roles: [] });
+    await prisma.inTenant(tenant.id, async (tx) => {
+      const role = await tx.role.create({ data: { name: `only ${permissions.join(' ')}`, isSystem: false } });
+      await tx.rolePermission.createMany({ data: permissions.map((permission) => ({ roleId: role.id, permission })) });
+      await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
+    });
+    return as((await tokens.issueForUser(tenant.id, user.id)).accessToken);
+  };
+
+  /** Luna's order, paid by bank transfer, made by CastCo unless `inHouse`: 10 cast parts, or 3 pendant sets with `assembly`. */
+  const placed = async (options: { inHouse?: boolean; assembly?: boolean } = {}) => {
+    const quote = await quoted(options);
     const order = (await staff.post('/orders', { customer_id: luna, lines: [{ quote_id: quote }], address: ADDRESS, shipping_method: 'courier' }).expect(201))
       .body as Order;
     await staff.post(`/orders/${order.id}/paid-by-hand`, { reference: `Transfer ${order.number}`, received_on: today() }).expect(200);
@@ -142,6 +158,6 @@ export async function orderWorkspace(
         .expect(201)
     ).body as Claim;
 
-  return { id: tenant.id, ownerId: owner.id, staff, set, castco, metalworks, workshop, luna, buyer, person, placed, delivered, claim };
+  return { id: tenant.id, ownerId: owner.id, staff, set, castco, metalworks, workshop, luna, buyer, person, holding, quoted, placed, delivered, claim };
 }
 export type OrderWorkspace = Awaited<ReturnType<typeof orderWorkspace>>;

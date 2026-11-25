@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { groupSummarySchema } from './group-summary-response';
 
 // What clients receive for work orders; checked against real responses in the e2e tests.
 
@@ -90,6 +91,8 @@ export const workOrderListItemSchema = workOrderResponseSchema.extend({
   in_rework: z.boolean(),
   /** Null until the piece first moves. */
   last_move: lastMoveSchema.nullable(),
+  /** Whose the piece is and when it is due, shared by every piece of its group. */
+  group: groupSummarySchema,
 });
 export type WorkOrderListItem = z.infer<typeof workOrderListItemSchema>;
 
