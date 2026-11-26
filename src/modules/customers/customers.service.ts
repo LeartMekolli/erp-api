@@ -8,6 +8,7 @@ import { PrismaService } from '../../database/prisma.service';
 import type { Customer, CustomerGroup, CustomerPaymentTerms, CustomerPriority, Prisma } from '../../generated/prisma/client';
 import { paymentTermsResponse, setPaymentTermsSchema } from '../payments/payment-response';
 import { writePaymentTerms } from '../payments/payment-terms.service';
+import { workspaceCurrency } from '../payments/workspace-currency';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
 import { emailSchema } from '../identity/email';
@@ -109,10 +110,11 @@ type CustomerRow = Customer & {
 
 const include = { customerGroup: true, paymentTerms: true, priority: true } as const;
 
-/** What a customer's band in force is read against, once per request. */
-interface BandContext {
+/** What a customer's response is read against, once per request: its band in force and its money's currency. */
+interface ResponseContext {
   settings: PrioritySettings;
   today: string;
+  currency: string;
 }
 
 export const memberInclude = { user: { select: { id: true, name: true, email: true, status: true } } } as const;
@@ -209,8 +211,8 @@ export class CustomersService {
           errors: [{ path: 'customer_group', message: 'not a customer group of this workspace' }],
         });
       }
-      const bands = await this.bandContext(tx);
-      if (query.band && !isBandKey(query.band, bands.settings)) {
+      const context = await this.responseContext(tx);
+      if (query.band && !isBandKey(query.band, context.settings)) {
         throw new BadRequestException({
           message: 'Filter by a band of the workspace',
           errors: [{ path: 'band', message: 'not a band of customers.priority' }],
@@ -220,7 +222,7 @@ export class CustomersService {
         where: {
           ...(after ? { id: { lt: after.id } } : {}),
           ...(query.customer_group ? { customerGroupId: query.customer_group === 'none' ? null : query.customer_group } : {}),
-          ...(query.band ? bandWhere(query.band, bands.today, bands.settings) : {}),
+          ...(query.band ? bandWhere(query.band, context.today, context.settings) : {}),
           ...(query.q ? { name: { contains: likeLiteral(query.q), mode: 'insensitive' as const } } : {}),
           ...(query.status ? { status: query.status } : {}),
         },
@@ -231,7 +233,7 @@ export class CustomersService {
       const page = toPage(rows, query.limit, secret);
       const data: CustomerResponse[] = [];
       for (const row of page.data) {
-        data.push(await this.toResponse(tx, row, bands));
+        data.push(await this.toResponse(tx, row, context));
       }
       return { data, next_cursor: page.next_cursor };
     });
@@ -387,12 +389,16 @@ export class CustomersService {
     }
   }
 
-  private async bandContext(tx: Prisma.TransactionClient): Promise<BandContext> {
-    return { settings: await prioritySettings(tx, this.settings), today: (await workspaceToday(tx, new Date())).today };
+  private async responseContext(tx: Prisma.TransactionClient): Promise<ResponseContext> {
+    return {
+      settings: await prioritySettings(tx, this.settings),
+      today: (await workspaceToday(tx, new Date())).today,
+      currency: await workspaceCurrency(tx),
+    };
   }
 
-  private async toResponse(tx: Prisma.TransactionClient, row: CustomerRow, bands?: BandContext): Promise<CustomerResponse> {
-    const { settings, today } = bands ?? (await this.bandContext(tx));
+  private async toResponse(tx: Prisma.TransactionClient, row: CustomerRow, context?: ResponseContext): Promise<CustomerResponse> {
+    const { settings, today, currency } = context ?? (await this.responseContext(tx));
     const band = bandInForce(row.priority, today, settings);
     const memberCount = await tx.organisationMembership.count({
       where: { organisationType: 'customer', organisationId: row.id },
@@ -407,7 +413,7 @@ export class CustomersService {
         : null,
       member_count: memberCount,
       may_pick_partner: row.mayPickPartner,
-      payment_terms: paymentTermsResponse(row.paymentTerms),
+      payment_terms: paymentTermsResponse(row.paymentTerms, currency),
       plan: { key: plan.key, name: plan.name },
       band: { key: band.key, name: band.name },
       created_at: row.createdAt.toISOString(),

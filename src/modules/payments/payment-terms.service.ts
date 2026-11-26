@@ -7,6 +7,7 @@ import type { TenantAuth } from '../identity/auth-context';
 import { paymentTermsResponse } from './payment-response';
 import { planOf } from './plans/plan-of';
 import type { PaymentTermsResponse, SetPaymentTerms } from './payment-response';
+import { workspaceCurrency } from './workspace-currency';
 
 /** How each customer pays (Payments spec): first, or later within some days and up to a limit. */
 @Injectable()
@@ -45,7 +46,8 @@ export async function writePaymentTerms(
       throw new ConflictException({ message, errors: [{ path: 'terms', message }] });
     }
   }
-  const before = paymentTermsResponse(await tx.customerPaymentTerms.findUnique({ where: { customerId } }));
+  const currency = await workspaceCurrency(tx);
+  const before = paymentTermsResponse(await tx.customerPaymentTerms.findUnique({ where: { customerId } }), currency);
   const data = {
     terms: input.terms,
     daysToPay: input.days_to_pay,
@@ -56,7 +58,7 @@ export async function writePaymentTerms(
     create: { customerId, ...data },
     update: data,
   });
-  const after = paymentTermsResponse(row);
+  const after = paymentTermsResponse(row, currency);
   await audit.record(tx, {
     actor: { type: 'user', id: actorUserId },
     action: 'customer.payment_terms.changed',

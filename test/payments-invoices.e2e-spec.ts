@@ -264,6 +264,7 @@ describe('payments: invoices on shipping', () => {
     expect(money.body).toMatchObject({
       balance: placed.total,
       exposure: placed.total,
+      currency: 'EUR',
       open_invoices: [{ order_id: placed.id, order_number: placed.number, total: placed.total, url: invoice.url }],
       overdue_invoices: [],
     });

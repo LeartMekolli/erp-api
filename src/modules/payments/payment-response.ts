@@ -53,18 +53,21 @@ export type SetPaymentTerms = z.infer<typeof setPaymentTermsSchema>;
 export const paymentTermsResponseSchema = z.strictObject({
   terms: z.enum(PAYMENT_TERMS),
   days_to_pay: z.number().int(),
-  credit_limit: z.string().nullable(),
+  credit_limit: z.string().nullable().describe('In `currency`; null: no limit.'),
+  currency: z.string().length(3).describe("The workspace's currency, which the customer's money is in."),
 });
 export type PaymentTermsResponse = z.infer<typeof paymentTermsResponseSchema>;
 
 /** A customer without a row pays first, within the default days, with no limit. */
 export function paymentTermsResponse(
   row: { terms: string; daysToPay: number; creditLimit: Prisma.Decimal | null } | null,
+  currency: string,
 ): PaymentTermsResponse {
   return {
     terms: (row?.terms ?? 'pay_first') as PaymentTermsResponse['terms'],
     days_to_pay: row?.daysToPay ?? DEFAULT_DAYS_TO_PAY,
     credit_limit: row?.creditLimit?.toFixed(2) ?? null,
+    currency,
   };
 }
 
@@ -110,8 +113,10 @@ export const customerInvoiceResponseSchema = z.strictObject({
 export const paymentCustomerResponseSchema = paymentTermsResponseSchema.extend({
   exposure: z
     .string()
-    .describe('What the customer owes or will owe: billed and not paid, plus its started pay-later orders not billed yet.'),
-  balance: z.string().describe('Billed and not paid, from the ledger.'),
+    .describe(
+      'What the customer owes or will owe, in `currency`: billed and not paid, plus its started pay-later orders not billed yet.',
+    ),
+  balance: z.string().describe('Billed and not paid, from the ledger, in `currency`.'),
   /** Open and not due yet. Oldest due first. */
   open_invoices: z.array(customerInvoiceResponseSchema),
   /** Open and past due. Oldest due first. */

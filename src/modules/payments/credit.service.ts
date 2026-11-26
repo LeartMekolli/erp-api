@@ -53,7 +53,7 @@ export class CreditService {
       if (!(await tx.customer.findUnique({ where: { id: customerId }, select: { id: true } }))) {
         throw new NotFoundException('Customer not found');
       }
-      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, defaultCurrency: true } });
       const today = localDate(new Date(), tenant.timezone);
       const invoices = (
         await tx.invoice.findMany({
@@ -70,7 +70,7 @@ export class CreditService {
         url: row.url,
       }));
       return {
-        ...paymentTermsResponse(await tx.customerPaymentTerms.findUnique({ where: { customerId } })),
+        ...paymentTermsResponse(await tx.customerPaymentTerms.findUnique({ where: { customerId } }), tenant.defaultCurrency),
         exposure: (await creditExposure(tx, customerId)).toFixed(2),
         balance: (await this.ledger.balance(tx, 'customer_receivable', { customerId })).toFixed(2),
         open_invoices: invoices.filter((invoice) => invoice.due_on >= today),
