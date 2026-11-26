@@ -8,7 +8,7 @@ import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import type { GroupSummary } from '../src/modules/workflow/group-summary';
-import { moveListItemSchema } from '../src/modules/workflow/move-history-response';
+import { moveActorsResponseSchema, moveListItemSchema } from '../src/modules/workflow/move-history-response';
 import { stepCountsResponseSchema, stepGroupSchema, workOrderListItemSchema } from '../src/modules/workflow/work-order-response';
 import { expectDocumented } from './documented';
 import { deleteTestTenants } from './factories';
@@ -795,5 +795,86 @@ describe('workflow: production lists', () => {
     await w.staff.get(`/workflow/transitions?cursor=${moves}`).expect(400);
     await w.staff.get(`/workflow/moves?cursor=${transitions}`).expect(400);
     await w.staff.get(`/workflow/moves?cursor=${moves}`).expect(200);
+  });
+
+  interface ActorRow {
+    id: string;
+    name: string;
+    partners: { id: string; name: string }[];
+  }
+  /** Everyone who has moved, as History's Person filter reads them. */
+  const actorsOf = async (client: Client, query = '') => {
+    const res = await client.get(`/workflow/moves/actors${query}`).expect(200);
+    expectDocumented(moveActorsResponseSchema, res.body);
+    return (res.body as { items: ActorRow[] }).items;
+  };
+
+  it('lists everyone who has moved, staff and partner people, with their partners', async () => {
+    const w = await workspace();
+    // CastCo has accepted the job: its person passes the first step, the owner the next.
+    const order = await w.placed();
+    const pieces = (await piecesOf(w.staff, order.lines[0].group_id)).map((piece) => piece.id);
+    await w.castco.person
+      .post(`/partner-portal/partners/${w.castco.id}/moves`, { work_order_ids: pieces, at_step: 'print_pattern', kind: 'pass' })
+      .expect(200);
+    await passAt(w, pieces, 'casting_tree');
+
+    const moved = await prisma.inTenant(w.id, (tx) =>
+      tx.transition.findMany({ distinct: ['actorUserId'], select: { actor: { select: { id: true, name: true, kind: true } } } }),
+    );
+    const partnerPerson = moved.find((row) => row.actor.kind === 'partner')!.actor;
+    const owner = moved.find((row) => row.actor.kind === 'staff')!.actor;
+    expect(owner.id).toBe(w.ownerId);
+
+    // Floor staff without user.read get the list too.
+    const reader = await w.holding(['workflow.read']);
+    expect(await actorsOf(reader)).toEqual(
+      [
+        { id: owner.id, name: owner.name, partners: [] },
+        { id: partnerPerson.id, name: partnerPerson.name, partners: [{ id: w.castco.id, name: 'CastCo' }] },
+      ].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
+    );
+
+    // In two partners: both, by name. Deactivated: still listed, since History still names them.
+    await prisma.inTenant(w.id, async (tx) => {
+      await tx.organisationMembership.create({
+        data: { userId: partnerPerson.id, organisationType: 'partner', organisationId: w.metalworks.id, role: 'member' },
+      });
+      await tx.user.update({ where: { id: partnerPerson.id }, data: { status: 'deactivated' } });
+    });
+    expect((await actorsOf(w.staff)).find((actor) => actor.id === partnerPerson.id)?.partners).toEqual([
+      { id: w.castco.id, name: 'CastCo' },
+      { id: w.metalworks.id, name: 'MetalWorks' },
+    ]);
+  });
+
+  it('narrows the people who moved to one workflow', async () => {
+    const w = await workspace();
+    // A cast line moved by the owner, and an assembly's printed part moved by `other`.
+    const order = await w.placed({ inHouse: true });
+    const pieces = (await piecesOf(w.staff, order.lines[0].group_id)).map((piece) => piece.id);
+    await passAt(w, pieces, 'print_pattern');
+    const castWorkflow = w.set.cast.workflow.workflowId;
+    const assembly = await w.placed({ assembly: true });
+    const parts = await Promise.all((await partGroups(w, assembly.id)).map((part) => summaryOf(w.staff, part.id)));
+    const printed = parts.find((summary) => summary.workflow.id !== castWorkflow)!;
+    const printedPieces = await piecesOf(w.staff, printed.id);
+    const other = await w.holding(['workflow.read', 'workflow.move']);
+    await other
+      .post('/workflow/moves', { work_order_ids: printedPieces.map((piece) => piece.id), at_step: printedPieces[0].step!.key, kind: 'pass' })
+      .expect(200);
+
+    const all = await actorsOf(w.staff);
+    expect(all).toHaveLength(2);
+    const otherId = all.find((actor) => actor.id !== w.ownerId)!.id;
+    expect((await actorsOf(w.staff, `?workflow_id=${castWorkflow}`)).map((actor) => actor.id)).toEqual([w.ownerId]);
+    expect((await actorsOf(w.staff, `?workflow_id=${printed.workflow.id}`)).map((actor) => actor.id)).toEqual([otherId]);
+    expect(await actorsOf(w.staff, `?workflow_id=${randomUUID()}`)).toEqual([]);
+    await w.staff.get('/workflow/moves/actors?workflow_id=nope').expect(400);
+  });
+
+  it('needs workflow.read to list who moved', async () => {
+    const w = await workspace();
+    await (await w.holding(['order.read'])).get('/workflow/moves/actors').expect(403);
   });
 });

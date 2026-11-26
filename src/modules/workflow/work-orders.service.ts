@@ -27,9 +27,9 @@ import { PIECE_SORTS, pieceFilterSchema, pieceWhere, workContext } from './piece
 import type { PieceSort } from './piece-filters';
 import type { MissingSkill } from './step-skills';
 import type { WorkflowStepRow } from './coverage';
-import { actionFacts, listActions, listMoves, transitionFilters } from './move-history';
+import { actionFacts, listActions, listActors, listMoves, transitionFilters } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
-import type { MoveHistoryResponse, MoveListItem } from './move-history-response';
+import type { MoveActorsResponse, MoveHistoryResponse, MoveListItem } from './move-history-response';
 import { pathFor } from './path';
 import { customerView, groupProgress, inRework, stepTotals } from './progress';
 import type { GroupProgress, MoveFacts, StepTotals, TransitionFacts } from './progress';
@@ -189,6 +189,12 @@ export const moveListQuerySchema = transitionQuerySchema.extend({
   q: pieceFilterSchema.shape.q,
 });
 export type MoveListQuery = z.infer<typeof moveListQuerySchema>;
+
+/** Who has made a move, for History's Person filter: `workflow_id` keeps any version of that workflow. */
+export const moveActorsQuerySchema = z.object({
+  workflow_id: pieceFilterSchema.shape.workflow_id,
+});
+export type MoveActorsQuery = z.infer<typeof moveActorsQuerySchema>;
 
 /** What a group starts from: a quote, an order line, or a claimed line it remakes. */
 export type GroupSourceType = 'quote' | 'order_line' | 'claim_line';
@@ -705,6 +711,11 @@ export class WorkOrdersService {
         next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
       };
     });
+  }
+
+  /** Everyone who has made a move, for History's Person filter. */
+  moveActors(tenantId: string, query: MoveActorsQuery): Promise<MoveActorsResponse> {
+    return this.prisma.inTenant(tenantId, async (tx) => ({ items: await listActors(tx, query) }));
   }
 
   /**
