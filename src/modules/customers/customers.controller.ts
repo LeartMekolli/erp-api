@@ -6,24 +6,35 @@ import { ZodValidationPipe } from '../../common/validation/zod-validation.pipe';
 import { ApiDoc } from '../../docs/api-doc';
 import { CurrentTenant, CurrentUser } from '../identity/auth-context';
 import type { TenantAuth } from '../identity/auth-context';
-import { emailSchema } from '../identity/email';
 import { RequirePermission } from '../identity/route-markers';
 import { CustomerAddressesService, customerAddressesResponseSchema, customerAddressesSchema } from './addresses';
 import type { CustomerAddressesInput, CustomerAddressesResponse } from './addresses';
 import { CustomerInvitationsService } from './customer-invitations.service';
 import {
+  customerBandChoicesSchema,
+  customerGroupChoicesSchema,
   customerInvitationResponseSchema,
   customerMemberResponseSchema,
   customerResponseSchema,
 } from './customer-response';
-import type { CustomerInvitationResponse, CustomerMemberResponse, CustomerResponse } from './customer-response';
-import { CUSTOMER_ROLES } from './customer-roles';
-import { CustomersService, createCustomerSchema, customerListQuerySchema, updateCustomerSchema, updateMemberSchema } from './customers.service';
-import type { CustomerListQuery } from './customers.service';
+import type {
+  CustomerBandChoices,
+  CustomerGroupChoices,
+  CustomerInvitationResponse,
+  CustomerMemberResponse,
+  CustomerResponse,
+} from './customer-response';
+import {
+  CustomersService,
+  createCustomerSchema,
+  customerListQuerySchema,
+  inviteSchema,
+  updateCustomerSchema,
+  updateMemberSchema,
+} from './customers.service';
+import type { CreateCustomer, CustomerListQuery } from './customers.service';
 
 const idParam = new ZodValidationPipe(z.uuid());
-
-const inviteSchema = z.object({ email: emailSchema, role: z.enum(CUSTOMER_ROLES) });
 
 const membersResponseSchema = z.strictObject({ data: z.array(customerMemberResponseSchema) });
 
@@ -37,23 +48,29 @@ export class CustomersController {
   ) {}
 
   @ApiDoc({
-    summary: 'Create a customer organisation: a brand, or one person on their own.',
+    summary: 'Create a customer organisation (a brand, or one person on their own), with its addresses, payment terms and first invitation if given.',
+    description:
+      'Everything is saved together or not at all; the invitation email goes out once it is saved. ' +
+      '`payment_terms` needs `payment.write` (403 without). A refused invitation, or pay later the plan does not allow, ' +
+      'is a 409 whose `errors` name the field, such as `invitation.email` or `payment_terms.terms`.',
     body: createCustomerSchema,
     response: customerResponseSchema,
-    errors: [400, 404],
+    errors: [400, 403, 404, 409],
   })
   @RequirePermission('customer.write')
   @Post()
   create(
     @CurrentUser() auth: TenantAuth,
-    @Body(new ZodValidationPipe(createCustomerSchema)) body: z.infer<typeof createCustomerSchema>,
+    @Body(new ZodValidationPipe(createCustomerSchema)) body: CreateCustomer,
   ): Promise<CustomerResponse> {
     return this.customers.create(auth, body);
   }
 
   @ApiDoc({
-    summary: 'Customer organisations, newest first, optionally of one customer group (or none) or one priority band.',
-    description: '`band` filters by the band in force: an override through its end date, else the computed band. An unknown group or band is a 400.',
+    summary: 'Customer organisations, newest first, optionally searched by name or narrowed by status, customer group (or none) or priority band.',
+    description:
+      '`q` matches any part of the name, in any case. ' +
+      '`band` filters by the band in force: an override through its end date, else the computed band. An unknown group or band is a 400.',
     query: customerListQuerySchema,
     response: pageSchema(customerResponseSchema),
     errors: [400],
@@ -65,6 +82,29 @@ export class CustomersController {
     @Query(new ZodValidationPipe(customerListQuerySchema)) query: CustomerListQuery,
   ): Promise<Page<CustomerResponse>> {
     return this.customers.list(tenantId, query);
+  }
+
+  // Declared before `:id`, whose uuid pipe would refuse these paths.
+  @ApiDoc({
+    summary: 'The customer groups to file a customer under, by name.',
+    description: 'For pickers and the list filter; the percent is on `GET /pricing/customer-groups`.',
+    response: customerGroupChoicesSchema,
+  })
+  @RequirePermission('customer.read')
+  @Get('groups')
+  groups(@CurrentTenant() tenantId: string): Promise<CustomerGroupChoices> {
+    return this.customers.groupChoices(tenantId);
+  }
+
+  @ApiDoc({
+    summary: "The priority bands, the default band first, then the workspace's bands in order.",
+    description: 'Pass a `key` as `band` to `GET /customers`. Without `customers.priority` set, the one default band.',
+    response: customerBandChoicesSchema,
+  })
+  @RequirePermission('customer.read')
+  @Get('bands')
+  bands(@CurrentTenant() tenantId: string): Promise<CustomerBandChoices> {
+    return this.customers.bandChoices(tenantId);
   }
 
   @ApiDoc({ summary: 'A customer organisation.', response: customerResponseSchema, errors: [400, 404] })
@@ -96,7 +136,8 @@ export class CustomersController {
     description:
       "The token goes only to the invitee's inbox; the link points at the workspace's customer site when it has one. " +
       'Someone who already acts for another customer of the workspace accepts without a new password. ' +
-      'Refused with 409 for a staff email, someone already acting for the customer, or a second owner.',
+      'Refused with 409 for a staff email, someone already acting for the customer, or a second owner; ' +
+      "its `errors` name the field: `email`, or `role` for a second owner. The plan's member limit is a 409 on `email` too.",
     body: inviteSchema,
     response: customerInvitationResponseSchema,
     errors: [400, 404, 409],
