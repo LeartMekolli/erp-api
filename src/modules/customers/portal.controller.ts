@@ -93,7 +93,8 @@ export class PortalController {
     summary: 'Invite a colleague by email to act for the customer, with the role they get on accepting.',
     description:
       "The token goes only to the invitee's inbox. Only the owner invites an owner (403), and only while the customer has none (409). " +
-      'Refused with 409 for a staff email or someone already acting for the customer.',
+      "Refused with 409 for a staff email or someone already acting for the customer; a 409's `errors` name the field, " +
+      '`email`, or `role` for a second owner.',
     body: inviteSchema,
     response: customerInvitationResponseSchema,
     errors: [400, 404, 409],

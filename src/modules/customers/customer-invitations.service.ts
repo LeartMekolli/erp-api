@@ -4,21 +4,34 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import { GoogleIdentityService } from '../auth/google-identity.service';
 import { IDENTITY_NOTIFIER } from '../identity/identity-notifier';
-import type { IdentityNotifier } from '../identity/identity-notifier';
+import type { CustomerInvitationNotice, IdentityNotifier } from '../identity/identity-notifier';
 import { INVITATION_DAYS } from '../identity/invitations';
 import { issueOpaqueToken, parseOpaqueToken } from '../identity/opaque-token';
 import { hashPassword } from '../identity/passwords';
 import { planOf } from '../payments/plans/plan-of';
 import type { CustomerInvitationResponse } from './customer-response';
 import type { CustomerRole } from './customer-roles';
-import { lockCustomer } from './customers.service';
+import { lockCustomer } from './lock-customer';
 
 function invalidInvitation(): BadRequestException {
   return new BadRequestException('Invitation is invalid or expired');
 }
 
+const OTHER_KIND_EMAIL = 'This email belongs to a staff user or a partner person';
+
 function otherKindEmail(): ConflictException {
-  return new ConflictException('This email belongs to a staff user or a partner person');
+  return new ConflictException(OTHER_KIND_EMAIL);
+}
+
+/** An invitation refused for one of its fields, named so a form can show it there. */
+function refusedField(path: 'email' | 'role', message: string): ConflictException {
+  return new ConflictException({ message, errors: [{ path, message }] });
+}
+
+/** What `inviteIn` made, and the email to send once the transaction has committed. */
+export interface PendingInvitation {
+  response: CustomerInvitationResponse;
+  notice: CustomerInvitationNotice;
 }
 
 /** Whether the customer already has an owner; call with the customer row locked. */
@@ -43,7 +56,7 @@ async function refuseOverMemberLimit(tx: Prisma.TransactionClient, customerId: s
     tx.customerInvitation.count({ where: { customerId, acceptedAt: null, expiresAt: { gt: now }, email: { not: email } } }),
   ]);
   if (members + open >= plan.memberLimit) {
-    throw new ConflictException(`The customer's plan (${plan.name}) allows ${plan.memberLimit} members`);
+    throw refusedField('email', `The customer's plan (${plan.name}) allows ${plan.memberLimit} members`);
   }
 }
 
@@ -75,55 +88,63 @@ export class CustomerInvitationsService {
     customerId: string,
     input: { email: string; role: CustomerRole; invitedByUserId: string | null },
   ): Promise<CustomerInvitationResponse> {
-    const created = await this.prisma.inTenant(tenantId, async (tx) => {
-      const customer = await lockCustomer(tx, customerId);
+    const pending = await this.prisma.inTenant(tenantId, (tx) => this.inviteIn(tx, tenantId, customerId, input));
+    await this.send(pending.notice);
+    return pending.response;
+  }
 
-      const existing = await tx.user.findFirst({ where: { email: input.email }, select: { id: true, kind: true } });
-      if (existing && existing.kind !== 'customer') {
-        throw otherKindEmail();
-      }
-      if (existing && (await this.isMember(tx, existing.id, customerId))) {
-        throw new ConflictException('This person already acts for the customer');
-      }
-      if (input.role === 'owner' && (await hasOwner(tx, customerId))) {
-        throw new ConflictException('The customer already has an owner');
-      }
+  /** `invite` inside the caller's transaction; the caller sends `notice` once it has committed. */
+  async inviteIn(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    customerId: string,
+    input: { email: string; role: CustomerRole; invitedByUserId: string | null },
+  ): Promise<PendingInvitation> {
+    const customer = await lockCustomer(tx, customerId);
 
-      const now = new Date();
-      await refuseOverMemberLimit(tx, customerId, input.email, now);
-      await tx.customerInvitation.updateMany({
-        where: { customerId, email: input.email, acceptedAt: null, expiresAt: { gt: now } },
-        data: { expiresAt: now },
-      });
+    const existing = await tx.user.findFirst({ where: { email: input.email }, select: { id: true, kind: true } });
+    if (existing && existing.kind !== 'customer') {
+      throw refusedField('email', OTHER_KIND_EMAIL);
+    }
+    if (existing && (await this.isMember(tx, existing.id, customerId))) {
+      throw refusedField('email', 'This person already acts for the customer');
+    }
+    if (input.role === 'owner' && (await hasOwner(tx, customerId))) {
+      throw refusedField('role', 'The customer already has an owner');
+    }
 
-      const { token, hash } = issueOpaqueToken(tenantId);
-      const invitation = await tx.customerInvitation.create({
-        data: {
-          customerId,
-          email: input.email,
-          role: input.role,
-          tokenHash: hash,
-          invitedByUserId: input.invitedByUserId,
-          expiresAt: new Date(now.getTime() + INVITATION_DAYS * 24 * 60 * 60 * 1000),
-        },
-      });
-      return { invitation, token, customerName: customer.name };
+    const now = new Date();
+    await refuseOverMemberLimit(tx, customerId, input.email, now);
+    await tx.customerInvitation.updateMany({
+      where: { customerId, email: input.email, acceptedAt: null, expiresAt: { gt: now } },
+      data: { expiresAt: now },
     });
 
-    await this.notifier.customerInvitationCreated({
-      tenantId,
-      invitationId: created.invitation.id,
-      email: input.email,
-      customerName: created.customerName,
-      token: created.token,
+    const { token, hash } = issueOpaqueToken(tenantId);
+    const invitation = await tx.customerInvitation.create({
+      data: {
+        customerId,
+        email: input.email,
+        role: input.role,
+        tokenHash: hash,
+        invitedByUserId: input.invitedByUserId,
+        expiresAt: new Date(now.getTime() + INVITATION_DAYS * 24 * 60 * 60 * 1000),
+      },
     });
-
     return {
-      id: created.invitation.id,
-      email: created.invitation.email,
-      role: input.role,
-      expires_at: created.invitation.expiresAt.toISOString(),
+      response: {
+        id: invitation.id,
+        email: invitation.email,
+        role: input.role,
+        expires_at: invitation.expiresAt.toISOString(),
+      },
+      notice: { tenantId, invitationId: invitation.id, email: input.email, customerName: customer.name, token },
     };
+  }
+
+  /** The invitation email; only after the invitation's transaction has committed. */
+  async send(notice: CustomerInvitationNotice): Promise<void> {
+    await this.notifier.customerInvitationCreated(notice);
   }
 
   /**

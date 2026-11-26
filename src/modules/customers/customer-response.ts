@@ -27,6 +27,25 @@ export const customerResponseSchema = z.strictObject({
 });
 export type CustomerResponse = z.infer<typeof customerResponseSchema>;
 
+/** The customer groups to pick from, by name; the percent is Pricing's (GET /pricing/customer-groups). */
+export const customerGroupChoicesSchema = z.strictObject({
+  data: z.array(z.strictObject({ id: z.uuid(), key: z.string(), name: z.string() })),
+});
+export type CustomerGroupChoices = z.infer<typeof customerGroupChoicesSchema>;
+
+/** The priority bands to pick from: the default band first, then the workspace's bands in order. */
+export const customerBandChoicesSchema = z.strictObject({
+  data: z.array(
+    z.strictObject({
+      key: z.string(),
+      name: z.string(),
+      /** The band a customer is in when no other band applies. */
+      default: z.boolean(),
+    }),
+  ),
+});
+export type CustomerBandChoices = z.infer<typeof customerBandChoicesSchema>;
+
 /** An invitation to act for a customer; the token goes only to the invitee's inbox. */
 export const customerInvitationResponseSchema = z.strictObject({
   id: z.uuid(),
