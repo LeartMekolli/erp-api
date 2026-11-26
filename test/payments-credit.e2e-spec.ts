@@ -179,6 +179,7 @@ describe('payments: pay later and the credit limit', () => {
       credit_limit: d(first.total).plus('0.01').toFixed(2),
       exposure: d(first.total).plus(second.total).toFixed(2),
       balance: '0.00',
+      currency: 'EUR',
       open_invoices: [],
       overdue_invoices: [],
     });

@@ -77,8 +77,8 @@ describe('payments demo seed', () => {
     expect(await seedPayments(deps(), tenant.id, null)).toEqual({ account: 0, customers: 1, terms: 2, payoutAccounts: 0 });
     expect(await seedPayments(deps(), tenant.id, null)).toEqual({ account: 0, customers: 0, terms: 0, payoutAccounts: 0 });
 
-    expect(await termsOf(tenant, 'Luna Jewels')).toEqual({ terms: 'pay_first', days_to_pay: 30, credit_limit: null });
-    expect(await termsOf(tenant, 'Brightline')).toEqual({ terms: 'pay_later', days_to_pay: 30, credit_limit: '5000.00' });
+    expect(await termsOf(tenant, 'Luna Jewels')).toEqual({ terms: 'pay_first', days_to_pay: 30, credit_limit: null, currency: 'EUR' });
+    expect(await termsOf(tenant, 'Brightline')).toEqual({ terms: 'pay_later', days_to_pay: 30, credit_limit: '5000.00', currency: 'EUR' });
     expect(await prisma.inTenant(tenant.id, (tx) => tx.customer.count({ where: { name: 'Brightline' } }))).toBe(1);
     // Without keys, payments are not set up, and nothing failed.
     expect((await tenant.staff.get('/payments/account').expect(200)).body).toMatchObject({ configured: false });

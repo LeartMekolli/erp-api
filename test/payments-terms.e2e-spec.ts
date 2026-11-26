@@ -121,6 +121,7 @@ describe('payments: terms and the payment state of an order', () => {
       terms: 'pay_first',
       days_to_pay: 30,
       credit_limit: null,
+      currency: 'EUR',
     });
   });
 
@@ -132,12 +133,13 @@ describe('payments: terms and the payment state of an order', () => {
       .expect(200);
 
     expectDocumented(paymentTermsResponseSchema, res.body);
-    expect(res.body).toEqual({ terms: 'pay_later', days_to_pay: 14, credit_limit: '5000.00' });
+    expect(res.body).toEqual({ terms: 'pay_later', days_to_pay: 14, credit_limit: '5000.00', currency: 'EUR' });
     const customer = await tenant.staff.get(`/customers/${tenant.luna}`).expect(200);
     expect((customer.body as { payment_terms: unknown }).payment_terms).toEqual({
       terms: 'pay_later',
       days_to_pay: 14,
       credit_limit: '5000.00',
+      currency: 'EUR',
     });
     const entries = await prisma.inTenant(tenant.id, (tx) =>
       tx.auditEntry.findMany({ where: { action: 'customer.payment_terms.changed', subjectId: tenant.luna } }),
@@ -147,7 +149,7 @@ describe('payments: terms and the payment state of an order', () => {
 
     // Without a limit, and with the default days, set again.
     const again = await tenant.staff.put(`/customers/${tenant.luna}/payment-terms`, { terms: 'pay_later' }).expect(200);
-    expect(again.body).toEqual({ terms: 'pay_later', days_to_pay: 30, credit_limit: null });
+    expect(again.body).toEqual({ terms: 'pay_later', days_to_pay: 30, credit_limit: null, currency: 'EUR' });
   });
 
   it('refuses days to pay outside 1–120, a negative limit, and a member', async () => {
