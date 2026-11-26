@@ -64,35 +64,48 @@ export class CustomerAddressesService {
   }
 
   async set(actor: AddressActor, customerId: string, input: CustomerAddressesInput): Promise<CustomerAddressesResponse> {
-    const after = await this.prisma.inTenant(actor.tenantId, async (tx) => {
-      const before = toResponse(await this.find(tx, customerId));
-      const json = (address: Address | null | undefined) =>
-        address === undefined ? undefined : address === null ? Prisma.DbNull : (address as Prisma.InputJsonValue);
-      const row = await tx.customer.update({
-        where: { id: customerId },
-        data: {
-          shippingAddress: json(input.shipping_address),
-          billingAddress: json(input.billing_address),
-          vatNumber: input.vat_number,
-        },
-        select: { shippingAddress: true, billingAddress: true, vatNumber: true },
-      });
-      const after = toResponse(row);
-      await this.audit.record(tx, {
-        actor: { type: 'user', id: actor.userId },
-        action: 'customer.addresses_changed',
-        subject: { type: 'customer', id: customerId },
-        before,
-        after,
-      });
-      return after;
+    const after = await this.prisma.inTenant(actor.tenantId, (tx) => this.setIn(tx, actor, customerId, input));
+    await this.afterChange(actor.tenantId, customerId);
+    return after;
+  }
+
+  /** Saves the addresses inside the caller's transaction; the caller runs `afterChange` once it has committed. */
+  async setIn(
+    tx: Prisma.TransactionClient,
+    actor: AddressActor,
+    customerId: string,
+    input: CustomerAddressesInput,
+  ): Promise<CustomerAddressesResponse> {
+    const before = toResponse(await this.find(tx, customerId));
+    const json = (address: Address | null | undefined) =>
+      address === undefined ? undefined : address === null ? Prisma.DbNull : (address as Prisma.InputJsonValue);
+    const row = await tx.customer.update({
+      where: { id: customerId },
+      data: {
+        shippingAddress: json(input.shipping_address),
+        billingAddress: json(input.billing_address),
+        vatNumber: input.vat_number,
+      },
+      select: { shippingAddress: true, billingAddress: true, vatNumber: true },
     });
+    const after = toResponse(row);
+    await this.audit.record(tx, {
+      actor: { type: 'user', id: actor.userId },
+      action: 'customer.addresses_changed',
+      subject: { type: 'customer', id: customerId },
+      before,
+      after,
+    });
+    return after;
+  }
+
+  /** The hooks after an address change has committed; a failure is logged, never thrown. */
+  async afterChange(tenantId: string, customerId: string): Promise<void> {
     for (const hook of this.hooks) {
-      await hook(actor.tenantId, customerId).catch((error: unknown) =>
-        this.logger.error({ err: error, tenantId: actor.tenantId, customerId }, 'a hook after an address change failed'),
+      await hook(tenantId, customerId).catch((error: unknown) =>
+        this.logger.error({ err: error, tenantId, customerId }, 'a hook after an address change failed'),
       );
     }
-    return after;
   }
 
   private async find(tx: Prisma.TransactionClient, customerId: string): Promise<AddressRow> {

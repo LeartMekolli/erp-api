@@ -20,10 +20,11 @@ export class PaymentTermsController {
     summary: 'Set how a customer pays: first, or later within some days and up to a credit limit.',
     description:
       'Replaces the terms as a whole: days to pay defaults to 30 and the credit limit to none. Orders already placed ' +
-      'keep the terms they were placed under. Customers never see their terms.',
+      'keep the terms they were placed under. Customers never see their terms. ' +
+      "Pay later on a plan that doesn't allow it is a 409 whose `errors` name `terms`.",
     body: setPaymentTermsSchema,
     response: paymentTermsResponseSchema,
-    errors: [400, 404],
+    errors: [400, 404, 409],
   })
   @RequirePermission('payment.write')
   @Put()
