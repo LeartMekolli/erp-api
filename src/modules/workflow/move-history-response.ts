@@ -64,14 +64,16 @@ export const moveActorSchema = z.strictObject({
   /** Pass as `actor_user_id` to `GET /workflow/moves`. */
   id: z.uuid(),
   name: z.string(),
-  /** The partners the person belongs to now, by name; empty for staff. */
+  /** A partner's person stays `partner` after leaving every partner. */
+  kind: z.enum(['staff', 'partner']),
+  /** The partners the person belongs to now, by name; empty for staff and for a partner's person who left. */
   partners: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),
 });
 export type MoveActor = z.infer<typeof moveActorSchema>;
 
 export const moveActorsResponseSchema = z.strictObject({
   /** By name. Not paged. */
-  items: z.array(moveActorSchema),
+  data: z.array(moveActorSchema),
 });
 export type MoveActorsResponse = z.infer<typeof moveActorsResponseSchema>;
 

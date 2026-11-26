@@ -176,6 +176,30 @@ describe('workflow: the QC history', () => {
     await tenant.owner.get('/workflow/transitions?move_id=not-a-uuid').expect(400);
   });
 
+  it("lists one move's pieces by piece number, across pages", async () => {
+    const { tenant } = await workedTenant();
+    const [cast] = (await history(tenant, 'step_key=casting')).data;
+    const labels: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const query: string = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+      const page = (await tenant.owner.get(`/workflow/transitions?limit=3&move_id=${cast.move_id}${query}`).expect(200)).body as Page;
+      labels.push(...page.data.map((row) => row.work_order.label));
+      cursor = page.next_cursor;
+      pages += 1;
+    } while (cursor && pages < 10);
+    expect(labels).toEqual(Array.from({ length: 10 }, (_, i) => `${i + 1}/10`));
+
+    // A cursor from one ordering is refused by the other.
+    const byPiece = (await tenant.owner.get(`/workflow/transitions?limit=3&move_id=${cast.move_id}`).expect(200)).body as Page;
+    await tenant.owner.get(`/workflow/transitions?limit=3&cursor=${encodeURIComponent(byPiece.next_cursor!)}`).expect(400);
+    const newest = (await tenant.owner.get('/workflow/transitions?limit=3').expect(200)).body as Page;
+    await tenant.owner
+      .get(`/workflow/transitions?limit=3&move_id=${cast.move_id}&cursor=${encodeURIComponent(newest.next_cursor!)}`)
+      .expect(400);
+  });
+
   it('pages through the history without repeats', async () => {
     const { tenant } = await workedTenant();
     const seen: string[] = [];

@@ -251,7 +251,8 @@ export class WorkOrdersController {
     summary: "Everyone who has made a move, staff and partner people, for History's Person filter.",
     description:
       '`workflow_id` keeps the people who moved pieces of any version of that workflow. Sorted by name. `partners` ' +
-      'are the partners the person belongs to now, empty for staff. Deactivated people stay listed, since History ' +
+      'are the partners the person belongs to now, empty for staff; `kind` tells a partner\'s person who left every ' +
+      'partner from staff. Deactivated people stay listed, since History ' +
       'still names them. Not paged. Pass an `id` as `actor_user_id` to `GET /workflow/moves`.',
     query: moveActorsQuerySchema,
     response: moveActorsResponseSchema,
@@ -270,7 +271,7 @@ export class WorkOrdersController {
     summary: 'The QC history: every move of every piece, newest first, filtered by piece, group, step, defect, design file, actor or time.',
     description:
       '`step_key` matches the step the move was made at. `from` is inclusive and `to` exclusive. `move_id` keeps the ' +
-      'rows one move wrote.',
+      'rows one move wrote, in piece number order instead of newest first; a cursor works only with the ordering it came from.',
     query: transitionQuerySchema,
     response: pageSchema(transitionListItemSchema),
     errors: [400],
