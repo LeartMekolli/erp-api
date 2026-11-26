@@ -4,11 +4,11 @@ import { decodeCursor, encodeCursor } from '../../common/pagination/cursor';
 import { paginationQuerySchema } from '../../common/pagination/page';
 import { Prisma } from '../../generated/prisma/client';
 import type { TenantAuth } from '../identity/auth-context';
-import type { ActionResponse } from './move-history-response';
+import type { ActionResponse, MoveActor } from './move-history-response';
 import { searchGroups } from './piece-filters';
 import { readableAnswer, transitionInclude } from './transition-rows';
 import type { WorkOrderStatus } from './work-order-response';
-import type { MoveListQuery, TransitionQuery } from './work-orders.service';
+import type { MoveActorsQuery, MoveListQuery, TransitionQuery } from './work-orders.service';
 import type { StepConfig } from './workflow-config';
 
 // A line's moves, one item per action (Move history spec): every row one request wrote shares a `move_id`.
@@ -139,6 +139,32 @@ export async function listMoves(
     moves: ids.map((id) => byMove.get(id)!),
     next_cursor: page.length > query.limit ? encodeCursor({ id: ids.at(-1)!, sort: MOVES_CURSOR }, secret) : null,
   };
+}
+
+/**
+ * Everyone who has made a move (Move actors spec, 2026-11-26), by name then id, each with the partners they
+ * belong to now, by name. Deactivated people stay: History still names them. At most three queries whatever the size.
+ */
+export async function listActors(tx: Prisma.TransactionClient, query: MoveActorsQuery): Promise<MoveActor[]> {
+  const moved = await tx.transition.groupBy({
+    by: ['actorUserId'],
+    where: query.workflow_id ? { workOrder: { group: { workflowVersion: { workflowId: query.workflow_id } } } } : {},
+  });
+  if (moved.length === 0) return [];
+  const users = await tx.user.findMany({
+    where: { id: { in: moved.map((row) => row.actorUserId) } },
+    select: { id: true, name: true, memberships: { where: { organisationType: 'partner' }, select: { organisationId: true } } },
+    orderBy: [{ name: 'asc' }, { id: 'asc' }],
+  });
+  const partners = await tx.partner.findMany({
+    where: { id: { in: users.flatMap((user) => user.memberships.map((membership) => membership.organisationId)) } },
+    select: { id: true, name: true },
+    orderBy: [{ name: 'asc' }, { id: 'asc' }],
+  });
+  return users.map((user) => {
+    const ids = new Set(user.memberships.map((membership) => membership.organisationId));
+    return { id: user.id, name: user.name, partners: partners.filter((partner) => ids.has(partner.id)) };
+  });
 }
 
 interface StepRef {

@@ -59,6 +59,22 @@ export const moveListItemSchema = actionResponseSchema.omit({ pieces: true, part
 });
 export type MoveListItem = z.infer<typeof moveListItemSchema>;
 
+/** Someone who has made a move, for History's Person filter (Move actors spec, 2026-11-26). */
+export const moveActorSchema = z.strictObject({
+  /** Pass as `actor_user_id` to `GET /workflow/moves`. */
+  id: z.uuid(),
+  name: z.string(),
+  /** The partners the person belongs to now, by name; empty for staff. */
+  partners: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),
+});
+export type MoveActor = z.infer<typeof moveActorSchema>;
+
+export const moveActorsResponseSchema = z.strictObject({
+  /** By name. Not paged. */
+  items: z.array(moveActorSchema),
+});
+export type MoveActorsResponse = z.infer<typeof moveActorsResponseSchema>;
+
 export const moveHistoryResponseSchema = z.strictObject({
   data: z.array(actionResponseSchema),
   next_cursor: z.string().nullable(),

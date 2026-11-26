@@ -9,8 +9,8 @@ import type { TenantAuth } from '../identity/auth-context';
 import { RequirePermission } from '../identity/route-markers';
 import { moveHistoryQuerySchema } from './move-history';
 import type { MoveHistoryQuery } from './move-history';
-import { moveHistoryResponseSchema, moveListItemSchema } from './move-history-response';
-import type { MoveHistoryResponse, MoveListItem } from './move-history-response';
+import { moveActorsResponseSchema, moveHistoryResponseSchema, moveListItemSchema } from './move-history-response';
+import type { MoveActorsResponse, MoveHistoryResponse, MoveListItem } from './move-history-response';
 import { MAX_PHOTOS_PER_MOVE, MAX_PIECES_PER_MOVE, MovesService, moveSchema } from './moves.service';
 import type { MoveBody } from './moves.service';
 import {
@@ -37,13 +37,14 @@ import {
   MAX_PIECES,
   WorkOrdersService,
   startGroupSchema,
+  moveActorsQuerySchema,
   moveListQuerySchema,
   stepCountsQuerySchema,
   stepGroupsQuerySchema,
   transitionQuerySchema,
   workOrderQuerySchema,
 } from './work-orders.service';
-import type { MoveListQuery, StepCountsQuery, StepGroupsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
+import type { MoveActorsQuery, MoveListQuery, StepCountsQuery, StepGroupsQuery, TransitionQuery, WorkOrderQuery } from './work-orders.service';
 
 const idSchema = z.uuid();
 
@@ -244,6 +245,25 @@ export class WorkOrdersController {
     @Query(new ZodValidationPipe(moveListQuerySchema)) query: MoveListQuery,
   ): Promise<Page<MoveListItem>> {
     return this.workOrders.moveList(auth, query);
+  }
+
+  @ApiDoc({
+    summary: "Everyone who has made a move, staff and partner people, for History's Person filter.",
+    description:
+      '`workflow_id` keeps the people who moved pieces of any version of that workflow. Sorted by name. `partners` ' +
+      'are the partners the person belongs to now, empty for staff. Deactivated people stay listed, since History ' +
+      'still names them. Not paged. Pass an `id` as `actor_user_id` to `GET /workflow/moves`.',
+    query: moveActorsQuerySchema,
+    response: moveActorsResponseSchema,
+    errors: [400],
+  })
+  @RequirePermission('workflow.read')
+  @Get('moves/actors')
+  moveActors(
+    @CurrentTenant() tenantId: string,
+    @Query(new ZodValidationPipe(moveActorsQuerySchema)) query: MoveActorsQuery,
+  ): Promise<MoveActorsResponse> {
+    return this.workOrders.moveActors(tenantId, query);
   }
 
   @ApiDoc({
