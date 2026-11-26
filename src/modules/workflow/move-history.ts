@@ -153,7 +153,7 @@ export async function listActors(tx: Prisma.TransactionClient, query: MoveActors
   if (moved.length === 0) return [];
   const users = await tx.user.findMany({
     where: { id: { in: moved.map((row) => row.actorUserId) } },
-    select: { id: true, name: true, memberships: { where: { organisationType: 'partner' }, select: { organisationId: true } } },
+    select: { id: true, name: true, kind: true, memberships: { where: { organisationType: 'partner' }, select: { organisationId: true } } },
     orderBy: [{ name: 'asc' }, { id: 'asc' }],
   });
   const partners = await tx.partner.findMany({
@@ -163,7 +163,9 @@ export async function listActors(tx: Prisma.TransactionClient, query: MoveActors
   });
   return users.map((user) => {
     const ids = new Set(user.memberships.map((membership) => membership.organisationId));
-    return { id: user.id, name: user.name, partners: partners.filter((partner) => ids.has(partner.id)) };
+    // Only staff and partner people move pieces; customers never do.
+    const kind = user.kind === 'partner' ? 'partner' : 'staff';
+    return { id: user.id, name: user.name, kind, partners: partners.filter((partner) => ids.has(partner.id)) };
   });
 }
 

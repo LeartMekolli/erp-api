@@ -800,13 +800,14 @@ describe('workflow: production lists', () => {
   interface ActorRow {
     id: string;
     name: string;
+    kind: 'staff' | 'partner';
     partners: { id: string; name: string }[];
   }
   /** Everyone who has moved, as History's Person filter reads them. */
   const actorsOf = async (client: Client, query = '') => {
     const res = await client.get(`/workflow/moves/actors${query}`).expect(200);
     expectDocumented(moveActorsResponseSchema, res.body);
-    return (res.body as { items: ActorRow[] }).items;
+    return (res.body as { data: ActorRow[] }).data;
   };
 
   it('lists everyone who has moved, staff and partner people, with their partners', async () => {
@@ -830,8 +831,8 @@ describe('workflow: production lists', () => {
     const reader = await w.holding(['workflow.read']);
     expect(await actorsOf(reader)).toEqual(
       [
-        { id: owner.id, name: owner.name, partners: [] },
-        { id: partnerPerson.id, name: partnerPerson.name, partners: [{ id: w.castco.id, name: 'CastCo' }] },
+        { id: owner.id, name: owner.name, kind: 'staff', partners: [] },
+        { id: partnerPerson.id, name: partnerPerson.name, kind: 'partner', partners: [{ id: w.castco.id, name: 'CastCo' }] },
       ].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
     );
 
@@ -846,6 +847,10 @@ describe('workflow: production lists', () => {
       { id: w.castco.id, name: 'CastCo' },
       { id: w.metalworks.id, name: 'MetalWorks' },
     ]);
+
+    // Removed from every partner: no partners, but still a partner's person, not staff.
+    await prisma.inTenant(w.id, (tx) => tx.organisationMembership.deleteMany({ where: { userId: partnerPerson.id, organisationType: 'partner' } }));
+    expect((await actorsOf(w.staff)).find((actor) => actor.id === partnerPerson.id)).toMatchObject({ kind: 'partner', partners: [] });
   });
 
   it('narrows the people who moved to one workflow', async () => {

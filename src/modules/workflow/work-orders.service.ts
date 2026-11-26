@@ -78,6 +78,8 @@ export const stepGroupsQuerySchema = pieceFilterSchema.extend({
 export type StepGroupsQuery = z.infer<typeof stepGroupsQuerySchema>;
 
 const NO_DUE_DATE = 'none';
+/** What a cursor through one move's rows carries, in piece order, so a newest-first cursor is refused. */
+const PIECE_ORDER_CURSOR = 'move_pieces';
 const byDue = (sort: PieceSort) => sort === 'due_on' || sort === '-due_on';
 const asDay = (day: string) => new Date(`${day}T00:00:00Z`);
 const dayOf = (date: Date | null) => (date ? date.toISOString().slice(0, 10) : NO_DUE_DATE);
@@ -692,12 +694,24 @@ export class WorkOrdersService {
   async transitions(tenantId: string, query: TransitionQuery): Promise<Page<TransitionListItem>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
-    // A transitions cursor carries the row's id alone; one with a sort is another list's.
-    if (after?.sort !== undefined) throw new BadRequestException('Invalid cursor: made for another list');
+    // One move's rows are in piece order, so its cursor carries the piece's number as `rank`; every other
+    // query is newest first, and its cursor carries the row's id alone.
+    const byPiece = query.move_id !== undefined;
+    let page: Prisma.TransitionWhereInput = {};
+    if (after) {
+      const { id, rank, sort } = after;
+      if (byPiece && sort === PIECE_ORDER_CURSOR && rank !== undefined) {
+        page = { OR: [{ workOrder: { number: { gt: rank } } }, { workOrder: { number: rank }, id: { gt: id } }] };
+      } else if (!byPiece && sort === undefined) {
+        page = { id: { lt: id } };
+      } else {
+        throw new BadRequestException('Invalid cursor: made for another list');
+      }
+    }
     return this.prisma.inTenant(tenantId, async (tx) => {
       const rows = await tx.transition.findMany({
-        where: { ...transitionFilters(query), ...(after ? { id: { lt: after.id } } : {}) },
-        orderBy: { id: 'desc' },
+        where: { AND: [transitionFilters(query), page] },
+        orderBy: byPiece ? [{ workOrder: { number: 'asc' } }, { id: 'asc' }] : { id: 'desc' },
         take: query.limit + 1,
         include: { ...transitionInclude, workOrder: { select: { id: true, number: true, group: { select: { quantity: true } } } } },
       });
@@ -708,14 +722,17 @@ export class WorkOrdersService {
           ...toTransition(row),
           work_order: { id: row.workOrder.id, label: `${row.workOrder.number}/${row.workOrder.group.quantity}` },
         })),
-        next_cursor: rows.length > query.limit && last ? encodeCursor({ id: last.id }, secret) : null,
+        next_cursor:
+          rows.length > query.limit && last
+            ? encodeCursor(byPiece ? { id: last.id, sort: PIECE_ORDER_CURSOR, rank: last.workOrder.number } : { id: last.id }, secret)
+            : null,
       };
     });
   }
 
   /** Everyone who has made a move, for History's Person filter. */
   moveActors(tenantId: string, query: MoveActorsQuery): Promise<MoveActorsResponse> {
-    return this.prisma.inTenant(tenantId, async (tx) => ({ items: await listActors(tx, query) }));
+    return this.prisma.inTenant(tenantId, async (tx) => ({ data: await listActors(tx, query) }));
   }
 
   /**
