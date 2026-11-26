@@ -6,7 +6,7 @@ import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import {
-  customerInvitationResponseSchema,
+  customerInvitationSentResponseSchema,
   customerMemberResponseSchema,
   customerSiteResponseSchema,
 } from '../src/modules/customers/customer-response';
@@ -63,7 +63,8 @@ describe('customers: people and invitations', () => {
 
   async function invite(tenant: Tenant, customerId: string, email: string, role: string): Promise<string> {
     const response = await tenant.owner.post(`/customers/${customerId}/invitations`, { email, role }).expect(201);
-    expectDocumented(customerInvitationResponseSchema, response.body);
+    expectDocumented(customerInvitationSentResponseSchema, response.body);
+    expect(response.body).toMatchObject({ email, role, email_status: 'queued' });
     const notice = notifier.lastCustomerInvitationFor(email);
     if (!notice) throw new Error(`no customer invitation captured for ${email}`);
     return notice.token;

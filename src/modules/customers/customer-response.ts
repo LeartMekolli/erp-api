@@ -55,6 +55,29 @@ export const customerInvitationResponseSchema = z.strictObject({
 });
 export type CustomerInvitationResponse = z.infer<typeof customerInvitationResponseSchema>;
 
+/**
+ * What became of an invitation's email once the invitation was saved. The email is sent by a
+ * background worker, so even `queued` does not say it reached the inbox:
+ * - `queued`: stored and queued; the worker sends it and retries a failed send.
+ * - `no_customer_site`: not sent; customer emails link to the workspace's customer site and it has none.
+ * - `failed`: not sent; raising the email failed after the invitation was saved.
+ * Inviting the same email again replaces the invitation and tries the email again.
+ */
+export const INVITATION_EMAIL_STATUSES = ['queued', 'no_customer_site', 'failed'] as const;
+export type InvitationEmailStatus = (typeof INVITATION_EMAIL_STATUSES)[number];
+
+/** An invitation staff just made, with what became of its email. */
+export const customerInvitationSentResponseSchema = customerInvitationResponseSchema.extend({
+  email_status: z.enum(INVITATION_EMAIL_STATUSES),
+});
+export type CustomerInvitationSentResponse = z.infer<typeof customerInvitationSentResponseSchema>;
+
+/** POST /customers: the customer, and the first invitation if the body asked for one (else null). */
+export const createdCustomerResponseSchema = customerResponseSchema.extend({
+  invitation: customerInvitationSentResponseSchema.nullable(),
+});
+export type CreatedCustomerResponse = z.infer<typeof createdCustomerResponseSchema>;
+
 /** A person who acts for a customer, with their role there. */
 export const customerMemberResponseSchema = z.strictObject({
   user_id: z.uuid(),

@@ -5,7 +5,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
-import { customerResponseSchema } from '../src/modules/customers/customer-response';
+import { createdCustomerResponseSchema, customerResponseSchema } from '../src/modules/customers/customer-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { hashPassword } from '../src/modules/identity/passwords';
 import { expectDocumented } from './documented';
@@ -67,8 +67,9 @@ describe('customers: organisations managed by staff', () => {
     ).id;
 
     const created = await tenant.owner.post('/customers', { name: 'Luna Jewels', customer_group_id: trade }).expect(201);
-    expectDocumented(customerResponseSchema, created.body);
+    expectDocumented(createdCustomerResponseSchema, created.body);
     expect(created.body).toMatchObject({
+      invitation: null,
       name: 'Luna Jewels',
       status: 'active',
       customer_group: { id: trade, key: 'trade', name: 'Trade' },
@@ -84,7 +85,9 @@ describe('customers: organisations managed by staff', () => {
     expect(customers.map((customer) => customer.name)).toEqual(['Mira Studio', 'Luna Jewels']);
 
     const read = await tenant.owner.get(`/customers/${luna}`).expect(200);
-    expect(read.body).toEqual(created.body);
+    // The read is the customer alone; only the create adds `invitation`.
+    const { invitation: _invitation, ...customer } = created.body as { invitation: null };
+    expect(read.body).toEqual(customer);
 
     const disabled = await tenant.owner.patch(`/customers/${luna}`, { status: 'disabled', customer_group_id: null }).expect(200);
     expectDocumented(customerResponseSchema, disabled.body);

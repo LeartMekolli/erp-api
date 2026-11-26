@@ -42,7 +42,11 @@ export interface PartnerInvitationNotice {
 export interface IdentityNotifier {
   invitationCreated(notice: InvitationNotice): Promise<void>;
   passwordResetRequested(notice: PasswordResetNotice): Promise<void>;
-  customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void>;
+  /**
+   * `queued`: stored and queued, the worker sends it (and retries). `no_customer_site`: skipped,
+   * since the link must point at the workspace's customer site and it has none.
+   */
+  customerInvitationCreated(notice: CustomerInvitationNotice): Promise<'queued' | 'no_customer_site'>;
   partnerInvitationCreated(notice: PartnerInvitationNotice): Promise<void>;
 }
 
