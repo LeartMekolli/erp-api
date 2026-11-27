@@ -203,7 +203,10 @@ describe('couriers: labels and tracking', () => {
     expectDocumented(orderResponseSchema, delivered.body);
     expect(delivered.body).toMatchObject({ state: 'delivered', shipping: { delivered_at: expect.any(String), label: { tracking_status: 'delivered' } } });
     expect(await w.raised(placed.id, 'order.delivered')).toHaveLength(1);
-    const audited = await prisma.inTenant(w.id, (tx) => tx.auditEntry.findMany({ where: { action: 'order.changed', subjectId: placed.id } }));
+    // Ordered, or Postgres may return the staff member's ship entry last.
+    const audited = await prisma.inTenant(w.id, (tx) =>
+      tx.auditEntry.findMany({ where: { action: 'order.changed', subjectId: placed.id }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+    );
     expect(audited.at(-1)!.actorType).toBe('system');
 
     // The customer sees how the parcel is doing, never the label's cost.
