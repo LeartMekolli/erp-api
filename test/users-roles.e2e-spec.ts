@@ -167,6 +167,76 @@ describe('users and roles administration', () => {
     });
   });
 
+  describe('privilege', () => {
+    type Tenant = { id: string; ownerId: string; ownerToken: string };
+
+    const createRole = async (tenant: Tenant, name: string, permissions: string[]): Promise<string> =>
+      ((await call('post', '/roles', tenant.ownerToken, { name, permissions }).expect(201)).body as { id: string }).id;
+
+    /** A user holding only a new custom role with exactly these permissions. */
+    async function leadWith(tenant: Tenant, permissions: string[]) {
+      const lead = await createTestUser(prisma, tenant.id, { roles: [] });
+      const leadRole = await createRole(tenant, 'Lead', permissions);
+      await call('put', `/users/${lead.id}/roles`, tenant.ownerToken, { role_ids: [leadRole] }).expect(200);
+      return { id: lead.id, token: await tokenFor(tenant.id, lead.id), roleId: leadRole };
+    }
+
+    it('keeps the owner role out of reach of a non-owner, even for themselves', async () => {
+      const tenant = await freshTenant();
+      const lead = await leadWith(tenant, ['user.read', 'role.read', 'role.assign']);
+      const ownerRole = await roleId(tenant.id, 'owner');
+
+      const response = await call('put', `/users/${lead.id}/roles`, lead.token, {
+        role_ids: [lead.roleId, ownerRole],
+      }).expect(403);
+
+      expect((response.body as { code: string }).code).toBe('owner_only');
+      await expect(roleIdsOf(tenant.id, lead.id)).resolves.toEqual([lead.roleId]);
+    });
+
+    it('refuses adding a role with permissions the caller lacks, and names them', async () => {
+      const tenant = await freshTenant();
+      const lead = await leadWith(tenant, ['user.read', 'role.read', 'role.assign']);
+      const person = await createTestUser(prisma, tenant.id, { roles: [] });
+      const memberRole = await roleId(tenant.id, 'member');
+
+      const response = await call('put', `/users/${person.id}/roles`, lead.token, { role_ids: [memberRole] }).expect(403);
+
+      const body = response.body as { code: string; permissions: string[] };
+      expect(body.code).toBe('exceeds_own_permissions');
+      expect(body.permissions).toContain('order.write');
+      await expect(roleIdsOf(tenant.id, person.id)).resolves.toEqual([]);
+    });
+
+    it("lets the caller add a role they can cover but not take away one they can't", async () => {
+      const tenant = await freshTenant();
+      const lead = await leadWith(tenant, ['user.read', 'role.read', 'role.assign', 'order.read']);
+      const packing = await createRole(tenant, 'Packing', ['order.read']);
+      const finance = await createRole(tenant, 'Finance', ['payment.refund']);
+      const person = await createTestUser(prisma, tenant.id, { roles: [] });
+      await call('put', `/users/${person.id}/roles`, tenant.ownerToken, { role_ids: [finance] }).expect(200);
+
+      await call('put', `/users/${person.id}/roles`, lead.token, { role_ids: [finance, packing] }).expect(200);
+      await expect(roleIdsOf(tenant.id, person.id)).resolves.toEqual([finance, packing].sort());
+
+      const response = await call('put', `/users/${person.id}/roles`, lead.token, { role_ids: [packing] }).expect(403);
+
+      expect((response.body as { code: string }).code).toBe('exceeds_own_permissions');
+      await expect(roleIdsOf(tenant.id, person.id)).resolves.toEqual([finance, packing].sort());
+    });
+
+    it('answers 409 last_owner when the only owner loses the owner role', async () => {
+      const tenant = await freshTenant();
+      const memberRole = await roleId(tenant.id, 'member');
+
+      const response = await call('put', `/users/${tenant.ownerId}/roles`, tenant.ownerToken, {
+        role_ids: [memberRole],
+      }).expect(409);
+
+      expect((response.body as { code: string }).code).toBe('last_owner');
+    });
+  });
+
   describe('roles', () => {
     it('lists roles with their permissions', async () => {
       const tenant = await freshTenant();

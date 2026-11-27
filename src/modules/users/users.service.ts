@@ -6,6 +6,7 @@ import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { type RoleRef, assertMayChangeRoles, callerIsOwner } from '../identity/grants';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UserResponse, toUserResponse } from './user-response';
 
@@ -21,7 +22,7 @@ export async function assertOwnerRemains(tx: Prisma.TransactionClient): Promise<
     where: { status: 'active', roles: { some: { role: { name: 'owner', isSystem: true } } } },
   });
   if (owners === 0) {
-    throw new ConflictException('A tenant must keep at least one active owner');
+    throw new ConflictException({ code: 'last_owner', message: 'A tenant must keep at least one active owner' });
   }
 }
 
@@ -104,6 +105,22 @@ export class UsersService {
         .map((row) => row.roleId)
         .sort();
       const after = [...roleIds].sort();
+
+      // The privilege rules read each role's permissions from the database, before anything is written.
+      const addedIds = after.filter((id) => !before.includes(id));
+      const removedIds = before.filter((id) => !after.includes(id));
+      const changedRoles = await tx.role.findMany({
+        where: { id: { in: [...addedIds, ...removedIds] } },
+        select: { id: true, name: true, isSystem: true, permissions: { select: { permission: true } } },
+      });
+      const refOf = (id: string): RoleRef => {
+        const role = changedRoles.find((candidate) => candidate.id === id);
+        if (!role) {
+          throw new NotFoundException('Role not found');
+        }
+        return { name: role.name, isSystem: role.isSystem, permissions: role.permissions.map((row) => row.permission) };
+      };
+      assertMayChangeRoles(auth, await callerIsOwner(tx, auth.userId), addedIds.map(refOf), removedIds.map(refOf));
 
       await tx.userRole.deleteMany({ where: { userId } });
       await tx.userRole.createMany({ data: after.map((roleId) => ({ userId, roleId })) });

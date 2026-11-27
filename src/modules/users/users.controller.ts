@@ -60,7 +60,10 @@ export class UsersController {
 
   @ApiDoc({
     summary: "Replace a user's roles.",
-    description: 'Answers the role ids the user now has. Ids must not repeat.',
+    description:
+      'Answers the role ids the user now has. Ids must not repeat. Only an owner may add or remove the owner role (403 `owner_only`). ' +
+      'Every other role added or removed must hold only permissions the caller has (403 `exceeds_own_permissions`, listing the missing ones). ' +
+      'Removing the last active owner is refused (409 `last_owner`).',
     body: setRolesSchema,
     errors: [400, 401, 403, 404, 409],
   })
