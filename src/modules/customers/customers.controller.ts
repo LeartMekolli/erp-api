@@ -81,6 +81,7 @@ export class CustomersController {
     summary: 'Customer organisations, newest first, optionally searched by name or narrowed by status, customer group (or none) or priority band.',
     description:
       '`q` matches any part of the name, in any case. ' +
+      '`name` matches the whole name, in any case but not ignoring accents, for checking a new name against those already used. ' +
       '`band` filters by the band in force: an override through its end date, else the computed band. An unknown group or band is a 400.',
     query: customerListQuerySchema,
     response: pageSchema(customerResponseSchema),
