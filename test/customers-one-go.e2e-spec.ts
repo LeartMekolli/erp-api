@@ -167,6 +167,34 @@ describe('customers: one go, search and choices', () => {
       expect(await names(w, '&q=0_')).toEqual([]);
     });
 
+    it('finds customers by the whole name in any case, older ones past newer partial matches included', async () => {
+      const w = await workspace();
+      await w.staff.post('/customers', { name: 'Luna' }).expect(201);
+      for (let n = 0; n < 3; n++) await w.staff.post('/customers', { name: `Luna ${n}` }).expect(201);
+      await w.staff.post('/customers', { name: 'LUNA' }).expect(201);
+
+      const response = await w.staff.get(`/customers?limit=2&name=${encodeURIComponent('  luna ')}`).expect(200);
+      expectDocumented(pageSchema(customerResponseSchema), response.body);
+      const body = response.body as { data: { name: string }[]; next_cursor: string | null };
+      expect(body.data.map((customer) => customer.name)).toEqual(['LUNA', 'Luna']);
+      expect(body.next_cursor).toBeNull();
+      expect(await names(w, '&name=lun')).toEqual([]);
+      expect(await names(w, '&name=luna&q=UN')).toEqual(['LUNA', 'Luna']);
+    });
+
+    it('matches % and _ in name literally, up to the 200 characters a name may have', async () => {
+      const w = await workspace();
+      const long = 'A'.repeat(199) + '%';
+      await w.staff.post('/customers', { name: '100% Gold' }).expect(201);
+      await w.staff.post('/customers', { name: '1000 Gold' }).expect(201);
+      await w.staff.post('/customers', { name: long }).expect(201);
+      expect(await names(w, `&name=${encodeURIComponent('100% gold')}`)).toEqual(['100% Gold']);
+      expect(await names(w, `&name=${encodeURIComponent('100_ Gold')}`)).toEqual([]);
+      expect(await names(w, `&name=${encodeURIComponent(long.toLowerCase())}`)).toEqual([long]);
+      await w.staff.get(`/customers?name=${'a'.repeat(201)}`).expect(400);
+      await w.staff.get('/customers?name=%20').expect(400);
+    });
+
     it('refuses a q over 100 characters and an unknown status', async () => {
       const w = await workspace();
       await w.staff.get(`/customers?q=${'a'.repeat(101)}`).expect(400);

@@ -92,6 +92,8 @@ export const customerListQuerySchema = paginationQuerySchema.extend({
   band: keySchema.optional(),
   /** Any part of the name, in any case. */
   q: z.string().trim().min(1).max(100).optional(),
+  /** The whole name, in any case, so a new customer can be checked for a name already used. */
+  name: nameSchema.optional(),
   status: z.enum(['active', 'disabled']).optional(),
 });
 export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
@@ -222,7 +224,11 @@ export class CustomersService {
           ...(after ? { id: { lt: after.id } } : {}),
           ...(query.customer_group ? { customerGroupId: query.customer_group === 'none' ? null : query.customer_group } : {}),
           ...(query.band ? bandWhere(query.band, context.today, context.settings) : {}),
-          ...(query.q ? { name: { contains: likeLiteral(query.q), mode: 'insensitive' as const } } : {}),
+          // Prisma's insensitive `equals` is an ILIKE on Postgres, so `name` is escaped like `q`.
+          AND: [
+            ...(query.q ? [{ name: { contains: likeLiteral(query.q), mode: 'insensitive' as const } }] : []),
+            ...(query.name ? [{ name: { equals: likeLiteral(query.name), mode: 'insensitive' as const } }] : []),
+          ],
           ...(query.status ? { status: query.status } : {}),
         },
         orderBy: { id: 'desc' },
