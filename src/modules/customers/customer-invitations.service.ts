@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
@@ -9,7 +9,7 @@ import { INVITATION_DAYS } from '../identity/invitations';
 import { issueOpaqueToken, parseOpaqueToken } from '../identity/opaque-token';
 import { hashPassword } from '../identity/passwords';
 import { planOf } from '../payments/plans/plan-of';
-import type { CustomerInvitationResponse } from './customer-response';
+import type { CustomerInvitationResponse, CustomerInvitationSentResponse, InvitationEmailStatus } from './customer-response';
 import type { CustomerRole } from './customer-roles';
 import { lockCustomer } from './lock-customer';
 
@@ -70,6 +70,8 @@ export interface AcceptCredentials {
 /** Inviting people to act for a customer, and accepting (Customers spec, goals 2–4). */
 @Injectable()
 export class CustomerInvitationsService {
+  private readonly logger = new Logger(CustomerInvitationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly google: GoogleIdentityService,
@@ -142,9 +144,35 @@ export class CustomerInvitationsService {
     };
   }
 
+  /**
+   * `invite` for staff, answering what became of the email. The invitation is saved by then, so a
+   * failing email is logged and answered as `failed`, never a 500: a retry would make another invitation.
+   */
+  async inviteAndReport(
+    tenantId: string,
+    customerId: string,
+    input: { email: string; role: CustomerRole; invitedByUserId: string | null },
+  ): Promise<CustomerInvitationSentResponse> {
+    const pending = await this.prisma.inTenant(tenantId, (tx) => this.inviteIn(tx, tenantId, customerId, input));
+    return { ...pending.response, email_status: await this.sendAndReport(pending.notice, customerId) };
+  }
+
   /** The invitation email; only after the invitation's transaction has committed. */
   async send(notice: CustomerInvitationNotice): Promise<void> {
     await this.notifier.customerInvitationCreated(notice);
+  }
+
+  /** `send`, answering what became of the email instead of throwing; a failure is logged. */
+  async sendAndReport(notice: CustomerInvitationNotice, customerId: string): Promise<InvitationEmailStatus> {
+    try {
+      return await this.notifier.customerInvitationCreated(notice);
+    } catch (error) {
+      this.logger.error(
+        { err: error, tenantId: notice.tenantId, customerId, invitationId: notice.invitationId },
+        'a customer invitation email failed',
+      );
+      return 'failed';
+    }
   }
 
   /**

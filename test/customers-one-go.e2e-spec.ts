@@ -8,8 +8,10 @@ import { pageSchema } from '../src/common/pagination/page';
 import { PrismaService } from '../src/database/prisma.service';
 import { customerAddressesResponseSchema } from '../src/modules/customers/addresses';
 import {
+  createdCustomerResponseSchema,
   customerBandChoicesSchema,
   customerGroupChoicesSchema,
+  customerInvitationSentResponseSchema,
   customerResponseSchema,
 } from '../src/modules/customers/customer-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
@@ -22,7 +24,9 @@ import { createTestTenant, createTestUser, deleteTestTenants } from './factories
 class FailingOnceNotifier extends CapturingIdentityNotifier {
   failNext = false;
 
-  override customerInvitationCreated(notice: Parameters<CapturingIdentityNotifier['customerInvitationCreated']>[0]): Promise<void> {
+  override customerInvitationCreated(
+    notice: Parameters<CapturingIdentityNotifier['customerInvitationCreated']>[0],
+  ): ReturnType<CapturingIdentityNotifier['customerInvitationCreated']> {
     if (this.failNext) {
       this.failNext = false;
       return Promise.reject(new Error('the mail server is down'));
@@ -185,18 +189,27 @@ describe('customers: one go, search and choices', () => {
           invitation: { email, role: 'owner' },
         })
         .expect(201);
-      expectDocumented(customerResponseSchema, res.body);
+      expectDocumented(createdCustomerResponseSchema, res.body);
+      const notice = notifier.lastCustomerInvitationFor(email);
       expect(res.body).toMatchObject({
         name: 'Luna Jewels',
         may_pick_partner: true,
         customer_group: { id: w.retail },
         payment_terms: { terms: 'pay_later', days_to_pay: 30, credit_limit: '5000.00' },
+        invitation: { id: notice?.invitationId, email, role: 'owner', expires_at: expect.any(String), email_status: 'queued' },
       });
 
       const addresses = await w.staff.get(`/customers/${id(res)}/addresses`).expect(200);
       expectDocumented(customerAddressesResponseSchema, addresses.body);
       expect(addresses.body).toEqual({ shipping_address: STUDIO, billing_address: null, vat_number: 'DE123456789' });
       expect(notifier.lastCustomerInvitationFor(email)).toMatchObject({ tenantId: w.id, customerName: 'Luna Jewels' });
+    });
+
+    it('answers a null invitation when the body asks for none', async () => {
+      const w = await workspace();
+      const res = await w.staff.post('/customers', { name: 'Uninvited Co' }).expect(201);
+      expectDocumented(createdCustomerResponseSchema, res.body);
+      expect((res.body as { invitation: unknown }).invitation).toBeNull();
     });
 
     it('records the same audit entries as the separate routes', async () => {
@@ -236,14 +249,33 @@ describe('customers: one go, search and choices', () => {
       expect(await names(w, '&q=Later')).toEqual([]);
     });
 
-    it('answers 201 when the invitation email fails after the customer is saved, so a retry makes no second customer', async () => {
+    it('answers 201 with email_status failed when the invitation email fails after the customer is saved', async () => {
       const w = await workspace();
+      const email = `ben-${newId()}@luna.example.test`;
       notifier.failNext = true;
-      const res = await w.staff
-        .post('/customers', { name: 'Mailless Co', invitation: { email: `ben-${newId()}@luna.example.test`, role: 'owner' } })
-        .expect(201);
-      expect(res.body).toMatchObject({ name: 'Mailless Co' });
+      const res = await w.staff.post('/customers', { name: 'Mailless Co', invitation: { email, role: 'owner' } }).expect(201);
+      expectDocumented(createdCustomerResponseSchema, res.body);
+      expect(res.body).toMatchObject({ name: 'Mailless Co', invitation: { email, role: 'owner', email_status: 'failed' } });
       expect(await names(w, '&q=Mailless')).toEqual(['Mailless Co']);
+    });
+
+    it('answers 201 with email_status failed when a staff invitation email fails, the invitation saved', async () => {
+      const w = await workspace();
+      const customer = id(await w.staff.post('/customers', { name: 'Resend Co' }).expect(201));
+      const email = `cleo-${newId()}@luna.example.test`;
+      notifier.failNext = true;
+      const failed = await w.staff.post(`/customers/${customer}/invitations`, { email, role: 'buyer' }).expect(201);
+      expectDocumented(customerInvitationSentResponseSchema, failed.body);
+      expect(failed.body).toMatchObject({ email, role: 'buyer', email_status: 'failed' });
+      const saved = await prisma.inTenant(w.id, (tx) =>
+        tx.customerInvitation.count({ where: { id: (failed.body as { id: string }).id } }),
+      );
+      expect(saved).toBe(1);
+
+      // Inviting the same email again is how staff send it again.
+      const again = await w.staff.post(`/customers/${customer}/invitations`, { email, role: 'buyer' }).expect(201);
+      expect(again.body).toMatchObject({ email, email_status: 'queued' });
+      expect(notifier.lastCustomerInvitationFor(email)?.invitationId).toBe((again.body as { id: string }).id);
     });
 
     it('saves nothing and sends nothing when the invitation is refused', async () => {

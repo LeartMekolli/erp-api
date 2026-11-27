@@ -18,6 +18,7 @@ import { planOf } from '../payments/plans/plan-of';
 import { keySchema } from '../pricing/decimals';
 import { SettingsService } from '../settings/settings.service';
 import type {
+  CreatedCustomerResponse,
   CustomerBandChoices,
   CustomerGroupChoices,
   CustomerMemberResponse,
@@ -150,9 +151,10 @@ export class CustomersService {
   /**
    * The customer and whatever else the body names (addresses, payment terms, a first invitation), in
    * one transaction: all saved or none. The address hooks and the invitation email run after it commits;
-   * the email failing then is logged, not answered, since the customer exists and a retry would make another.
+   * the email failing then is answered as the invitation's `email_status`, never an error, since the
+   * customer exists and a retry would make another.
    */
-  async create(auth: TenantAuth, input: CreateCustomer): Promise<CustomerResponse> {
+  async create(auth: TenantAuth, input: CreateCustomer): Promise<CreatedCustomerResponse> {
     if (input.payment_terms && !auth.permissions.has('payment.write')) {
       throw new ForbiddenException('Setting payment terms needs payment.write');
     }
@@ -190,15 +192,12 @@ export class CustomersService {
       return { created: input.payment_terms ? await this.toResponse(tx, await this.find(tx, row.id)) : snapshot, invitation };
     });
     if (hasAddresses) await this.addresses.afterChange(auth.tenantId, created.id);
-    if (invitation) {
-      await this.invitations.send(invitation.notice).catch((error: unknown) =>
-        this.logger.error(
-          { err: error, tenantId: auth.tenantId, customerId: created.id, invitationId: invitation.notice.invitationId },
-          'the invitation email of a new customer failed',
-        ),
-      );
-    }
-    return created;
+    return {
+      ...created,
+      invitation: invitation
+        ? { ...invitation.response, email_status: await this.invitations.sendAndReport(invitation.notice, created.id) }
+        : null,
+    };
   }
 
   async list(tenantId: string, query: CustomerListQuery): Promise<Page<CustomerResponse>> {

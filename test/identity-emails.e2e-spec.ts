@@ -8,8 +8,10 @@ import { newId } from '../src/common/ids/uuid';
 import { LOG_DESTINATION } from '../src/common/logging/logging.module';
 import { PinoLoggerService } from '../src/common/logging/pino-logger.service';
 import { PrismaService } from '../src/database/prisma.service';
+import { createdCustomerResponseSchema } from '../src/modules/customers/customer-response';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 import { waitForMessage } from './mailpit';
 import { waitFor } from './wait-for';
@@ -166,13 +168,43 @@ describe('identity emails', () => {
       const tenant = await freshTenant();
       await prisma.tenant.update({ where: { id: tenant.id }, data: { customerSiteOrigin: 'https://shop.example.test' } });
       const email = `customer-${newId()}@example.test`;
-      await http()
+      const invited = await http()
         .post(`/customers/${await customerIn(tenant)}/invitations`)
         .set(authed(tenant.ownerToken))
         .send({ email, role: 'buyer' })
         .expect(201);
 
+      expect((invited.body as { email_status: string }).email_status).toBe('queued');
       expect((await waitForMessage(email)).text).toContain('https://shop.example.test/accept-invitation#token=');
+    });
+
+    it("a new customer's first invitation answers queued, and its email links to the customer site", async () => {
+      const tenant = await freshTenant();
+      await prisma.tenant.update({ where: { id: tenant.id }, data: { customerSiteOrigin: 'https://shop.example.test' } });
+      const email = `customer-${newId()}@example.test`;
+      const created = await http()
+        .post('/customers')
+        .set(authed(tenant.ownerToken))
+        .send({ name: 'Luna Jewels', invitation: { email, role: 'owner' } })
+        .expect(201);
+
+      expectDocumented(createdCustomerResponseSchema, created.body);
+      expect((created.body as { invitation: unknown }).invitation).toMatchObject({ email, role: 'owner', email_status: 'queued' });
+      expect((await waitForMessage(email)).text).toContain('https://shop.example.test/accept-invitation#token=');
+    });
+
+    it("without a customer site, a new customer's first invitation answers no_customer_site and no email goes out", async () => {
+      const tenant = await freshTenant();
+      const email = `customer-${newId()}@example.test`;
+      const created = await http()
+        .post('/customers')
+        .set(authed(tenant.ownerToken))
+        .send({ name: 'Luna Jewels', invitation: { email, role: 'owner' } })
+        .expect(201);
+
+      expectDocumented(createdCustomerResponseSchema, created.body);
+      expect((created.body as { invitation: unknown }).invitation).toMatchObject({ email, role: 'owner', email_status: 'no_customer_site' });
+      expect(await raised(tenant.id, 'customer.invited')).toBe(0);
     });
 
     it('without a customer site, an invitation is made but no email goes out, never one into the staff app', async () => {
@@ -185,6 +217,7 @@ describe('identity emails', () => {
         .expect(201);
       const invitationId = (invited.body as { id: string }).id;
 
+      expect((invited.body as { email_status: string }).email_status).toBe('no_customer_site');
       expect(await raised(tenant.id, 'customer.invited')).toBe(0);
       expect(lines.some((line) => line.includes('no customer site') && line.includes(invitationId))).toBe(true);
     });

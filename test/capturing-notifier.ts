@@ -23,9 +23,9 @@ export class CapturingIdentityNotifier implements IdentityNotifier {
     return Promise.resolve();
   }
 
-  customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void> {
+  customerInvitationCreated(notice: CustomerInvitationNotice): Promise<'queued' | 'no_customer_site'> {
     this.customerInvitations.push(notice);
-    return Promise.resolve();
+    return Promise.resolve('queued');
   }
 
   partnerInvitationCreated(notice: PartnerInvitationNotice): Promise<void> {

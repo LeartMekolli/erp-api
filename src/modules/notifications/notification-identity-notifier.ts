@@ -61,11 +61,11 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
     });
   }
 
-  async customerInvitationCreated(notice: CustomerInvitationNotice): Promise<void> {
+  async customerInvitationCreated(notice: CustomerInvitationNotice): Promise<'queued' | 'no_customer_site'> {
     const tenant = await this.tenant(notice.tenantId);
     const link = this.customerLink(tenant, '/accept-invitation', notice.token, `customer invitation ${notice.invitationId}`);
     if (!link) {
-      return;
+      return 'no_customer_site';
     }
     await this.notifications.raise(
       notice.tenantId,
@@ -77,6 +77,7 @@ export class NotificationIdentityNotifier implements IdentityNotifier {
         link,
       },
     );
+    return 'queued';
   }
 
   /** Partner people work in the web app, as staff do, until a partner site exists. */
