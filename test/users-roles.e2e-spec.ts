@@ -6,6 +6,8 @@ import { configureApp } from '../src/bootstrap';
 import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
+import { permissionListResponseSchema } from '../src/modules/identity/permission-catalogue';
+import { roleListResponseSchema, roleResponseSchema } from '../src/modules/roles/role-response';
 import { staffUserListResponseSchema } from '../src/modules/users/user-response';
 import { expectDocumented } from './documented';
 import { TEST_PASSWORD, createTestTenant, createTestUser, deleteTestTenants } from './factories';
@@ -507,6 +509,148 @@ describe('users and roles administration', () => {
         name: 'Sneaky',
         permissions: ['platform.tenant.create'],
       }).expect(400);
+    });
+
+    const giveRole = (tenantId: string, userId: string, roleIdToGive: string) =>
+      prisma.inTenant(tenantId, (tx) => tx.userRole.create({ data: { userId, roleId: roleIdToGive } }));
+
+    const invite = (tenantId: string, roleIdToInvite: string, data: Record<string, unknown> = {}) =>
+      prisma.inTenant(tenantId, (tx) =>
+        tx.invitation.create({
+          data: {
+            email: `invited-${newId()}@example.test`,
+            roleId: roleIdToInvite,
+            tokenHash: newId(),
+            expiresAt: new Date(Date.now() + 86_400_000),
+            ...data,
+          },
+        }),
+      );
+
+    const codeOf = (response: { body: unknown }) => (response.body as { code: string }).code;
+
+    it('counts active members and waiting invitations of each role', async () => {
+      const tenant = await freshTenant();
+      const packing = await createRole(tenant, 'Packing', ['order.read']);
+      const active = await createTestUser(prisma, tenant.id, { roles: [] });
+      const gone = await createTestUser(prisma, tenant.id, { roles: [], status: 'deactivated' });
+      await giveRole(tenant.id, active.id, packing);
+      await giveRole(tenant.id, gone.id, packing);
+      await invite(tenant.id, packing);
+      await invite(tenant.id, packing, { expiresAt: new Date(Date.now() - 86_400_000) });
+      await invite(tenant.id, packing, { cancelledAt: new Date() });
+
+      const response = await call('get', '/roles', tenant.ownerToken).expect(200);
+
+      expectDocumented(roleListResponseSchema, response.body);
+      const roles = (response.body as { data: { id: string; members_count: number; invitations_count: number }[] }).data;
+      expect(roles.find((role) => role.id === packing)).toMatchObject({ members_count: 1, invitations_count: 1 });
+      const owner = await roleId(tenant.id, 'owner');
+      expect(roles.find((role) => role.id === owner)).toMatchObject({ members_count: 1, invitations_count: 0 });
+    });
+
+    it("refuses creating, changing and deleting roles beyond the caller's own permissions", async () => {
+      const tenant = await freshTenant();
+      const lead = await leadWith(tenant, ['role.read', 'role.write', 'order.read']);
+
+      const created = await call('post', '/roles', lead.token, { name: 'Packing', permissions: ['order.read'] }).expect(201);
+      expectDocumented(roleResponseSchema, created.body);
+      const refused = await call('post', '/roles', lead.token, { name: 'Finance', permissions: ['payment.refund'] }).expect(403);
+      expect(codeOf(refused)).toBe('exceeds_own_permissions');
+
+      const mixed = await createRole(tenant, 'Mixed', ['order.read', 'payment.refund']);
+      const swapped = await call('put', `/roles/${mixed}/permissions`, lead.token, { permissions: ['payment.refund'] }).expect(200);
+      expect((swapped.body as { permissions: string[] }).permissions).toEqual(['payment.refund']);
+
+      const emptied = await call('put', `/roles/${mixed}/permissions`, lead.token, { permissions: [] }).expect(403);
+      expect(codeOf(emptied)).toBe('exceeds_own_permissions');
+      const deleted = await call('delete', `/roles/${mixed}`, lead.token).expect(403);
+      expect(codeOf(deleted)).toBe('exceeds_own_permissions');
+
+      await call('delete', `/roles/${mixed}`, tenant.ownerToken).expect(204);
+    });
+
+    it("refuses deleting a role that is someone's only role, deactivated people included", async () => {
+      const tenant = await freshTenant();
+      const only = await createRole(tenant, 'Only', ['order.read']);
+      const person = await createTestUser(prisma, tenant.id, { roles: [], status: 'deactivated' });
+      await giveRole(tenant.id, person.id, only);
+
+      const response = await call('delete', `/roles/${only}`, tenant.ownerToken).expect(409);
+
+      expect(response.body).toMatchObject({
+        code: 'only_role',
+        people: [{ id: person.id, name: 'Test User', status: 'deactivated' }],
+      });
+      await expect(roleIdsOf(tenant.id, person.id)).resolves.toEqual([only]);
+    });
+
+    it('deletes a role everyone also has another role for, cancelling its waiting invitation and auditing the count', async () => {
+      const tenant = await freshTenant();
+      const shared = await createRole(tenant, 'Shared', ['order.read']);
+      const other = await createRole(tenant, 'Other', ['user.read']);
+      const person = await createTestUser(prisma, tenant.id, { roles: [], status: 'deactivated' });
+      await giveRole(tenant.id, person.id, shared);
+      await giveRole(tenant.id, person.id, other);
+      const waiting = await invite(tenant.id, shared);
+      await invite(tenant.id, shared, { expiresAt: new Date(Date.now() - 86_400_000) });
+
+      await call('delete', `/roles/${shared}`, tenant.ownerToken).expect(204);
+
+      await expect(roleIdsOf(tenant.id, person.id)).resolves.toEqual([other]);
+      await prisma.inTenant(tenant.id, async (tx) => {
+        expect(await tx.invitation.findUnique({ where: { id: waiting.id } })).toBeNull();
+        const entry = await tx.auditEntry.findFirstOrThrow({ where: { subjectId: shared, action: 'role.deleted' } });
+        expect(entry.before).toMatchObject({ name: 'Shared', invitations_cancelled: 1 });
+      });
+    });
+
+    it('refuses changing, renaming and deleting a system role with system_role', async () => {
+      const tenant = await freshTenant();
+      const member = await roleId(tenant.id, 'member');
+
+      const changed = await call('put', `/roles/${member}/permissions`, tenant.ownerToken, { permissions: [] }).expect(409);
+      const renamed = await call('patch', `/roles/${member}`, tenant.ownerToken, { name: 'Staff' }).expect(409);
+      const deleted = await call('delete', `/roles/${member}`, tenant.ownerToken).expect(409);
+
+      expect([codeOf(changed), codeOf(renamed), codeOf(deleted)]).toEqual(['system_role', 'system_role', 'system_role']);
+    });
+
+    it("renames a role, auditing it, and refuses another role's name", async () => {
+      const tenant = await freshTenant();
+      const packing = await createRole(tenant, 'Packing', ['order.read']);
+      await createRole(tenant, 'Finance', []);
+
+      const renamed = await call('patch', `/roles/${packing}`, tenant.ownerToken, { name: '  Dispatch ' }).expect(200);
+      expectDocumented(roleResponseSchema, renamed.body);
+      expect(renamed.body).toMatchObject({ id: packing, name: 'Dispatch', permissions: ['order.read'] });
+
+      const taken = await call('patch', `/roles/${packing}`, tenant.ownerToken, { name: 'Finance' }).expect(409);
+      expect(codeOf(taken)).toBe('name_taken');
+      await call('patch', `/roles/${packing}`, tenant.ownerToken, { name: 'Dispatch' }).expect(200);
+      await call('patch', `/roles/${packing}`, tenant.ownerToken, { name: '' }).expect(400);
+
+      const entries = await prisma.inTenant(tenant.id, (tx) =>
+        tx.auditEntry.findMany({ where: { subjectId: packing, action: 'role.renamed' } }),
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ before: { name: 'Packing' }, after: { name: 'Dispatch' } });
+    });
+  });
+
+  describe('permissions', () => {
+    it('describes all 40 permissions to a member and refuses an accountant', async () => {
+      const tenant = await freshTenant();
+      const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+      const accountant = await createTestUser(prisma, tenant.id, { roles: ['accountant'] });
+
+      const response = await call('get', '/permissions', await tokenFor(tenant.id, member.id)).expect(200);
+      expectDocumented(permissionListResponseSchema, response.body);
+      const rows = (response.body as { data: { key: string; area: { key: string } }[] }).data;
+      expect(rows).toHaveLength(40);
+      expect(rows[0]).toMatchObject({ key: 'settings.read', area: { key: 'settings', name: 'Settings' } });
+
+      await call('get', '/permissions', await tokenFor(tenant.id, accountant.id)).expect(403);
     });
   });
 
