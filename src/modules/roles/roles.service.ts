@@ -188,12 +188,22 @@ export class RolesService {
         where: { roleId: { in: roleIds }, user: { status: 'active' } },
         _count: { userId: true },
       }),
-      tx.invitation.groupBy({
-        by: ['roleId'],
+      tx.invitation.findMany({
         where: { roleId: { in: roleIds }, ...waitingInvitation(new Date()) },
-        _count: { id: true },
+        select: { roleId: true, email: true },
       }),
     ]);
+    // An invitation whose email now belongs to a staff user is hidden from the invitations list, so it isn't counted.
+    const staffEmails = new Set(
+      invitations.length === 0
+        ? []
+        : (
+            await tx.user.findMany({
+              where: { kind: 'staff', email: { in: [...new Set(invitations.map((row) => row.email))] } },
+              select: { email: true },
+            })
+          ).map((row) => row.email),
+    );
     const counts = new Map<string, { members: number; invitations: number }>();
     for (const id of roleIds) {
       counts.set(id, { members: 0, invitations: 0 });
@@ -204,7 +214,7 @@ export class RolesService {
     }
     for (const row of invitations) {
       const entry = counts.get(row.roleId);
-      if (entry) entry.invitations = row._count.id;
+      if (entry && !staffEmails.has(row.email)) entry.invitations++;
     }
     return counts;
   }

@@ -41,10 +41,12 @@ describe('staff demo seed', () => {
     expect(await seedStaff(prisma, tenant.id, { actingUserId: acting.id, password: PASSWORD })).toEqual({
       counts: { skills: 1, members: 1, people: 2, invitations: 2, roles: 1 },
       password: PASSWORD,
+      created: ['floor@demo.example.test', 'lead@demo.example.test', 'former@demo.example.test'],
     });
     expect(await seedStaff(prisma, tenant.id, { actingUserId: acting.id })).toEqual({
       counts: { skills: 0, members: 0, people: 0, invitations: 0, roles: 0 },
       password: null,
+      created: [],
     });
 
     const { floor, held } = await prisma.inTenant(tenant.id, async (tx) => ({

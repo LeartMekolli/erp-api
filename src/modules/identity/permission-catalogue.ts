@@ -274,14 +274,14 @@ export const PERMISSION_CATALOGUE = {
     name: 'Manage plans and credits',
     description: 'Lets someone change plans, credit packs and campaigns.',
     sensitive: true,
-    requires: [],
+    requires: ['payment.read'],
   },
   'credit.grant': {
     area: 'payments',
     name: 'Grant credits',
     description: 'Lets someone give a customer credits by hand, with a reason; every grant is audited.',
     sensitive: true,
-    requires: [],
+    requires: ['payment.read'],
   },
   'report.read': {
     area: 'reports',

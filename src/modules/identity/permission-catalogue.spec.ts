@@ -15,6 +15,11 @@ describe('permission catalogue', () => {
     }
   });
 
+  it('requires payment.read for the plan and credit actions', () => {
+    expect(PERMISSION_CATALOGUE['plan.write'].requires).toEqual(['payment.read']);
+    expect(PERMISSION_CATALOGUE['credit.grant'].requires).toEqual(['payment.read']);
+  });
+
   it('marks exactly the sensitive permissions', () => {
     const sensitive = entries.filter(([, info]) => info.sensitive).map(([key]) => key);
     expect(sensitive.sort()).toEqual(

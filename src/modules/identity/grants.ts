@@ -59,7 +59,7 @@ export function assertMayChangeRoles(caller: Caller, isOwner: boolean, added: Ro
   );
 }
 
-/** Acting on a person (deactivating, changing their roles or skills): not an owner, not someone holding more. */
+/** Acting on a person (deactivating or reactivating them): not an owner, not someone holding more. */
 export function assertMayManagePerson(
   caller: Caller,
   isOwner: boolean,

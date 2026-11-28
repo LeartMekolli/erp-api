@@ -36,8 +36,10 @@ export interface StaffSeed {
     /** The Production lead role created now. */
     roles: number;
   };
-  /** The floor member's password when created now; null when it existed. */
+  /** The password the accounts created now share; null when none was created. */
   password: string | null;
+  /** The sign-in emails created now, which are the ones that have `password`. */
+  created: string[];
 }
 
 /**
@@ -51,6 +53,7 @@ export async function seedStaff(
   options: { actingUserId: string; password?: string },
 ): Promise<StaffSeed> {
   const counts = { skills: 0, members: 0, people: 0, invitations: 0, roles: 0 };
+  const created: string[] = [];
   const password = options.password ?? randomBytes(16).toString('base64url');
   // Hashed once, before the transaction, which should not wait on argon2.
   const passwordHash = await hashPassword(password);
@@ -78,6 +81,7 @@ export async function seedStaff(
       const floor = await tx.user.create({ data: { ...FLOOR, passwordHash, locale: defaultLocale, kind: 'staff' } });
       await tx.userRole.create({ data: { userId: floor.id, roleId: memberRole.id } });
       counts.members++;
+      created.push(FLOOR.email);
     }
 
     let leadRole = await tx.role.findFirst({ where: { name: LEAD_ROLE } });
@@ -107,6 +111,7 @@ export async function seedStaff(
         data: { userId: lead.id, skillId: archived.id, expiresOn: null, grantedByUserId: options.actingUserId },
       });
       counts.people++;
+      created.push(LEAD.email);
     }
 
     if (!(await tx.user.findFirst({ where: { email: FORMER.email } }))) {
@@ -115,6 +120,7 @@ export async function seedStaff(
       });
       await tx.userRole.create({ data: { userId: former.id, roleId: memberRole.id } });
       counts.people++;
+      created.push(FORMER.email);
     }
 
     // Inserted directly: no email goes out. Only the token's hash is kept; the token is dropped.
@@ -131,5 +137,5 @@ export async function seedStaff(
     }
   });
 
-  return { counts, password: counts.members + counts.people > 0 ? password : null };
+  return { counts, password: created.length > 0 ? password : null, created };
 }

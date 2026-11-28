@@ -539,6 +539,9 @@ describe('users and roles administration', () => {
       await invite(tenant.id, packing);
       await invite(tenant.id, packing, { expiresAt: new Date(Date.now() - 86_400_000) });
       await invite(tenant.id, packing, { cancelledAt: new Date() });
+      // Waiting, but its email now belongs to a staff user: the invitations list hides it, so the count does too.
+      const joined = await createTestUser(prisma, tenant.id, { roles: [] });
+      await invite(tenant.id, packing, { email: joined.email });
 
       const response = await call('get', '/roles', tenant.ownerToken).expect(200);
 

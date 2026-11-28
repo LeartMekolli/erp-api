@@ -161,7 +161,7 @@ void runCli(async (app) => {
   const staff = await seedStaff(prisma, demo.id, { actingUserId: uploader.id });
   process.stdout.write(
     `staff for demo: ${staff.counts.skills ? 'gave the catalog user Final QC, ' : ''}created ${staff.counts.members} floor members, ${staff.counts.people} people, ${staff.counts.roles} roles, ${staff.counts.invitations} invitations` +
-      (staff.password ? ` with password ${staff.password} (floor@demo.example.test and lead@demo.example.test share it)` : '') +
+      (staff.password ? ` with password ${staff.password} (for ${staff.created.join(', ')})` : '') +
       '\n',
   );
 
