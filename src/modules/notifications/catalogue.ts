@@ -203,6 +203,21 @@ export const EVENTS = {
       },
     },
   },
+  'user.reactivated': {
+    audience: { kind: 'user' },
+    channels: ['email'],
+    subjectType: 'user',
+    variables: {
+      user_name: { sample: 'Ada Lovelace' },
+      workspace_name: { sample: 'Acme Workshop' },
+    },
+    defaults: {
+      en: {
+        subject: 'You can sign in to {{ workspace_name }} again',
+        body: 'Hi {{ user_name }}, your account in {{ workspace_name }} is active again. Sign in with your usual password.',
+      },
+    },
+  },
   // Raised by the measurement job once a version is checksummed and measured (plan S10).
   'file.measured': {
     audience: { kind: 'uploader' },

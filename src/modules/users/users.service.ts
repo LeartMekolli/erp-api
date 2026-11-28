@@ -6,9 +6,16 @@ import { PrismaService } from '../../database/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
-import { type RoleRef, assertMayChangeRoles, callerIsOwner } from '../identity/grants';
+import {
+  type RoleRef,
+  assertMayChangeRoles,
+  assertMayManagePerson,
+  callerIsOwner,
+  permissionsOfUser,
+} from '../identity/grants';
 import { NotificationsService } from '../notifications/notifications.service';
-import { UserResponse, toUserResponse } from './user-response';
+import { localDate } from '../orders/dates';
+import { HeldSkillResponse, StaffUserResponse, toStaffUserResponse } from './user-response';
 
 export type UserStatus = 'active' | 'deactivated';
 
@@ -37,20 +44,81 @@ export class UsersService {
 
   async list(
     tenantId: string,
-    query: { limit: number; cursor?: string; status?: UserStatus },
-  ): Promise<Page<UserResponse>> {
+    query: { limit: number; cursor?: string; status?: UserStatus; q?: string },
+  ): Promise<Page<StaffUserResponse>> {
     const secret = this.config.get('APP_SECRET');
     const after = query.cursor ? decodeCursor(query.cursor, secret) : undefined;
-    const rows = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.user.findMany({
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const rows = await tx.user.findMany({
         // Customer people are listed with their customer, never as staff.
-        where: { kind: 'staff', status: query.status, ...(after ? { id: { lt: after.id } } : {}) },
+        where: {
+          kind: 'staff',
+          status: query.status,
+          ...(query.q
+            ? {
+                OR: [
+                  { name: { contains: query.q, mode: 'insensitive' } },
+                  { email: { contains: query.q, mode: 'insensitive' } },
+                ],
+              }
+            : {}),
+          ...(after ? { id: { lt: after.id } } : {}),
+        },
         orderBy: { id: 'desc' },
         take: query.limit + 1,
-      }),
-    );
-    const page = toPage(rows, query.limit, secret);
-    return { data: page.data.map(toUserResponse), next_cursor: page.next_cursor };
+      });
+      const page = toPage(rows, query.limit, secret);
+      const ids = page.data.map((user) => user.id);
+
+      const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+      const today = localDate(new Date(), timezone);
+      const roleRows = await tx.userRole.findMany({
+        where: { userId: { in: ids } },
+        select: { userId: true, role: { select: { id: true, name: true, isSystem: true } } },
+      });
+      const skillRows = await tx.userSkill.findMany({
+        where: { userId: { in: ids } },
+        select: {
+          userId: true,
+          expiresOn: true,
+          skill: { select: { id: true, name: true, archivedAt: true } },
+        },
+      });
+
+      const rolesOf = new Map<string, StaffUserResponse['roles']>();
+      for (const { userId, role } of roleRows) {
+        rolesOf.set(userId, [...(rolesOf.get(userId) ?? []), { id: role.id, name: role.name, is_system: role.isSystem }]);
+      }
+      const skillsOf = new Map<string, HeldSkillResponse[]>();
+      for (const { userId, expiresOn, skill } of skillRows.sort(
+        (a, b) => a.skill.name.localeCompare(b.skill.name) || a.skill.id.localeCompare(b.skill.id),
+      )) {
+        const day = expiresOn ? expiresOn.toISOString().slice(0, 10) : null;
+        skillsOf.set(userId, [
+          ...(skillsOf.get(userId) ?? []),
+          { id: skill.id, name: skill.name, expires_on: day, expired: day !== null && day < today, archived: skill.archivedAt !== null },
+        ]);
+      }
+
+      return {
+        data: page.data.map((user) =>
+          toStaffUserResponse(
+            user,
+            (rolesOf.get(user.id) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+            skillsOf.get(user.id) ?? [],
+          ),
+        ),
+        next_cursor: page.next_cursor,
+      };
+    });
+  }
+
+  /** The privilege rules for acting on a person: not an owner unless the caller is one, not someone holding more. */
+  private async assertMayManage(tx: Prisma.TransactionClient, auth: TenantAuth, userId: string): Promise<void> {
+    assertMayManagePerson(auth, await callerIsOwner(tx, auth.userId), {
+      isOwner: await callerIsOwner(tx, userId),
+      permissions: await permissionsOfUser(tx, userId),
+    });
   }
 
   /**
@@ -65,6 +133,10 @@ export class UsersService {
       if (!user) {
         throw new NotFoundException('User not found');
       }
+      if (userId === auth.userId) {
+        throw new ConflictException({ code: 'own_account', message: "You can't deactivate yourself" });
+      }
+      await this.assertMayManage(tx, auth, userId);
       if (user.status === 'deactivated') {
         return;
       }
@@ -83,6 +155,44 @@ export class UsersService {
         after: { status: 'deactivated' },
       });
     });
+  }
+
+  /**
+   * Idempotent. Staff only. The user signs in again with their old password and keeps their roles and skills;
+   * they are told once it has committed, and only when the status changed.
+   */
+  async reactivate(auth: TenantAuth, userId: string): Promise<void> {
+    const result = await this.prisma.inTenant(auth.tenantId, async (tx) => {
+      const user = await tx.user.findFirst({
+        where: { id: userId, kind: 'staff' },
+        select: { status: true, name: true },
+      });
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+      await this.assertMayManage(tx, auth, userId);
+      if (user.status === 'active') {
+        return { changed: false, userName: user.name, workspaceName: '' };
+      }
+
+      await tx.user.update({ where: { id: userId }, data: { status: 'active' } });
+      await this.audit.record(tx, {
+        actor: { type: 'user', id: auth.userId },
+        action: 'user.reactivated',
+        subject: { type: 'user', id: userId },
+        before: { status: user.status },
+        after: { status: 'active' },
+      });
+      const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { name: true } });
+      return { changed: true, userName: user.name, workspaceName: tenant.name };
+    });
+
+    if (result.changed) {
+      await this.notifications.raise(auth.tenantId, 'user.reactivated', { type: 'user', id: userId }, {
+        user_name: result.userName,
+        workspace_name: result.workspaceName,
+      });
+    }
   }
 
   /**

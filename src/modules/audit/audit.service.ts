@@ -14,6 +14,7 @@ export type AuditAction =
   | 'role.deleted'
   | 'user.roles_changed'
   | 'user.deactivated'
+  | 'user.reactivated'
   | 'user.skills_changed'
   | 'user.locale_changed'
   | 'skill.changed'
