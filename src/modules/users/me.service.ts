@@ -3,6 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CourierAccountService } from '../couriers/courier-account.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { isOwnerRole } from '../identity/grants';
 import type { MeResponse, UpdateMe } from './me.controller';
 import { toUserResponse } from './user-response';
 import type { UserKind } from './user-response';
@@ -21,7 +22,7 @@ export class MeService {
       user: await tx.user.findUniqueOrThrow({
         where: { id: auth.userId },
         include: {
-          roles: { select: { role: { select: { id: true, name: true } } } },
+          roles: { select: { role: { select: { id: true, name: true, isSystem: true } } } },
           memberships: true,
         },
       }),
@@ -43,7 +44,10 @@ export class MeService {
         timezone: tenant.timezone,
         labels_available: labelsAvailable,
       },
-      roles: user.roles.map(({ role }) => role).sort((a, b) => a.name.localeCompare(b.name)),
+      roles: user.roles
+        .map(({ role }) => ({ id: role.id, name: role.name, is_system: role.isSystem }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      is_owner: user.roles.some(({ role }) => isOwnerRole(role)),
       // As the guard resolved them for this request.
       permissions: [...auth.permissions].sort(),
       memberships: user.memberships.map((membership) => ({

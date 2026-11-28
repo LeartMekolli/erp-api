@@ -24,7 +24,9 @@ export const meResponseSchema = z.strictObject({
     /** Whether the workspace has a courier account, so labels can be bought when shipping. */
     labels_available: z.boolean(),
   }),
-  roles: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),
+  roles: z.array(z.strictObject({ id: z.uuid(), name: z.string(), is_system: z.boolean() })),
+  /** Whether the caller holds the system owner role, which no "more than you have" rule limits. A custom role named "Owner" doesn't count. */
+  is_owner: z.boolean(),
   permissions: z.array(z.enum(TENANT_PERMISSIONS)),
   memberships: z.array(
     z.strictObject({ organisation_type: z.string(), organisation_id: z.string(), role: z.string() }),

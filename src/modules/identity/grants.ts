@@ -12,6 +12,11 @@ const EXCEEDS_OWN_PERMISSIONS = "You can't give or take away a permission you do
 const OWNER_ONLY = 'Only an owner can do this to the owner role or an owner';
 const PERSON_HOLDS_MORE = "This person has permissions you don't have";
 
+/** The system `owner` role; a custom role that happens to be named `owner` is an ordinary role. */
+export function isOwnerRole(role: { name: string; isSystem: boolean }): boolean {
+  return role.isSystem && role.name === 'owner';
+}
+
 /**
  * Whether the user holds the system owner role. The same query as `isOwner` in `users/skills.service.ts`,
  * kept here so identity does not import the users module.
@@ -48,7 +53,7 @@ export function assertMayGrantPermissions(
  */
 export function assertMayChangeRoles(caller: Caller, isOwner: boolean, added: RoleRef[], removed: RoleRef[]): void {
   const changed = [...added, ...removed];
-  if (!isOwner && changed.some((role) => role.isSystem && role.name === 'owner')) {
+  if (!isOwner && changed.some(isOwnerRole)) {
     throw new ForbiddenException({ code: 'owner_only', message: OWNER_ONLY });
   }
   assertMayGrantPermissions(

@@ -20,6 +20,10 @@ describe('permission catalogue', () => {
     expect(PERMISSION_CATALOGUE['credit.grant'].requires).toEqual(['payment.read']);
   });
 
+  it('requires seeing roles to invite, since an invitation names a role', () => {
+    expect(PERMISSION_CATALOGUE['user.invite'].requires).toEqual(['user.read', 'role.read']);
+  });
+
   it('marks exactly the sensitive permissions', () => {
     const sensitive = entries.filter(([, info]) => info.sensitive).map(([key]) => key);
     expect(sensitive.sort()).toEqual(

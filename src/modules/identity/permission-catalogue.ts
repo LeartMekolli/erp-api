@@ -57,7 +57,8 @@ export const PERMISSION_CATALOGUE = {
     name: 'Invite people',
     description: 'Lets someone invite new staff to the workspace.',
     sensitive: false,
-    requires: ['user.read'],
+    // An invitation names a role, and only `GET /roles` lists them.
+    requires: ['user.read', 'role.read'],
   },
   'user.deactivate': {
     area: 'people',
