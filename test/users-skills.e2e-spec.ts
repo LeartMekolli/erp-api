@@ -15,8 +15,20 @@ import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
 type Method = 'get' | 'post' | 'put' | 'patch';
-type Skill = { id: string; name: string; archived: boolean; created_at: string };
-type UserSkill = { skill: { id: string; name: string }; expires_on: string | null; expired: boolean };
+type Skill = {
+  id: string;
+  name: string;
+  archived: boolean;
+  created_at: string;
+  holders_count: number;
+  expiring_soon_count: number;
+  expired_count: number;
+  required_by: { workflow: { id: string; name: string }; step: { id: string; name: string } }[];
+};
+type UserSkill = { skill: { id: string; name: string }; expires_on: string | null; expired: boolean; archived: boolean };
+
+/** The day `days` from today; the test workspaces run on UTC. */
+const dayFromToday = (days: number) => new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 describe('skills (Workflow 2, Task 1)', () => {
   let app: INestApplication;
@@ -43,6 +55,20 @@ describe('skills (Workflow 2, Task 1)', () => {
     expectDocumented(skillResponseSchema, response.body);
     return response.body as Skill;
   }
+
+  /** Gives a skill straight in the database, so a test can hold one that the route would refuse (a past day). */
+  const hold = (tenantId: string, grantedBy: string, userId: string, skillId: string, expiresOn: string | null) =>
+    prisma.inTenant(tenantId, (tx) =>
+      tx.userSkill.create({
+        data: { userId, skillId, grantedByUserId: grantedBy, expiresOn: expiresOn ? new Date(`${expiresOn}T00:00:00Z`) : null },
+      }),
+    );
+
+  const skillOf = async (token: string, id: string, includeArchived = true): Promise<Skill> => {
+    const listed = await call('get', `/skills${includeArchived ? '?include_archived=true' : ''}`, token).expect(200);
+    expectDocumented(skillListResponseSchema, listed.body);
+    return (listed.body as { data: Skill[] }).data.find((skill) => skill.id === id)!;
+  };
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -109,16 +135,23 @@ describe('skills (Workflow 2, Task 1)', () => {
     const set = await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
       skills: [
         { skill_id: casting.id, expires_on: null },
-        { skill_id: finalQc.id, expires_on: '2020-01-31' },
+        { skill_id: finalQc.id, expires_on: null },
       ],
     }).expect(200);
     expectDocumented(userSkillListResponseSchema, set.body);
+    // The route refuses a past day for a new skill, so the day passes in the database.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.userSkill.updateMany({
+        where: { userId: member.id, skillId: finalQc.id },
+        data: { expiresOn: new Date('2020-01-31T00:00:00Z') },
+      }),
+    );
 
     const read = await call('get', `/users/${member.id}/skills`, memberToken).expect(200);
     expectDocumented(userSkillListResponseSchema, read.body);
     expect((read.body as { data: UserSkill[] }).data).toEqual([
-      { skill: { id: casting.id, name: 'Casting' }, expires_on: null, expired: false },
-      { skill: { id: finalQc.id, name: 'Final QC' }, expires_on: '2020-01-31', expired: true },
+      { skill: { id: casting.id, name: 'Casting' }, expires_on: null, expired: false, archived: false },
+      { skill: { id: finalQc.id, name: 'Final QC' }, expires_on: '2020-01-31', expired: true, archived: false },
     ]);
 
     await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
@@ -126,7 +159,7 @@ describe('skills (Workflow 2, Task 1)', () => {
     }).expect(200);
     const replaced = await call('get', `/users/${member.id}/skills`, tenant.ownerToken).expect(200);
     expect((replaced.body as { data: UserSkill[] }).data).toEqual([
-      { skill: { id: finalQc.id, name: 'Final QC' }, expires_on: '2999-12-31', expired: false },
+      { skill: { id: finalQc.id, name: 'Final QC' }, expires_on: '2999-12-31', expired: false, archived: false },
     ]);
 
     // Audited like role changes, the skills in id order.
@@ -179,9 +212,14 @@ describe('skills (Workflow 2, Task 1)', () => {
     ).body as { id: string };
     await call('put', `/users/${lead.id}/roles`, tenant.ownerToken, { role_ids: [role.id] }).expect(200);
     const casting = await createSkill(tenant.ownerToken, 'Casting');
+    const colleague = await createTestUser(prisma, tenant.id, { roles: ['member'] });
 
     await call('post', '/skills', leadToken, { name: 'Polishing' }).expect(403);
-    await call('put', `/users/${lead.id}/skills`, leadToken, {
+    const own = await call('put', `/users/${lead.id}/skills`, leadToken, {
+      skills: [{ skill_id: casting.id, expires_on: null }],
+    }).expect(403);
+    expect(own.body).toMatchObject({ code: 'own_skills' });
+    await call('put', `/users/${colleague.id}/skills`, leadToken, {
       skills: [{ skill_id: casting.id, expires_on: null }],
     }).expect(200);
 
@@ -189,6 +227,164 @@ describe('skills (Workflow 2, Task 1)', () => {
     await call('post', '/skills', leadToken, { name: 'Polishing' }).expect(201);
     await call('put', `/users/${lead.id}/skills`, leadToken, { skills: [] }).expect(403);
     await call('get', '/skills', leadToken).expect(403);
+  });
+
+  it('refuses an owner changing their own skills', async () => {
+    const tenant = await freshTenant();
+    const casting = await createSkill(tenant.ownerToken, 'Casting');
+    const refused = await call('put', `/users/${tenant.ownerId}/skills`, tenant.ownerToken, {
+      skills: [{ skill_id: casting.id, expires_on: null }],
+    }).expect(403);
+    expect(refused.body).toMatchObject({ code: 'own_skills' });
+  });
+
+  it('counts active staff by their last day, for archived skills too', async () => {
+    const tenant = await freshTenant();
+    const casting = await createSkill(tenant.ownerToken, 'Casting');
+    const retired = await createSkill(tenant.ownerToken, 'Retired');
+    const person = (status?: string) => createTestUser(prisma, tenant.id, { roles: ['member'], status });
+    const [expired, soon, later, open] = [await person(), await person(), await person(), await person()];
+    const stopped = await person('deactivated');
+    const stoppedExpired = await person('deactivated');
+
+    const holdings: [{ id: string }, string | null][] = [
+      [expired, dayFromToday(-1)],
+      [soon, dayFromToday(10)],
+      [later, dayFromToday(40)],
+      [open, null],
+    ];
+    for (const [user, day] of holdings) {
+      await hold(tenant.id, tenant.ownerId, user.id, casting.id, day);
+    }
+    await hold(tenant.id, tenant.ownerId, stopped.id, casting.id, dayFromToday(5));
+    await hold(tenant.id, tenant.ownerId, stoppedExpired.id, casting.id, dayFromToday(-3));
+    // The archived skill is held by three of them.
+    for (const [user, day] of [holdings[0]!, holdings[1]!, holdings[3]!]) {
+      await hold(tenant.id, tenant.ownerId, user.id, retired.id, day);
+    }
+    await call('patch', `/skills/${retired.id}`, tenant.ownerToken, { archived: true }).expect(200);
+
+    expect(await skillOf(tenant.ownerToken, casting.id)).toMatchObject({
+      holders_count: 3,
+      expiring_soon_count: 1,
+      expired_count: 1,
+      required_by: [],
+    });
+    expect(await skillOf(tenant.ownerToken, retired.id)).toMatchObject({
+      holders_count: 2,
+      expiring_soon_count: 1,
+      expired_count: 1,
+    });
+
+    // The answers of PATCH carry the counts too.
+    const patched = await call('patch', `/skills/${casting.id}`, tenant.ownerToken, { name: 'Casting 2' }).expect(200);
+    expectDocumented(skillResponseSchema, patched.body);
+    expect(patched.body).toMatchObject({ holders_count: 3, expiring_soon_count: 1, expired_count: 1 });
+  });
+
+  it("lists the steps of each workflow's current version that require the skill", async () => {
+    const tenant = await freshTenant();
+    const setting = await createSkill(tenant.ownerToken, 'Setting');
+    const stepType = await prisma.inTenant(tenant.id, (tx) =>
+      tx.stepType.create({ data: { key: 'setting', name: 'Setting', position: 1 } }),
+    );
+    const workflow = await prisma.inTenant(tenant.id, (tx) => tx.workflow.create({ data: { key: 'cast', name: 'Cast part' } }));
+    const addVersion = (number: number, requires: string | null) =>
+      prisma.inTenant(tenant.id, async (tx) => {
+        const version = await tx.workflowVersion.create({ data: { workflowId: workflow.id, number } });
+        return tx.workflowStep.create({
+          data: {
+            versionId: version.id,
+            position: 0,
+            key: 'stone_setting',
+            name: 'Stone setting',
+            stepTypeId: stepType.id,
+            priced: false,
+            doneBy: 'workspace',
+            config: requires ? { required_skill_id: requires } : {},
+          },
+        });
+      });
+
+    // Version 1 requires it, version 2 doesn't: only the current version counts.
+    await addVersion(1, setting.id);
+    const second = await addVersion(2, null);
+    expect((await skillOf(tenant.ownerToken, setting.id)).required_by).toEqual([]);
+
+    // Version 3 requires it again.
+    const third = await addVersion(3, setting.id);
+    expect(second.id).not.toBe(third.id);
+    expect((await skillOf(tenant.ownerToken, setting.id)).required_by).toEqual([
+      { workflow: { id: workflow.id, name: 'Cast part' }, step: { id: third.id, name: 'Stone setting' } },
+    ]);
+  });
+
+  it('keeps an archived skill the person holds when sent unchanged, and refuses new or changed ones', async () => {
+    const tenant = await freshTenant();
+    const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+    const casting = await createSkill(tenant.ownerToken, 'Casting');
+    const retired = await createSkill(tenant.ownerToken, 'Retired');
+    const nextYear = dayFromToday(365);
+    await hold(tenant.id, tenant.ownerId, member.id, retired.id, nextYear);
+    await call('patch', `/skills/${retired.id}`, tenant.ownerToken, { archived: true }).expect(200);
+
+    const read = await call('get', `/users/${member.id}/skills`, tenant.ownerToken).expect(200);
+    expectDocumented(userSkillListResponseSchema, read.body);
+    expect((read.body as { data: UserSkill[] }).data).toEqual([
+      { skill: { id: retired.id, name: 'Retired' }, expires_on: nextYear, expired: false, archived: true },
+    ]);
+
+    const kept = await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
+      skills: [
+        { skill_id: retired.id, expires_on: nextYear },
+        { skill_id: casting.id, expires_on: null },
+      ],
+    }).expect(200);
+    expectDocumented(userSkillListResponseSchema, kept.body);
+    expect((kept.body as { data: UserSkill[] }).data.map((held) => [held.skill.name, held.archived])).toEqual([
+      ['Casting', false],
+      ['Retired', true],
+    ]);
+
+    await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
+      skills: [{ skill_id: retired.id, expires_on: dayFromToday(400) }],
+    }).expect(400);
+
+    const another = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+    await call('put', `/users/${another.id}/skills`, tenant.ownerToken, {
+      skills: [{ skill_id: retired.id, expires_on: nextYear }],
+    }).expect(400);
+  });
+
+  it('refuses a new or changed last day in the past, and keeps an expired skill sent unchanged', async () => {
+    const tenant = await freshTenant();
+    const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+    const casting = await createSkill(tenant.ownerToken, 'Casting');
+    const polishing = await createSkill(tenant.ownerToken, 'Polishing');
+    const yesterday = dayFromToday(-1);
+
+    const refused = await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
+      skills: [{ skill_id: casting.id, expires_on: yesterday }],
+    }).expect(400);
+    expect(refused.body).toMatchObject({ code: 'expires_in_past' });
+
+    await hold(tenant.id, tenant.ownerId, member.id, casting.id, yesterday);
+    const kept = await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
+      skills: [
+        { skill_id: casting.id, expires_on: yesterday },
+        { skill_id: polishing.id, expires_on: dayFromToday(1) },
+      ],
+    }).expect(200);
+    expect((kept.body as { data: UserSkill[] }).data.map((held) => [held.skill.name, held.expired])).toEqual([
+      ['Casting', true],
+      ['Polishing', false],
+    ]);
+
+    // Changing the expired skill's day to another past day is refused.
+    const changed = await call('put', `/users/${member.id}/skills`, tenant.ownerToken, {
+      skills: [{ skill_id: casting.id, expires_on: dayFromToday(-2) }],
+    }).expect(400);
+    expect(changed.body).toMatchObject({ code: 'expires_in_past' });
   });
 
   it("keeps one workspace's skills from another", async () => {
@@ -199,7 +395,8 @@ describe('skills (Workflow 2, Task 1)', () => {
     await createSkill(other.ownerToken, 'Casting');
 
     await call('patch', `/skills/${casting.id}`, other.ownerToken, { archived: true }).expect(404);
-    await call('put', `/users/${other.ownerId}/skills`, other.ownerToken, {
+    const colleague = await createTestUser(prisma, other.id, { roles: ['member'] });
+    await call('put', `/users/${colleague.id}/skills`, other.ownerToken, {
       skills: [{ skill_id: casting.id, expires_on: null }],
     }).expect(400);
     await call('get', `/users/${tenant.ownerId}/skills`, other.ownerToken).expect(404);

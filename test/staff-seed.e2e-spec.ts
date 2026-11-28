@@ -39,10 +39,15 @@ describe('staff demo seed', () => {
     const acting = await createTestUser(prisma, tenant.id, { roles: [] });
 
     expect(await seedStaff(prisma, tenant.id, { actingUserId: acting.id, password: PASSWORD })).toEqual({
-      counts: { skills: 1, members: 1 },
+      counts: { skills: 1, members: 1, people: 2, invitations: 2, roles: 1 },
       password: PASSWORD,
+      created: ['floor@demo.example.test', 'lead@demo.example.test', 'former@demo.example.test'],
     });
-    expect(await seedStaff(prisma, tenant.id, { actingUserId: acting.id })).toEqual({ counts: { skills: 0, members: 0 }, password: null });
+    expect(await seedStaff(prisma, tenant.id, { actingUserId: acting.id })).toEqual({
+      counts: { skills: 0, members: 0, people: 0, invitations: 0, roles: 0 },
+      password: null,
+      created: [],
+    });
 
     const { floor, held } = await prisma.inTenant(tenant.id, async (tx) => ({
       floor: await tx.user.findFirstOrThrow({
@@ -61,6 +66,55 @@ describe('staff demo seed', () => {
       .post('/auth/login')
       .send({ email: 'floor@demo.example.test', password: PASSWORD, workspace: tenant.slug })
       .expect(200);
+  });
+
+  it('seeds a limited lead, a deactivated person, invitations and skills for Settings > People', async () => {
+    const tenant = await createTestTenant(prisma);
+    createdTenants.push(tenant.id);
+    await seedCatalog(prisma, tenant.id);
+    await seedPricing(prisma, tenant.id);
+    await seedWorkflows(prisma, tenant.id);
+    const acting = await createTestUser(prisma, tenant.id, { roles: [] });
+    await seedStaff(prisma, tenant.id, { actingUserId: acting.id, password: PASSWORD });
+
+    const found = await prisma.inTenant(tenant.id, async (tx) => ({
+      role: await tx.role.findFirstOrThrow({ where: { name: 'Production lead' }, include: { permissions: true, users: { include: { user: true } } } }),
+      lead: await tx.user.findFirstOrThrow({
+        where: { email: 'lead@demo.example.test' },
+        include: { roles: { include: { role: true } }, skills: { include: { skill: true } } },
+      }),
+      former: await tx.user.findFirstOrThrow({ where: { email: 'former@demo.example.test' } }),
+      invitations: await tx.invitation.findMany({ where: { email: { in: ['waiting@demo.example.test', 'expired@demo.example.test'] } } }),
+    }));
+
+    expect(found.role.isSystem).toBe(false);
+    expect(found.role.permissions.map((row) => row.permission).sort()).toEqual([
+      'order.read',
+      'role.assign',
+      'role.read',
+      'user.read',
+      'workflow.move',
+      'workflow.read',
+    ]);
+    expect(found.role.users.map((row) => row.user.email)).toEqual(['lead@demo.example.test']);
+    expect(found.lead.kind).toBe('staff');
+    expect(found.lead.roles.map((one) => one.role.name)).toEqual(['Production lead']);
+    expect(found.former.status).toBe('deactivated');
+    expect(found.former.kind).toBe('staff');
+
+    const soon = found.lead.skills.find((row) => row.skill.name === 'Final QC');
+    const days = (soon!.expiresOn!.getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(0);
+    expect(days).toBeLessThanOrEqual(30);
+    const archived = found.lead.skills.find((row) => row.skill.archivedAt !== null);
+    expect(archived).toBeDefined();
+
+    const waiting = found.invitations.find((row) => row.email === 'waiting@demo.example.test')!;
+    const expired = found.invitations.find((row) => row.email === 'expired@demo.example.test')!;
+    expect([waiting.acceptedAt, waiting.cancelledAt]).toEqual([null, null]);
+    expect(waiting.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect([expired.acceptedAt, expired.cancelledAt]).toEqual([null, null]);
+    expect(expired.expiresAt.getTime()).toBeLessThan(Date.now());
   });
 
   it('refuses to run before the workflows are seeded', async () => {

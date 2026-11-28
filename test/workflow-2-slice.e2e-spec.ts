@@ -208,7 +208,14 @@ describe('Workflow 2 walkthrough', () => {
     const refused = await pass(member, rings, 'casting').expect(403);
     expect(detail(refused)).toBe('Moving pieces at Casting needs the skill Casting');
     await member.put(`/users/${memberUser.id}/skills`, { skills: [{ skill_id: castingSkill, expires_on: '2020-01-31' }] }).expect(403);
-    await owner.put(`/users/${memberUser.id}/skills`, { skills: [{ skill_id: castingSkill, expires_on: '2020-01-31' }] }).expect(200);
+    await owner.put(`/users/${memberUser.id}/skills`, { skills: [{ skill_id: castingSkill, expires_on: null }] }).expect(200);
+    // The route refuses a past day, so the last day passes in the database.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.userSkill.updateMany({
+        where: { userId: memberUser.id, skillId: castingSkill },
+        data: { expiresOn: new Date('2020-01-31T00:00:00Z') },
+      }),
+    );
     await pass(member, rings, 'casting').expect(403);
     await pass(owner, rings.slice(0, 1), 'casting').expect(200);
     await owner.put(`/users/${memberUser.id}/skills`, { skills: [{ skill_id: castingSkill, expires_on: null }] }).expect(200);

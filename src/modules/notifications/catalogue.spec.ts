@@ -55,6 +55,7 @@ describe('notification catalogue', () => {
       'subscription.upgrade_failed',
       'user.invited',
       'user.joined',
+      'user.reactivated',
       'user.roles_changed',
     ]);
   });

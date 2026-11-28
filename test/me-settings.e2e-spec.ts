@@ -92,6 +92,28 @@ describe('current identity and settings', () => {
       ]);
     });
 
+    it('says whether the caller is the owner, by the system role and never by a name', async () => {
+      const ownerMe = (await get('/me', ownerToken).expect(200)).body as {
+        roles: { name: string; is_system: boolean }[];
+        is_owner: boolean;
+      };
+      expect(ownerMe.is_owner).toBe(true);
+      expect(ownerMe.roles).toEqual([expect.objectContaining({ name: 'owner', is_system: true })]);
+
+      const memberMe = (await get('/me', memberToken).expect(200)).body as { is_owner: boolean };
+      expect(memberMe.is_owner).toBe(false);
+
+      // A custom role called "Owner" is an ordinary role.
+      const lookalike = await createTestUser(prisma, tenant.id, { roles: [] });
+      await prisma.inTenant(tenant.id, async (tx) => {
+        const role = await tx.role.create({ data: { name: 'Owner', isSystem: false } });
+        await tx.userRole.create({ data: { userId: lookalike.id, roleId: role.id } });
+      });
+      const response = await get('/me', (await tokens.issueForUser(tenant.id, lookalike.id)).accessToken).expect(200);
+      expectDocumented(meResponseSchema, response.body);
+      expect(response.body).toMatchObject({ is_owner: false, roles: [{ name: 'Owner', is_system: false }] });
+    });
+
     it('says what kind of user is signed in, whatever memberships they have', async () => {
       const kindOf = async (kind: string) => {
         const user = await createTestUser(prisma, tenant.id, { roles: [] });

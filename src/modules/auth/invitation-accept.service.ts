@@ -50,7 +50,7 @@ export class InvitationAcceptService {
         }
 
         const claimed = await tx.invitation.updateMany({
-          where: { id: invitation.id, acceptedAt: null },
+          where: { id: invitation.id, acceptedAt: null, cancelledAt: null, expiresAt: { gt: now } },
           data: { acceptedAt: now },
         });
         if (claimed.count === 0) {

@@ -3,8 +3,9 @@ import { PrismaService } from '../../database/prisma.service';
 import { Prisma } from '../../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { TenantAuth } from '../identity/auth-context';
+import { assertNotOwnSkills } from '../identity/grants';
 import { localDate } from '../orders/dates';
-import { SkillResponse, UserSkillResponse, toSkillResponse } from './skill-response';
+import { SkillResponse, SkillUsage, UserSkillResponse, toSkillResponse } from './skill-response';
 
 /**
  * Whether the user may count on the skill on `today` (the workspace's calendar date): held, not archived,
@@ -37,6 +38,15 @@ export async function isOwner(tx: Prisma.TransactionClient, userId: string): Pro
 const dateOf = (day: string) => new Date(`${day}T00:00:00Z`);
 const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 
+const emptyUsage = (): SkillUsage => ({ holders_count: 0, expiring_soon_count: 0, expired_count: 0, required_by: [] });
+
+/** A new or changed last day before the workspace's today is refused; `day` and `today` are `YYYY-MM-DD`. */
+function assertNotInPast(day: string | null, today: string): void {
+  if (day !== null && day < today) {
+    throw new BadRequestException({ code: 'expires_in_past', message: "A skill's last day can't be in the past" });
+  }
+}
+
 /**
  * The workspace's skill catalogue and the skills its staff hold (Workflow 2 spec, goals 9–10). Skill
  * names are configuration: unique per workspace regardless of case.
@@ -50,10 +60,76 @@ export class SkillsService {
 
   /** A bounded list, so no cursor (ADR 0004 allows it for small admin lists). */
   async list(tenantId: string, includeArchived: boolean): Promise<{ data: SkillResponse[] }> {
-    const skills = await this.prisma.inTenant(tenantId, (tx) =>
-      tx.skill.findMany({ where: includeArchived ? {} : { archivedAt: null }, orderBy: [{ name: 'asc' }, { id: 'asc' }] }),
+    return this.prisma.inTenant(tenantId, async (tx) => {
+      const skills = await tx.skill.findMany({
+        where: includeArchived ? {} : { archivedAt: null },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      });
+      const usage = await this.usageOf(
+        tx,
+        tenantId,
+        skills.map((skill) => skill.id),
+      );
+      return { data: skills.map((skill) => toSkillResponse(skill, usage.get(skill.id) ?? emptyUsage())) };
+    });
+  }
+
+  /**
+   * Per skill: how many active staff hold it (last day not past), how many of those run out within 30 days,
+   * how many hold it past its last day, and the steps of each workflow's current version that require it.
+   * "Today" is the workspace's calendar date.
+   */
+  private async usageOf(tx: Prisma.TransactionClient, tenantId: string, skillIds: string[]): Promise<Map<string, SkillUsage>> {
+    const usage = new Map<string, SkillUsage>(
+      skillIds.map((id): [string, SkillUsage] => [id, emptyUsage()]),
     );
-    return { data: skills.map(toSkillResponse) };
+    if (skillIds.length === 0) {
+      return usage;
+    }
+    const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
+    const today = dateOf(localDate(new Date(), timezone));
+    const soon = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const count = (when: Prisma.UserSkillWhereInput) =>
+      tx.userSkill.groupBy({
+        by: ['skillId'],
+        where: { skillId: { in: skillIds }, user: { status: 'active', kind: 'staff' }, ...when },
+        _count: { _all: true },
+      });
+    const [holders, expiring, expired] = await Promise.all([
+      count({ OR: [{ expiresOn: null }, { expiresOn: { gte: today } }] }),
+      count({ expiresOn: { gte: today, lte: soon } }),
+      count({ expiresOn: { lt: today } }),
+    ]);
+    for (const row of holders) {
+      usage.get(row.skillId)!.holders_count = row._count._all;
+    }
+    for (const row of expiring) {
+      usage.get(row.skillId)!.expiring_soon_count = row._count._all;
+    }
+    for (const row of expired) {
+      usage.get(row.skillId)!.expired_count = row._count._all;
+    }
+
+    // Only each workflow's highest-numbered version: older versions stay as they were for running pieces.
+    const required = await tx.$queryRaw<
+      { skill_id: string; workflow_id: string; workflow_name: string; step_id: string; step_name: string }[]
+    >`
+      SELECT step.config->>'required_skill_id' AS skill_id,
+             workflow.id AS workflow_id, workflow.name AS workflow_name,
+             step.id AS step_id, step.name AS step_name
+      FROM workflow_step step
+      JOIN workflow_version version ON version.id = step.version_id
+      JOIN workflow ON workflow.id = version.workflow_id
+      WHERE version.number = (SELECT max(latest.number) FROM workflow_version latest WHERE latest.workflow_id = version.workflow_id)
+        AND step.config->>'required_skill_id' IN (${Prisma.join(skillIds)})
+      ORDER BY workflow.name, workflow.id, step.position`;
+    for (const row of required) {
+      usage.get(row.skill_id)?.required_by.push({
+        workflow: { id: row.workflow_id, name: row.workflow_name },
+        step: { id: row.step_id, name: row.step_name },
+      });
+    }
+    return usage;
   }
 
   async create(auth: TenantAuth, name: string): Promise<SkillResponse> {
@@ -67,7 +143,7 @@ export class SkillsService {
           subject: { type: 'skill', id: skill.id },
           after: { name },
         });
-        return toSkillResponse(skill);
+        return toSkillResponse(skill, emptyUsage());
       }),
     );
   }
@@ -93,7 +169,8 @@ export class SkillsService {
           before: { name: skill.name, archived: skill.archivedAt !== null },
           after: { name: updated.name, archived: updated.archivedAt !== null },
         });
-        return toSkillResponse(updated);
+        const usage = await this.usageOf(tx, auth.tenantId, [id]);
+        return toSkillResponse(updated, usage.get(id) ?? emptyUsage());
       }),
     );
   }
@@ -114,17 +191,25 @@ export class SkillsService {
     userId: string,
     skills: { skill_id: string; expires_on: string | null }[],
   ): Promise<{ data: UserSkillResponse[] }> {
+    assertNotOwnSkills(auth, userId);
     return this.prisma.inTenant(auth.tenantId, async (tx) => {
       await this.staffUser(tx, userId);
-      const ids = skills.map((held) => held.skill_id);
-      const usable = await tx.skill.count({ where: { id: { in: ids }, archivedAt: null } });
-      if (usable !== ids.length) {
-        throw new BadRequestException('Only skills in the catalogue that are not archived can be given');
-      }
-
       const before = (await tx.userSkill.findMany({ where: { userId } }))
         .map((held) => ({ skill_id: held.skillId, expires_on: held.expiresOn ? dayOf(held.expiresOn) : null }))
         .sort((a, b) => a.skill_id.localeCompare(b.skill_id));
+
+      // A skill the person already holds, sent unchanged, passes the archived and past-date checks.
+      const current = new Map(before.map((held) => [held.skill_id, held.expires_on]));
+      const changed = skills.filter((held) => !current.has(held.skill_id) || current.get(held.skill_id) !== held.expires_on);
+      const usable = await tx.skill.count({ where: { id: { in: changed.map((held) => held.skill_id) }, archivedAt: null } });
+      if (usable !== changed.length) {
+        throw new BadRequestException('Only skills in the catalogue that are not archived can be given');
+      }
+      const { timezone } = await tx.tenant.findUniqueOrThrow({ where: { id: auth.tenantId }, select: { timezone: true } });
+      const today = localDate(new Date(), timezone);
+      for (const held of changed) {
+        assertNotInPast(held.expires_on, today);
+      }
       const after = [...skills].sort((a, b) => a.skill_id.localeCompare(b.skill_id));
 
       await tx.userSkill.deleteMany({ where: { userId } });
@@ -161,12 +246,17 @@ export class SkillsService {
     const today = localDate(new Date(), timezone);
     const held = await tx.userSkill.findMany({
       where: { userId },
-      include: { skill: { select: { id: true, name: true } } },
+      include: { skill: { select: { id: true, name: true, archivedAt: true } } },
       orderBy: [{ skill: { name: 'asc' } }, { skillId: 'asc' }],
     });
     return held.map((row) => {
       const expiresOn = row.expiresOn ? dayOf(row.expiresOn) : null;
-      return { skill: row.skill, expires_on: expiresOn, expired: expiresOn !== null && expiresOn < today };
+      return {
+        skill: { id: row.skill.id, name: row.skill.name },
+        expires_on: expiresOn,
+        expired: expiresOn !== null && expiresOn < today,
+        archived: row.skill.archivedAt !== null,
+      };
     });
   }
 
