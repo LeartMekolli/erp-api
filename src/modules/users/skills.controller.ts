@@ -37,6 +37,10 @@ export class SkillsController {
 
   @ApiDoc({
     summary: "List the workspace's skills by name, leaving archived ones out unless asked.",
+    description:
+      'Each skill carries `holders_count` (active staff whose last day is not past), `expiring_soon_count` ' +
+      '(of those, last day within the next 30 days), `expired_count` (active staff past their last day) and ' +
+      "`required_by` (the steps of each workflow's current version that require it), in the workspace's zone.",
     query: listSchema,
     response: skillListResponseSchema,
     errors: [400],
@@ -93,7 +97,7 @@ export class UserSkillsController {
   constructor(private readonly skills: SkillsService) {}
 
   @ApiDoc({
-    summary: "List a staff member's skills, with each one's expiry and whether it has expired.",
+    summary: "List a staff member's skills, with each one's expiry and whether it has expired or is archived.",
     response: userSkillListResponseSchema,
     errors: [400, 404],
   })
@@ -109,11 +113,13 @@ export class UserSkillsController {
   @ApiDoc({
     summary: "Replace a staff member's skills, each with an optional last day.",
     description:
-      'Answers the skills the user now holds. An empty list takes every skill away. An archived or unknown ' +
-      'skill is a 400 and changes nothing; skills must not repeat.',
+      'Answers the skills the user now holds. An empty list takes every skill away. Nobody may change their ' +
+      'own skills, an owner included (403 `own_skills`). An archived or unknown skill is a 400 and changes nothing, ' +
+      "and so is a last day before the workspace's today (400 `expires_in_past`); a skill the person already holds, " +
+      'sent with the same last day, is kept even if archived or expired. Skills must not repeat.',
     body: setSkillsSchema,
     response: userSkillListResponseSchema,
-    errors: [400, 404],
+    errors: [400, 403, 404],
   })
   @RequirePermission('role.assign')
   @Put(':id/skills')

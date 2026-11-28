@@ -77,6 +77,13 @@ export function assertMayManagePerson(
   }
 }
 
+/** Nobody, an owner included, gives skills to themselves: someone else must vouch for them. */
+export function assertNotOwnSkills(caller: Pick<Caller, 'userId'>, targetUserId: string): void {
+  if (caller.userId === targetUserId) {
+    throw new ForbiddenException({ code: 'own_skills', message: "You can't change your own skills" });
+  }
+}
+
 /** The union of the permissions of the user's roles, sorted and without duplicates. */
 export async function permissionsOfUser(tx: Prisma.TransactionClient, userId: string): Promise<string[]> {
   const rows = await tx.rolePermission.findMany({

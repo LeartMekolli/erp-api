@@ -161,7 +161,13 @@ describe('workflow: a step requires a skill', () => {
     await giveSkill(tenant, null);
     await pass(tenant.member, pieces.slice(0, 1), 'stone_setting').expect(200);
 
-    await giveSkill(tenant, '2020-01-31');
+    // The route refuses a past day, so the held skill's last day passes in the database.
+    await prisma.inTenant(tenant.id, (tx) =>
+      tx.userSkill.updateMany({
+        where: { userId: tenant.memberId, skillId: tenant.skillId },
+        data: { expiresOn: new Date('2020-01-31T00:00:00Z') },
+      }),
+    );
     await pass(tenant.member, pieces.slice(1, 2), 'stone_setting').expect(403);
 
     await giveSkill(tenant, null);
