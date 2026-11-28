@@ -160,8 +160,8 @@ void runCli(async (app) => {
   // The catalog user moves the demo orders through the in-house Final QC, so it holds that skill.
   const staff = await seedStaff(prisma, demo.id, { actingUserId: uploader.id });
   process.stdout.write(
-    `staff for demo: ${staff.counts.skills ? 'gave the catalog user Final QC, ' : ''}created ${staff.counts.members} floor members` +
-      (staff.password ? ` with password ${staff.password} (floor@demo.example.test)` : '') +
+    `staff for demo: ${staff.counts.skills ? 'gave the catalog user Final QC, ' : ''}created ${staff.counts.members} floor members, ${staff.counts.people} people, ${staff.counts.roles} roles, ${staff.counts.invitations} invitations` +
+      (staff.password ? ` with password ${staff.password} (floor@demo.example.test and lead@demo.example.test share it)` : '') +
       '\n',
   );
 
