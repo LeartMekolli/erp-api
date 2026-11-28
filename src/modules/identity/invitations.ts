@@ -17,7 +17,7 @@ export async function createInvitation(
   const now = new Date();
 
   await tx.invitation.updateMany({
-    where: { email: input.email, acceptedAt: null, expiresAt: { gt: now } },
+    where: { email: input.email, acceptedAt: null, cancelledAt: null, expiresAt: { gt: now } },
     data: { expiresAt: now },
   });
 

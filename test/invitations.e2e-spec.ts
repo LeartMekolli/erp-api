@@ -7,7 +7,9 @@ import { newId } from '../src/common/ids/uuid';
 import { PrismaService } from '../src/database/prisma.service';
 import { AccessTokenService } from '../src/modules/identity/access-token.service';
 import { IDENTITY_NOTIFIER } from '../src/modules/identity/identity-notifier';
+import { emailStatusOf, invitationResponseSchema } from '../src/modules/users/invitation-response';
 import { CapturingIdentityNotifier } from './capturing-notifier';
+import { expectDocumented } from './documented';
 import { createTestTenant, createTestUser, deleteTestTenants } from './factories';
 
 const NEW_PASSWORD = 'a-brand-new-password';
@@ -19,6 +21,7 @@ describe('invitations', () => {
   const notifier = new CapturingIdentityNotifier();
   let tenant: { id: string; slug: string };
   let other: { id: string; slug: string };
+  let ownerId: string;
   let ownerToken: string;
   let memberToken: string;
   let memberRoleId: string;
@@ -53,6 +56,7 @@ describe('invitations', () => {
     other = await createTestTenant(prisma);
     const owner = await createTestUser(prisma, tenant.id, { roles: ['owner'] });
     const member = await createTestUser(prisma, tenant.id, { roles: ['member'] });
+    ownerId = owner.id;
     ownerToken = (await tokens.issueForUser(tenant.id, owner.id)).accessToken;
     memberToken = (await tokens.issueForUser(tenant.id, member.id)).accessToken;
     memberRoleId = (
@@ -69,8 +73,19 @@ describe('invitations', () => {
     const response = await invite({ email: '  New.Person@Example.TEST ', role_id: memberRoleId }).expect(201);
     const email = 'new.person@example.test';
 
-    // The token goes to the notifier only, never into the response.
-    expect(response.body).toEqual({ id: expect.any(String), email, expires_at: expect.any(String) });
+    // The token goes to the notifier only, never into the response. The capturing notifier raises no
+    // notification, so there is no email status to report.
+    expectDocumented(invitationResponseSchema, response.body);
+    expect(response.body).toEqual({
+      id: expect.any(String),
+      email,
+      role: { id: memberRoleId, name: 'member' },
+      invited_by: { id: ownerId, name: 'Test User' },
+      status: 'waiting',
+      created_at: expect.any(String),
+      expires_at: expect.any(String),
+      email_status: null,
+    });
 
     const token = notifier.lastInvitationFor(email)?.token ?? '';
     await accept({ token, name: 'New Person', password: NEW_PASSWORD }).expect(204);
@@ -119,6 +134,157 @@ describe('invitations', () => {
     const existing = await createTestUser(prisma, tenant.id);
 
     await invite({ email: existing.email, role_id: memberRoleId }).expect(409);
+  });
+
+  describe('privilege rules and taken emails', () => {
+    const createRole = async (name: string, permissions: string[]): Promise<string> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .post('/roles')
+            .set('Authorization', `Bearer ${ownerToken}`)
+            .send({ name, permissions })
+            .expect(201)
+        ).body as { id: string }
+      ).id;
+
+    /** A user holding only a new custom role with exactly these permissions. */
+    async function leadWith(name: string, permissions: string[]) {
+      const lead = await createTestUser(prisma, tenant.id, { roles: [] });
+      const roleId = await createRole(name, permissions);
+      await request(app.getHttpServer())
+        .put(`/users/${lead.id}/roles`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ role_ids: [roleId] })
+        .expect(200);
+      return { token: (await tokens.issueForUser(tenant.id, lead.id)).accessToken };
+    }
+
+    const codeOf = (body: unknown) => (body as { code: string }).code;
+
+    it("refuses a role with permissions the caller lacks, and lets them hand out a role they can cover", async () => {
+      const lead = await leadWith('Inviting lead', ['user.read', 'user.invite', 'role.read', 'order.read']);
+      const packing = await createRole('Order readers', ['order.read']);
+      const ownerRole = (
+        await prisma.inTenant(tenant.id, (tx) => tx.role.findFirstOrThrow({ where: { name: 'owner', isSystem: true } }))
+      ).id;
+
+      const tooMuch = await invite({ email: freshEmail(), role_id: memberRoleId }, lead.token).expect(403);
+      expect(codeOf(tooMuch.body)).toBe('exceeds_own_permissions');
+
+      const ownerRefused = await invite({ email: freshEmail(), role_id: ownerRole }, lead.token).expect(403);
+      expect(codeOf(ownerRefused.body)).toBe('owner_only');
+
+      await invite({ email: freshEmail(), role_id: packing }, lead.token).expect(201);
+    });
+
+    it("refuses replacing an owner invitation, and leaves that invitation as it was", async () => {
+      const lead = await leadWith('Replacing lead', ['user.read', 'user.invite', 'role.read', 'order.read']);
+      const packing = await createRole('Packers', ['order.read']);
+      const ownerRole = (
+        await prisma.inTenant(tenant.id, (tx) => tx.role.findFirstOrThrow({ where: { name: 'owner', isSystem: true } }))
+      ).id;
+      const email = freshEmail();
+
+      await invite({ email, role_id: ownerRole }).expect(201);
+      const before = await prisma.inTenant(tenant.id, (tx) => tx.invitation.findFirstOrThrow({ where: { email } }));
+
+      const refused = await invite({ email, role_id: packing }, lead.token).expect(403);
+
+      expect(codeOf(refused.body)).toBe('owner_only');
+      const after = await prisma.inTenant(tenant.id, (tx) => tx.invitation.findMany({ where: { email } }));
+      expect(after).toHaveLength(1);
+      expect(after[0]?.expiresAt).toEqual(before.expiresAt);
+    });
+
+    it("says a deactivated staff member's email is taken, and by whom", async () => {
+      const gone = await createTestUser(prisma, tenant.id, { status: 'deactivated' });
+
+      const response = await invite({ email: gone.email, role_id: memberRoleId }).expect(409);
+
+      expect(response.body).toMatchObject({
+        code: 'email_is_staff',
+        user: { id: gone.id, name: 'Test User', status: 'deactivated' },
+      });
+    });
+
+    it("says a customer person's email is taken, without naming them", async () => {
+      const person = await createTestUser(prisma, tenant.id);
+      await prisma.inTenant(tenant.id, (tx) =>
+        tx.user.update({ where: { id: person.id }, data: { kind: 'customer' } }),
+      );
+
+      const response = await invite({ email: person.email, role_id: memberRoleId }).expect(409);
+
+      expect(codeOf(response.body)).toBe('email_is_other_kind');
+      expect(response.body).not.toHaveProperty('user');
+    });
+
+    it('answers 201 with a failed email status when raising the email throws, and keeps the invitation', async () => {
+      const email = freshEmail();
+      const spy = jest.spyOn(notifier, 'invitationCreated').mockRejectedValueOnce(new Error('queue down'));
+
+      const response = await invite({ email, role_id: memberRoleId }).expect(201);
+      spy.mockRestore();
+
+      expect((response.body as { email_status: string }).email_status).toBe('failed');
+      const stored = await prisma.inTenant(tenant.id, (tx) => tx.invitation.count({ where: { email } }));
+      expect(stored).toBe(1);
+    });
+  });
+
+  describe('email status', () => {
+    async function raise(
+      invitationId: string,
+      status: string,
+      deliveries: ('sent' | 'failed')[],
+    ): Promise<void> {
+      await prisma.inTenant(tenant.id, async (tx) => {
+        const notification = await tx.notification.create({
+          data: {
+            eventKey: 'user.invited',
+            audience: 'invitee',
+            subjectType: 'invitation',
+            subjectId: invitationId,
+            payload: {},
+            status,
+          },
+        });
+        for (const [index, delivery] of deliveries.entries()) {
+          await tx.notificationDelivery.create({
+            data: {
+              notificationId: notification.id,
+              channel: 'email',
+              target: 'x@example.test',
+              status: delivery,
+              attempt: index + 1,
+              createdAt: new Date(Date.now() + index * 1000),
+            },
+          });
+        }
+      });
+    }
+
+    it('reads sent, failed and sending from the deliveries, and leaves out invitations without a notification', async () => {
+      const [sent, retried, failedDelivery, failedNotification, pending, none] = [newId(), newId(), newId(), newId(), newId(), newId()];
+      await raise(sent, 'done', ['sent']);
+      await raise(retried, 'pending', ['failed', 'sent']);
+      await raise(failedDelivery, 'pending', ['failed']);
+      await raise(failedNotification, 'failed', []);
+      await raise(pending, 'pending', []);
+
+      const map = await prisma.inTenant(tenant.id, (tx) =>
+        emailStatusOf(tx, [sent, retried, failedDelivery, failedNotification, pending, none]),
+      );
+
+      expect(Object.fromEntries(map)).toEqual({
+        [sent]: 'sent',
+        [retried]: 'sent',
+        [failedDelivery]: 'failed',
+        [failedNotification]: 'failed',
+        [pending]: 'sending',
+      });
+    });
   });
 
   it('refuses to accept when the email was registered in the meantime', async () => {
