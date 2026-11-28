@@ -12,6 +12,8 @@ export type AuditAction =
   | 'role.created'
   | 'role.permissions_changed'
   | 'role.deleted'
+  | 'role.renamed'
+  | 'invitation.cancelled'
   | 'user.roles_changed'
   | 'user.deactivated'
   | 'user.reactivated'
